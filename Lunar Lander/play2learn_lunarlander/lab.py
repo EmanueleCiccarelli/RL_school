@@ -1,0 +1,399 @@
+"""
+Modulo orchestratore di Play2Learn: coordina addestramento, salvataggio, telemetria,
+diagnostica e valutazione finale.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+from typing import Callable, Any
+
+import torch
+
+try:
+    import gymnasium as gym
+    from stable_baselines3 import PPO
+    _LIBS_AVAILABLE = True
+except ImportError:
+    gym = Any  # type: ignore
+    PPO = Any  # type: ignore
+    _LIBS_AVAILABLE = False
+
+from play2learn_lunarlander.config import (
+    ENV_ID,
+    MISSIONS,
+    DEFAULT_N_ENVS,
+    DEFAULT_TIMESTEPS,
+)
+from play2learn_lunarlander.environment import make_parallel_envs, CustomRewardWrapper
+from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
+from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
+from play2learn_lunarlander.evaluator import evaluate_and_record
+from play2learn_lunarlander.storage import (
+    create_run_directory,
+    save_run_metadata,
+)
+from play2learn_lunarlander.favorites import salva_nei_preferiti
+from play2learn_lunarlander.reporting import genera_report_maturita
+
+
+class LabResult(dict):
+    """
+    Oggetto risultato restituito da `run_lab`.
+    Si comporta come un normale dizionario Python, ma include comodi metodi
+    ausiliari per la reportistica, il debug e il confronto dei modelli.
+    """
+
+    def salva_preferito(
+        self,
+        nome_personalizzato: str | None = None,
+        note: str = "",
+        tag: str = "Top Run"
+    ) -> dict[str, Any]:
+        """Salva questo modello nell'archivio dei modelli preferiti."""
+        return salva_nei_preferiti(self, nome_personalizzato=nome_personalizzato, note=note, tag=tag)
+
+    def genera_report(
+        self,
+        autore: str = "Studente",
+        titolo: str = "Report Esperimento Lunar Lander",
+        note: str = "",
+    ) -> dict[str, Path]:
+        """Genera la scheda tecnica riassuntiva in PDF, HTML e Markdown."""
+        return genera_report_maturita(
+            self,
+            autore=autore,
+            titolo=titolo,
+            note=note,
+        )
+
+    def mostra_volo(self, indice: int = 0) -> None:
+        """Visualizza uno dei video di prova registrati."""
+        videos = self.get("recorded_videos", [])
+        if videos and 0 <= indice < len(videos):
+            display_notebook_summary(self.get("plot_path"), [videos[indice]])
+        else:
+            print(f"[play2learn] Nessun video trovato all'indice {indice}.")
+
+    def test_dal_vivo(self, n_episodi: int = 1, seed: int = 999) -> None:
+        """Esegue una dimostrazione rapida dal vivo del modello."""
+        dimostrazione_live(
+            model=self.get("model"),
+            env_id=self.get("env_id", ENV_ID),
+            reward_fn=self.get("reward_fn"),
+            n_episodi=n_episodi,
+            seed=seed,
+            env_kwargs=self.get("env_kwargs"),
+        )
+
+
+def run_lab(
+    reward_fn: Callable,
+    mission: str = "luna_standard",
+    total_timesteps: int = DEFAULT_TIMESTEPS,
+    n_envs: int = DEFAULT_N_ENVS,
+    seed: int = 42,
+    device: str = "cpu",
+    env_id: str = ENV_ID,
+    gravity: float | None = None,
+    enable_wind: bool | None = None,
+    wind_power: float | None = None,
+    turbulence_power: float | None = None,
+    output_dir: str | Path = "runs",
+    nome_run: str | None = None,
+    n_eval_episodes: int = 3,
+    crea_gif: bool = True,
+    display_in_notebook: bool = True,
+) -> LabResult:
+    """
+    Avvia l'addestramento PPO con la funzione di reward personalizzata,
+    salva automaticamente checkpoint, telemetria e grafici nella cartella 'runs/',
+    e mostra la dashboard completa nel notebook.
+    """
+    if not _LIBS_AVAILABLE:
+        raise ImportError(
+            "❌ Librerie mancanti per l'addestramento!\n"
+            "Assicurati di aver eseguito la Cella 3 in cima al notebook:\n"
+            "!apt-get install -y -qq swig\n"
+            "!pip install -q 'gymnasium[box2d]' stable-baselines3 imageio imageio-ffmpeg tqdm rich"
+        )
+
+    # Ottimizzazione PyTorch thread per l'architettura di Colab
+    torch.set_num_threads(os.cpu_count() or 2)
+
+    # 1. Configurazione fisica della missione
+    mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
+    env_kwargs = dict(mission_cfg["env_kwargs"])
+    if gravity is not None:
+        env_kwargs["gravity"] = float(gravity)
+    if enable_wind is not None:
+        env_kwargs["enable_wind"] = bool(enable_wind)
+    if wind_power is not None:
+        env_kwargs["wind_power"] = float(wind_power)
+    if turbulence_power is not None:
+        env_kwargs["turbulence_power"] = float(turbulence_power)
+
+    # 2. Creazione della directory della run in runs/
+    run_dir = create_run_directory(
+        mission=mission,
+        base_dir=output_dir,
+        custom_name=nome_run
+    )
+    video_dir = run_dir / "videos"
+
+    print("=" * 76)
+    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
+    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
+    print(f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
+          f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})")
+    print(f"  ⚡ AMBIENTI: {n_envs} paralleli | STEP TOTALI: {total_timesteps:,}")
+    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+    print("=" * 76)
+
+    # 3. Creazione degli ambienti paralleli ottimizzati
+    vec_env = make_parallel_envs(
+        env_id=env_id,
+        reward_fn=reward_fn,
+        n_envs=n_envs,
+        seed=seed,
+        env_kwargs=env_kwargs
+    )
+
+    # 4. Callback con checkpoint del miglior modello in corsa
+    tracker = RewardTrackerCallback(best_model_save_dir=run_dir)
+
+    # 5. Creazione modello PPO
+    model = create_ppo_agent(
+        env=vec_env,
+        seed=seed,
+        device=device,
+        verbose=1,
+    )
+
+    # 6. Addestramento con barra di avanzamento
+    print("\n[play2learn] Inizio addestramento dell'agente...")
+    t_start = time.time()
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=tracker, progress_bar=True)
+    except KeyboardInterrupt:
+        print("\n[play2learn] Addestramento interrotto manualmente dall'utente.")
+    finally:
+        vec_env.close()
+
+    elapsed_time = time.time() - t_start
+    fps_avg = int(total_timesteps / max(1.0, elapsed_time))
+    print(f"[play2learn] Addestramento concluso in {elapsed_time:.1f} secondi ({fps_avg:,} step/sec)!")
+
+    # 7. Salvataggio checkpoint modello finale
+    final_model_path = run_dir / "ppo_lunar_lander.zip"
+    model.save(str(final_model_path))
+
+    # 8. Generazione grafico telemetria e diagnosi Flight Coach
+    plot_path = run_dir / "reward_plot.png"
+    diag_dict = plot_training_results(
+        tracker=tracker,
+        mission_title=mission_cfg["title"],
+        save_path=plot_path
+    )
+
+    # 9. Valutazione deterministica e registrazione video (mix successi e fallimenti)
+    eval_stats = evaluate_and_record(
+        model=model,
+        env_id=env_id,
+        reward_fn=reward_fn,
+        video_dir=video_dir,
+        target_successes=3,
+        target_failures=3,
+        seed=seed + 1000,
+        env_kwargs=env_kwargs,
+        create_gif=crea_gif,
+    )
+
+    # 10. Salvataggio automatico metadati e codice sorgente nella cartella della run
+    meta_path = save_run_metadata(
+        run_dir=run_dir,
+        mission=mission,
+        mission_cfg=mission_cfg,
+        env_kwargs=env_kwargs,
+        total_timesteps=total_timesteps,
+        elapsed_seconds=elapsed_time,
+        reward_fn=reward_fn,
+        eval_stats=eval_stats,
+        diagnostics=diag_dict,
+    )
+
+    # 11. Stampa riassuntiva dei risultati
+    succ_rate = eval_stats.get("eval_success_rate", 0.0)
+    n_succ = len(eval_stats.get("success_videos", []))
+    n_fail = len(eval_stats.get("failure_videos", []))
+
+    print("\n" + "=" * 76)
+    print("  📊 RISULTATI DEI VOLI DI VERIFICA (MIX SUCCESSI E FALLIMENTI):")
+    print(f"  • Tasso di Allunaggio Riuscito: {succ_rate:.1f}% ({eval_stats.get('eval_successes', 0)} su {eval_stats.get('total_evaluated_episodes', 0)} prove)")
+    print(f"  • Video registrati:            {n_succ} allunaggi riusciti 🟢 | {n_fail} fallimenti 🔴")
+    print(f"  • Durata Media Volo:           {eval_stats['mean_length']:.0f} step ({eval_stats['mean_length']/50:.1f} s)")
+    print(f"  • Carburante Medio Speso:      {eval_stats['mean_fuel']:.1f} unità (Riusciti: {eval_stats.get('mean_fuel_success', 0):.1f} un.)")
+    print(f"  • Custom Reward Media:         {eval_stats['mean_reward']:.1f} ± {eval_stats['std_reward']:.1f}")
+    print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
+    print("=" * 76 + "\n")
+
+    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Reportistica estesa
+    maturita_bundle = None
+    if succ_rate >= 80.0:
+        print("🎉 " + "=" * 72)
+        print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
+        print("  Generazione automatica della Scheda Tecnica e archiviazione nei Preferiti...")
+        print("  (PDF vettoriale + mix video successi/fallimenti + scheda di debug)")
+        print("=" * 76)
+
+        # Salva nei preferiti in una cartella univoca e genera PDF e report esteso
+        fav_entry = salva_nei_preferiti(
+            run_or_result=run_dir,
+            nome_personalizzato=f"Allunaggio_{mission}",
+            note=f"Tasso di successo {succ_rate:.1f}% con {eval_stats.get('mean_fuel_success', 0):.1f} propellente medio",
+            tag="Top Run"
+        )
+        fav_dir = Path(fav_entry["dir_path"])
+        rep_files = genera_report_maturita(
+            run_or_fav=fav_dir,
+            output_dir=fav_dir
+        )
+        maturita_bundle = {
+            "fav_entry": fav_entry,
+            "rep_files": rep_files,
+            "dir_path": fav_dir,
+        }
+
+        # Mostra card grafica di notifica nel notebook
+        _display_success_popup(fav_entry, rep_files)
+
+    # 13. Mostra dashboard e video nel Notebook
+    if display_in_notebook:
+        display_notebook_summary(
+            plot_path=plot_path,
+            videos=eval_stats.get("videos"),
+            success_videos=eval_stats.get("success_videos"),
+            failure_videos=eval_stats.get("failure_videos"),
+        )
+
+    return LabResult({
+        "run_id": run_dir.name,
+        "checkpoint_dir": run_dir,
+        "model_path": final_model_path,
+        "best_model_path": tracker.best_model_path or final_model_path,
+        "plot_path": plot_path,
+        "recorded_videos": eval_stats.get("videos", []),
+        "gif_path": eval_stats.get("gif_path"),
+        "eval_success_rate": eval_stats.get("eval_success_rate", 0.0),
+        "eval_mean_length": eval_stats.get("mean_length", 0.0),
+        "eval_mean_fuel": eval_stats.get("mean_fuel", 0.0),
+        "diagnosis": diag_dict.get("formatted_text", ""),
+        "elapsed_seconds": elapsed_time,
+        "metadata_path": meta_path,
+        "model": model,
+        "reward_fn": reward_fn,
+        "env_id": env_id,
+        "env_kwargs": env_kwargs,
+        "maturita_bundle": maturita_bundle,
+    })
+
+
+def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]) -> None:
+    """Mostra un box notifica interattivo nel Notebook per il report e i file generati."""
+    try:
+        from IPython.display import HTML, display
+        pdf_name = rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name
+        html_name = rep_files.get("html_path", Path("report_esperimento.html")).name
+        fav_dir = Path(fav_entry.get("dir_path", "")).name
+
+        box_html = f"""
+        <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+                    border: 2px solid #2e7d32; border-radius: 12px; padding: 20px;
+                    margin: 18px 0; font-family: sans-serif; box-shadow: 0 4px 15px rgba(46,125,50,0.18);">
+            <div style="display:flex; align-items:center; margin-bottom:10px;">
+                <span style="font-size:32px; margin-right:12px;">🎯</span>
+                <div>
+                    <h3 style="color:#1b5e20; margin:0; font-size:18px;">
+                        OBIETTIVO ALLUNAGGIO RAGGIUNTO (&ge; 80%)!
+                    </h3>
+                    <p style="color:#2e7d32; margin:2px 0 0 0; font-size:13.5px;">
+                        Modello archiviato nei Preferiti e Scheda Tecnica generata per l'analisi e il debug.
+                    </p>
+                </div>
+            </div>
+            <div style="background:#ffffff; border-radius:8px; padding:12px 16px; margin-top:10px; font-size:13px; color:#333;">
+                <div>📁 <strong>Cartella Riservata:</strong> <code>runs/favorites/{fav_dir}</code></div>
+                <div style="margin-top:5px;">📄 <strong>Scheda Tecnica PDF:</strong> <code>{pdf_name}</code> (con reward usata, metriche e grafici)</div>
+                <div style="margin-top:5px;">🎬 <strong>Video di Valutazione:</strong> Mix di atterraggi riusciti e fallimenti archiviati</div>
+            </div>
+            <p style="margin:10px 0 0 0; font-size:12.5px; color:#1b5e20; font-style:italic;">
+                💡 Puoi consultare e modificare il file Markdown o HTML generato per aggiungere le tue annotazioni personali.
+            </p>
+        </div>
+        """
+        display(HTML(box_html))
+    except Exception:
+        pass
+
+
+def dimostrazione_live(
+    model: PPO,
+    env_id: str = ENV_ID,
+    reward_fn: Callable | None = None,
+    n_episodi: int = 1,
+    seed: int = 999,
+    env_kwargs: dict[str, Any] | None = None,
+) -> None:
+    """
+    Esegue uno o più episodi dimostrativi stampando a video la telemetria
+    in tempo reale (ideale durante il colloquio orale di Maturità).
+    """
+    if not _LIBS_AVAILABLE:
+        raise ImportError(
+            "❌ Librerie mancanti per la dimostrazione!\n"
+            "Assicurati di aver eseguito la Cella 3 in cima al notebook:\n"
+            "!apt-get install -y -qq swig\n"
+            "!pip install -q 'gymnasium[box2d]' stable-baselines3 imageio imageio-ffmpeg tqdm rich"
+        )
+
+    env_kwargs = env_kwargs or {}
+    env = gym.make(env_id, **env_kwargs)
+    if reward_fn is not None:
+        env = CustomRewardWrapper(env, reward_fn)
+
+    print("\n" + "=" * 65)
+    print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA (ORALE DI MATURITÀ)")
+    print("=" * 65)
+
+    for ep in range(n_episodi):
+        obs, _ = env.reset(seed=seed + ep)
+        done = False
+        step = 0
+        tot_fuel = 0.0
+
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rew, term, trunc, info = env.step(action)
+            step += 1
+            done = term or trunc
+
+            act_int = int(action)
+            if act_int == 2:
+                tot_fuel += 1.0
+            elif act_int in (1, 3):
+                tot_fuel += 0.3
+
+            # Stampa periodica per mostrare la dinamica
+            if step % 35 == 0 or done:
+                x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
+                print(f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}")
+
+        is_succ = info.get("is_success", False) if isinstance(info, dict) else False
+        esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
+        print(f"\n  ESITO VOLO #{ep+1}: {esito_str}")
+        print(f"  Durata: {step} step ({step/50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
+        print("-" * 65)
+
+    env.close()
