@@ -124,7 +124,7 @@ def plot_training_results(
     episodes = np.arange(1, n_episodes + 1)
     window = min(40, max(5, n_episodes // 12))
 
-    fig = Figure(figsize=(14, 8.8), dpi=120)
+    fig = Figure(figsize=(14, 8.8), dpi=300)
     FigureCanvasAgg(fig)
     fig.suptitle(f"Telemetria di Addestramento RL — {mission_title}", fontsize=14, fontweight="bold")
     axes = fig.subplots(2, 2)
@@ -200,7 +200,7 @@ def plot_training_results(
         bbox=dict(boxstyle="round,pad=0.55", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.6)
     )
 
-    fig.savefig(str(save_path), dpi=120)
+    fig.savefig(str(save_path), dpi=300)
     fig.clear()
     return diag
 
@@ -311,7 +311,7 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     x = np.arange(n_runs)
     width = 0.28
 
-    fig = Figure(figsize=(13, 5), dpi=120)
+    fig = Figure(figsize=(13, 5), dpi=300)
     FigureCanvasAgg(fig)
     fig.suptitle("Confronto Esperimenti di Reinforcement Learning — Report Tecnico", fontsize=13, fontweight="bold")
     (ax1, ax2) = fig.subplots(1, 2)
@@ -339,5 +339,5 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     ax2.legend(loc="upper right")
 
     fig.tight_layout()
-    fig.savefig(str(save_path), dpi=120)
+    fig.savefig(str(save_path), dpi=300)
     fig.clear()

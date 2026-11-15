@@ -30,8 +30,9 @@ def genera_pdf_report(
     note_studente: str = "",
 ) -> Path:
     """
-    Genera una scheda tecnica PDF vettoriale (2 pagine A4) con telemetria di volo,
-    confronto tra successi e fallimenti, codice sorgente della reward e note di debug.
+    Genera una scheda tecnica PDF vettoriale (2 pagine A4 ad alta risoluzione 300 DPI)
+    con telemetria di volo, confronto tra successi e fallimenti, codice sorgente
+    integrale della custom reward e note di debug.
     """
     pdf_path = Path(pdf_path)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,89 +54,124 @@ def genera_pdf_report(
         note_studente = meta.get("notes") or meta.get("favorite_info", {}).get("notes") or "Nessuna annotazione inserita."
 
     with PdfPages(str(pdf_path)) as pdf:
-        # PAGINA 1: Intestazione, Tabella Telemetrica Successi/Fallimenti e Grafico di Apprendimento
-        fig1 = Figure(figsize=(8.27, 11.69), dpi=120)
+        # =========================================================================
+        # PAGINA 1: Intestazione, Tabella Telemetrica e Grafico di Apprendimento 2x2
+        # =========================================================================
+        fig1 = Figure(figsize=(8.27, 11.69), dpi=300)
         FigureCanvasAgg(fig1)
 
         # Header
-        fig1.text(0.5, 0.95, "SCHEDA TECNICA ESPERIMENTO — REINFORCEMENT LEARNING",
-                  ha="center", va="top", fontsize=14, fontweight="bold", color="#1a237e")
-        fig1.text(0.5, 0.925, f"{titolo_esperimento}   |   Autore: {autore}   |   Data: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}",
-                  ha="center", va="top", fontsize=10.5, color="#333333")
-        fig1.text(0.5, 0.905, f"Missione: {mission_title}  (Gravità: {env_kwargs.get('gravity', -10.0)}, Vento: {env_kwargs.get('enable_wind', False)})",
-                  ha="center", va="top", fontsize=9.5, style="italic", color="#555555")
+        fig1.text(0.5, 0.955, "SCHEDA TECNICA ESPERIMENTO — REINFORCEMENT LEARNING",
+                  ha="center", va="top", fontsize=13.5, fontweight="bold", color="#1a237e")
+        fig1.text(0.5, 0.932, f"{titolo_esperimento}   |   Autore: {autore}   |   Data: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                  ha="center", va="top", fontsize=10.0, color="#333333")
+        fig1.text(0.5, 0.912, f"Missione: {mission_title}  (Gravità: {env_kwargs.get('gravity', -10.0)}, Vento: {env_kwargs.get('enable_wind', False)})",
+                  ha="center", va="top", fontsize=9.2, style="italic", color="#555555")
 
         # Linea orizzontale
-        ax_line = fig1.add_axes([0.08, 0.89, 0.84, 0.002])
+        ax_line = fig1.add_axes([0.06, 0.898, 0.88, 0.002])
         ax_line.axhline(0, color="#1a237e", lw=2)
         ax_line.axis("off")
 
-        # Tabella Telemetrica Valutazione
-        fig1.text(0.08, 0.875, "1. Risultati della Valutazione (Analisi Successi e Fallimenti)",
-                  fontsize=11.5, fontweight="bold", color="#283593")
+        # 1. Tabella Telemetrica Valutazione
+        fig1.text(0.06, 0.880, "1. Risultati della Valutazione (Analisi Successi e Fallimenti)",
+                  fontsize=11.0, fontweight="bold", color="#283593")
 
         col_labels = ["Metrica Telemetrica", "Valore Sperimentale", "Riferimento Ideale", "Stato"]
+        fuel_fail_val = f"{fuel_fail:.1f} unità" if fail_count > 0 else "0 fallimenti"
+        fuel_fail_ref = "Nessun fallimento (0 un.)"
+        fuel_fail_stato = "OTTIMO" if fail_count == 0 else "DIAGNOSI"
+
         table_vals = [
             ["Tasso di Allunaggio Riuscito", f"{success_rate:.1f}%", ">= 80.0%", "OBIETTIVO RAGGIUNTO" if success_rate >= 80 else "IN OTTIMIZZAZIONE"],
             ["Prove di Valutazione", f"{succ_count} successi / {fail_count} fallimenti", "Campione misto", "CAMPIONATO"],
             ["Carburante Medio Voli Riusciti", f"{fuel_succ:.1f} unità", "< 60.0 unità", "OTTIMO" if fuel_succ <= 60 else "STANDARD"],
-            ["Carburante Medio Voli Falliti", f"{fuel_fail:.1f} unità", "N/A", "DIAGNOSI"],
+            ["Carburante Medio Voli Falliti", fuel_fail_val, fuel_fail_ref, fuel_fail_stato],
             ["Durata Media Volo", f"{flight_steps:.0f} step ({flight_steps/50:.1f} s)", "150 - 350 step", "NOMINALE"],
         ]
 
-        ax_table = fig1.add_axes([0.08, 0.69, 0.84, 0.17])
+        ax_table = fig1.add_axes([0.06, 0.705, 0.88, 0.165])
         ax_table.axis("off")
+        col_widths = [0.31, 0.24, 0.25, 0.20]
         tab = ax_table.table(
             cellText=table_vals,
             colLabels=col_labels,
+            colWidths=col_widths,
             loc="center",
-            cellLoc="left",
-            colColours=["#e8eaf6"] * 4
+            cellLoc="center",
+            colColours=["#e8eaf6"] * 4,
         )
         tab.auto_set_font_size(False)
-        tab.set_fontsize(9.5)
-        tab.scale(1.0, 1.4)
+        tab.set_fontsize(8.5)
+        tab.scale(1.0, 1.45)
 
-        # Inserimento Immagine Grafico 2x2
-        fig1.text(0.08, 0.67, "2. Curve di Apprendimento e Telemetria di Volo",
-                  fontsize=11.5, fontweight="bold", color="#283593")
+        for (row, col), cell in tab.get_celld().items():
+            cell.set_edgecolor("#c5cae9")
+            if row == 0:
+                cell.set_text_props(weight="bold", color="#1a237e")
+            if col == 0 and row > 0:
+                cell.set_text_props(horizontalalignment="left")
+            else:
+                cell.set_text_props(horizontalalignment="center")
+
+        # 2. Inserimento Immagine Grafico 2x2 ad alta definizione
+        fig1.text(0.06, 0.675, "2. Curve di Apprendimento e Telemetria di Volo",
+                  fontsize=11.0, fontweight="bold", color="#283593")
 
         if plot_path and Path(plot_path).exists():
             img = plt.imread(str(plot_path))
-            ax_img = fig1.add_axes([0.08, 0.08, 0.84, 0.57])
-            ax_img.imshow(img)
+            ax_img = fig1.add_axes([0.06, 0.04, 0.88, 0.62])
+            ax_img.imshow(img, interpolation="antialiased")
             ax_img.axis("off")
 
         pdf.savefig(fig1)
         fig1.clear()
 
-        # PAGINA 2: Codice Sorgente Reward Function e Note di Debug dello Studente
-        fig2 = Figure(figsize=(8.27, 11.69), dpi=120)
+        # =========================================================================
+        # PAGINA 2: Codice Sorgente Integrale della Custom Reward e Note di Debug
+        # =========================================================================
+        fig2 = Figure(figsize=(8.27, 11.69), dpi=300)
         FigureCanvasAgg(fig2)
 
-        fig2.text(0.5, 0.95, "FORMULAZIONE MATEMATICA E NOTE DI DEBUG",
+        fig2.text(0.5, 0.955, "FORMULAZIONE MATEMATICA E NOTE DI DEBUG",
                   ha="center", va="top", fontsize=13.5, fontweight="bold", color="#1a237e")
 
-        fig2.text(0.08, 0.91, "3. Codice Sorgente della Funzione di Reward (Reward Shaping):",
-                  fontsize=11, fontweight="bold", color="#283593")
+        fig2.text(0.06, 0.915, "3. Codice Sorgente Completo della Funzione di Reward (Reward Shaping):",
+                  fontsize=11.0, fontweight="bold", color="#283593")
 
-        # Box per il codice sorgente
-        lines_code = code_source.split("\n")
-        if len(lines_code) > 42:
-            display_code = "\n".join(lines_code[:42]) + "\n# ... (codice continuo nel file reward_function.py)"
+        # Pulizia righe e calcolo altezza
+        clean_code = "\n".join(line.rstrip() for line in code_source.strip().splitlines())
+        code_lines = clean_code.splitlines()
+        n_lines = len(code_lines)
+
+        # Dimensionamento dinamico del font per visualizzare tutto il codice senza troncamenti
+        if n_lines <= 42:
+            font_size = 7.8
+            line_spacing = 0.0120
+        elif n_lines <= 62:
+            font_size = 7.1
+            line_spacing = 0.0102
+        elif n_lines <= 85:
+            font_size = 6.4
+            line_spacing = 0.0088
         else:
-            display_code = code_source
+            font_size = 5.8
+            line_spacing = 0.0075
+
+        code_height = min(0.64, max(0.20, n_lines * line_spacing + 0.03))
+        y_code_top = 0.895
+        y_code_bottom = y_code_top - code_height
 
         fig2.text(
-            0.08, 0.89, display_code,
-            fontsize=8.2, family="monospace", va="top",
-            bbox=dict(boxstyle="round,pad=0.7", facecolor="#f5f5f5", edgecolor="#bbbbbb", lw=1.2)
+            0.06, y_code_top, clean_code,
+            fontsize=font_size, family="monospace", va="top",
+            bbox=dict(boxstyle="round,pad=0.6", facecolor="#f8f9fa", edgecolor="#90caf9", lw=1.2)
         )
 
         # Sezione Note e Osservazioni di Debug dello Studente
-        y_pos = 0.35
-        fig2.text(0.08, y_pos, "4. Note di Debug e Considerazioni Sperimentali:",
-                  fontsize=11, fontweight="bold", color="#283593")
+        y_notes = max(0.035, y_code_bottom - 0.035)
+        fig2.text(0.06, y_notes, "4. Note di Debug e Considerazioni Sperimentali:",
+                  fontsize=10.5, fontweight="bold", color="#283593")
 
         debug_box_content = (
             f"NOTE INSERITE DALL'AUTORE:\n{note_studente}\n\n"
@@ -146,9 +182,9 @@ def genera_pdf_report(
         )
 
         fig2.text(
-            0.08, y_pos - 0.02, debug_box_content,
-            fontsize=9.0, va="top", family="sans-serif",
-            bbox=dict(boxstyle="round,pad=0.6", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.3)
+            0.06, y_notes - 0.02, debug_box_content,
+            fontsize=8.4, va="top", family="sans-serif",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.3)
         )
 
         pdf.savefig(fig2)
@@ -249,6 +285,11 @@ def genera_report_esperimento(
     if plot_path.exists():
         plot_img_b64 = base64.b64encode(plot_path.read_bytes()).decode("ascii")
 
+    fail_fuel_val = f"{fuel_fail:.1f} unità" if fail_count > 0 else "0 fallimenti"
+    fail_fuel_ref = "Nessun fallimento (0 un.)"
+    fail_fuel_esito = "🔍 Analisi criticità" if fail_count > 0 else "✅ Nessun fallimento"
+    fail_fuel_badge = "Criticità" if fail_count > 0 else "Ottimo (0 fall.)"
+
     # 3. Generazione Markdown
     success_symbol = "\\ge"
     md_content = f"""# 📊 Scheda Tecnica Esperimento — Reinforcement Learning
@@ -273,7 +314,7 @@ def genera_report_esperimento(
 | **Percentuale Allunaggi Riusciti** | **{success_rate:.1f}%** | ${success_symbol} 80.0\\%$ | {'✅ Raggiunto' if success_rate >= 80 else '⚠️ In ottimizzazione'} |
 | **Allunaggi Riusciti / Falliti** | **{succ_count} successi / {fail_count} fallimenti** | Campione misto | 🎯 Diagnostica completa |
 | **Consumo Carburante (Voli Riusciti)** | **{fuel_succ:.1f} unità** | $< 60.0$ unità | {'✅ Ottimo' if fuel_succ <= 60 else 'ℹ️ Standard'} |
-| **Consumo Carburante (Voli Falliti)** | **{fuel_fail:.1f} unità** | N/A | 🔍 Analisi criticità |
+| **Consumo Carburante (Voli Falliti)** | **{fail_fuel_val}** | {fail_fuel_ref} | {fail_fuel_esito} |
 | **Durata Media Volo** | **{flight_steps:.0f} step ({flight_steps/50:.1f} s)** | $150 - 350$ step | {'✅ Nominale' if 150 <= flight_steps <= 350 else 'ℹ️ Accettabile'} |
 
 ---
@@ -407,9 +448,9 @@ def genera_report_esperimento(
                 </tr>
                 <tr>
                     <td><strong>Carburante Voli Falliti</strong></td>
-                    <td>{fuel_fail:.1f} unità</td>
-                    <td>N/A</td>
-                    <td><span class="badge">Criticità</span></td>
+                    <td>{fail_fuel_val}</td>
+                    <td>{fail_fuel_ref}</td>
+                    <td><span class="badge">{fail_fuel_badge}</span></td>
                 </tr>
                 <tr>
                     <td><strong>Durata Media Volo</strong></td>
