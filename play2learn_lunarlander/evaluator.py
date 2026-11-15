@@ -87,6 +87,7 @@ def _run_single_sweep_episode(
         "is_success": bool(last_info.get("is_success", False)),
         "is_crashed": bool(last_info.get("is_crashed", False)),
         "is_timeout": bool(last_info.get("is_timeout", False)),
+        "is_off_target": bool(last_info.get("is_off_target", False)),
         "steps": steps,
         "fuel": fuel,
         "reward": ep_rew,
@@ -299,11 +300,14 @@ def evaluate_and_record(
                     best_success_frames = frames
             else:
                 idx = len(failure_videos) + 1
-                causa = (
-                    "crash"
-                    if cand["is_crashed"]
-                    else ("timeout" if cand["is_timeout"] else "fallimento")
-                )
+                if cand.get("is_off_target"):
+                    causa = "fuori_bersaglio"
+                elif cand["is_crashed"]:
+                    causa = "crash"
+                elif cand["is_timeout"]:
+                    causa = "timeout"
+                else:
+                    causa = "fallimento"
                 v_path = video_dir / f"fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
                 _save_frames_as_mp4(frames, v_path)
                 failure_videos.append(v_path)

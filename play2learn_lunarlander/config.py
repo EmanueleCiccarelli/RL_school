@@ -20,6 +20,8 @@ SIMULATION_FPS: int = 50
 # Coordinate geometriche della piazzola di allunaggio (normalizzate Gymnasium)
 PAD_X_MIN: float = -0.20
 PAD_X_MAX: float = 0.20
+HELIPAD_X_MIN: float = -0.20
+HELIPAD_X_MAX: float = 0.20
 PAD_Y: float = 0.00
 BOUNDARY_X: float = 1.00  # Confine laterale dello schermo (|x| >= 1.0 -> crash)
 
@@ -28,6 +30,7 @@ SAFE_MAX_VY: float = 0.20       # Velocità verticale massima consigliata
 CRITICAL_VY: float = 0.50       # Sopra questo valore le zampe cedono
 SAFE_MAX_VX: float = 0.15       # Velocità orizzontale massima consigliata
 SAFE_MAX_ANGLE: float = 0.20    # Angolo massimo consigliato (in radianti, ~11°)
+SAFE_LANDING_ANGLE: float = 0.25 # Angolo massimo tollerato per considerare l'atterraggio valido (~14°)
 
 # Consumo nominale di carburante per tipo di motore
 FUEL_MAIN_ENGINE: float = 1.0   # Azione 2
@@ -151,4 +154,4 @@ VECNORM_PARAMS: dict[str, Any] = {
 }
 
 DEFAULT_N_ENVS: int = 4
-DEFAULT_TIMESTEPS: int = 200_000
+DEFAULT_TIMESTEPS: int = 300_000

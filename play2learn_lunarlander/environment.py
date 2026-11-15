@@ -48,6 +48,8 @@ from play2learn_lunarlander.config import (
     FUEL_MAIN_ENGINE,
     FUEL_SIDE_ENGINE,
     BOUNDARY_X,
+    HELIPAD_X_MAX,
+    SAFE_LANDING_ANGLE,
     VECNORM_PARAMS,
 )
 
@@ -144,19 +146,53 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         is_timeout = bool(truncated)
         is_crashed = False
         is_success = False
+        is_off_target = False
 
         if terminated:
             unwrapped = self._unwrapped
             game_over = getattr(unwrapped, "game_over", False)
             lander = getattr(unwrapped, "lander", None)
+            is_awake = getattr(lander, "awake", True) if lander is not None else True
 
-            if game_over or abs(obs.item(0)) >= BOUNDARY_X or original_reward <= -100.0:
+            final_x = abs(obs.item(0))
+            final_angle = abs(obs.item(4))
+            legs_contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
+
+            # 1. Schianto catastrofico evidente: scafo tocca terra (game_over) o fuori schermo (|x| >= 1.0)
+            if game_over or final_x >= BOUNDARY_X:
                 is_crashed = True
-            elif (lander is not None and not lander.awake) or original_reward >= 100.0:
-                is_success = True
+                is_success = False
+            # 2. Il modulo ha toccato terra e si è fermato (Box2D sleep / awake=False) o fine episodio positiva Gym
+            elif (not is_awake) or (original_reward >= 100.0):
+                # Per essere un vero SUCCESSO didattico e fisico, l'atterraggio DEVE avvenire:
+                # - Sulla piazzola delimitata dalle bandierine (|x| <= 0.20)
+                # - Con assetto verticale stabile (|angle| <= 0.25 rad, ~14°)
+                # - Con contatto delle zampe
+                on_helipad = final_x <= HELIPAD_X_MAX
+                upright = final_angle <= SAFE_LANDING_ANGLE
+
+                if on_helipad and upright and legs_contact:
+                    is_success = True
+                    is_crashed = False
+                else:
+                    # Atterraggio completato ma fuori piazzola (es. su crateri/pendii) o ribaltato:
+                    # è un fallimento/fuori bersaglio!
+                    is_success = False
+                    is_crashed = True
+                    if not on_helipad:
+                        is_off_target = True
             else:
-                is_success = original_reward > 0.0
-                is_crashed = not is_success
+                # Caso residuale
+                on_helipad = final_x <= HELIPAD_X_MAX
+                upright = final_angle <= SAFE_LANDING_ANGLE
+                if on_helipad and upright and legs_contact and original_reward > 0.0:
+                    is_success = True
+                    is_crashed = False
+                else:
+                    is_crashed = True
+                    is_success = False
+                    if not on_helipad:
+                        is_off_target = True
 
         try:
             custom_rew = float(
@@ -174,6 +210,7 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         info["is_success"] = is_success
         info["is_crashed"] = is_crashed
         info["is_timeout"] = is_timeout
+        info["is_off_target"] = is_off_target
         info["telemetry"] = {
             "fuel_used": float(self.ep_fuel_used),
             "main_engine_steps": self.ep_main_engine_steps,
