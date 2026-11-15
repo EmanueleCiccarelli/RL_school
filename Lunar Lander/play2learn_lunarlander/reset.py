@@ -108,6 +108,7 @@ def verifica_integrita_progetto(root_dir: Path) -> bool:
         root_dir / "play2learn_lunarlander" / "lab.py",
         root_dir / "play2learn_lunarlander" / "reporting.py",
         root_dir / "README.md",
+        root_dir / "requirements.txt",
         root_dir / ".gitignore",
     ]
 

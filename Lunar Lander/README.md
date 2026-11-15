@@ -53,17 +53,45 @@ Il laboratorio è disponibile in **due modalità sincronizzate**:
 3. Gli studenti possono subito concentrarsi sulla modifica di `custom_reward` ed eseguire l'addestramento direttamente nel browser.
 
 ### Modalità 2: Ambiente Locale (per docenti o sviluppo offline)
-1. Clona la repository sul tuo computer:
+
+1. **Clona la repository sul tuo computer:**
    ```bash
    git clone https://github.com/EmanueleCiccarelli/RL_school.git
    cd RL_school
    ```
-2. Installa le dipendenze richieste:
+
+2. **Crea e attiva un ambiente virtuale (consigliato):**
+   * **Su Windows (PowerShell):**
+     ```powershell
+     python -m venv venv
+     .\venv\Scripts\Activate.ps1
+     ```
+   * **Su Linux / macOS:**
+     ```bash
+     python3 -m venv venv
+     source venv/bin/activate
+     ```
+
+3. **Installa tutte le dipendenze tramite `requirements.txt`:**
    ```bash
-   pip install "gymnasium[box2d]" stable-baselines3 imageio imageio-ffmpeg tqdm rich matplotlib torch
+   pip install --upgrade pip
+   pip install -r requirements.txt
    ```
-3. Avvia Jupyter Notebook o VS Code e apri il notebook locale:
-   `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`
+   > 💡 **Nota per utenti Windows:** Se `gymnasium[box2d]` segnala la mancanza di SWIG durante la compilazione, è sufficiente installare il compilatore precompilato con:
+   > ```bash
+   > pip install swig
+   > pip install "gymnasium[box2d]"
+   > ```
+
+4. **Avvia Jupyter Notebook o VS Code:**
+   ```bash
+   jupyter lab
+   # oppure: jupyter notebook
+   ```
+
+5. **Apri il notebook dedicato all'ambiente locale:**  
+   Naviga ed apri il file:  
+   📂 `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`
 
 ---
 

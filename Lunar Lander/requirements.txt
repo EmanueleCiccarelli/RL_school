@@ -1,0 +1,24 @@
+# =============================================================================
+# Dipendenze per RL_school - Laboratorio di Reinforcement Learning
+# =============================================================================
+
+# Ambiente di Simulazione Fisica
+gymnasium[box2d]>=0.29.0
+
+# Algoritmi di Reinforcement Learning (PPO) e Deep Learning
+stable-baselines3>=2.1.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# Telemetria, Grafica e Visualizzazione Video/GIF
+matplotlib>=3.7.0
+imageio>=2.30.0
+imageio-ffmpeg>=0.4.8
+
+# Interfaccia Utente, Barre di Avanzamento e Tabelle
+tqdm>=4.65.0
+rich>=13.0.0
+
+# Supporto Jupyter Notebook per esecuzione locale
+ipykernel>=6.20.0
+jupyterlab>=4.0.0
