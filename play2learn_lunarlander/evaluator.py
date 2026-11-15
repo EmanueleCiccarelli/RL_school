@@ -6,6 +6,7 @@ Registra un mix didattico bilanciato: fino a 3 video di successo e fino a 3 vide
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Callable, Any
 
@@ -28,29 +29,38 @@ def evaluate_and_record(
     video_dir: Path | str,
     target_successes: int = 3,
     target_failures: int = 3,
-    max_eval_episodes: int = 30,
+    sweep_timeout_seconds: float = 6.0,
+    min_eval_episodes: int = 15,
+    max_eval_episodes: int = 100,
     seed: int = 100,
     env_kwargs: dict[str, Any] | None = None,
     create_gif: bool = True,
 ) -> dict[str, Any]:
     """
-    Valuta l'agente addestrato registrando un mix bilanciato di prove:
-    - fino a 3 video di allunaggi RIUSCITI (is_success == True)
-    - fino a 3 video di FALLIMENTI (is_crashed o is_timeout)
-    In questo modo gli studenti possono analizzare sia i comportamenti corretti
-    che i punti critici su cui intervenire nella reward function.
+    Valuta l'agente addestrato con una procedura ottimizzata in due fasi:
+    1. Fast Sweep senza rendering video regolato da timer:
+       - Esegue rapidamente decine di episodi in background.
+       - Se scatta il timer di timeout, l'episodio in corso viene completato prima di fermare lo sweep.
+       - Raccoglie telemetria e cataloga episodi di successo ed episodi di fallimento.
+    2. Elaborazione video ad alta fedeltà (mix bilanciato):
+       - Replay deterministico e rendering video SOLO per i target selezionati:
+         fino a 3 successi (ordinati per miglior efficienza) e fino a 3 fallimenti.
     """
     env_kwargs = env_kwargs or {}
     video_dir = Path(video_dir)
     video_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[play2learn] Valutazione dell'agente: ricerca di {target_successes} successi e {target_failures} fallimenti...")
+    print(f"[play2learn] Fase 1: Sweep rapido senza rendering (timer massimo: {sweep_timeout_seconds:.1f}s)...")
 
-    eval_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
-    eval_env = CustomRewardWrapper(eval_env, reward_fn)
+    # =========================================================================
+    # FASE 1: FAST SWEEP SENZA RENDERING (OTTIMIZZATO)
+    # =========================================================================
+    sweep_env = gym.make(env_id, render_mode=None, **env_kwargs)
+    sweep_env = CustomRewardWrapper(sweep_env, reward_fn)
 
-    success_videos: list[Path] = []
-    failure_videos: list[Path] = []
+    success_candidates: list[dict[str, Any]] = []
+    failure_candidates: list[dict[str, Any]] = []
 
     eval_rewards: list[float] = []
     eval_lengths: list[int] = []
@@ -61,45 +71,53 @@ def evaluate_and_record(
     eval_crashes: int = 0
     eval_timeouts: int = 0
 
-    best_success_fuel: float = 9999.0
-    best_success_video: Path | None = None
+    t_sweep_start = time.time()
+    timeout_triggered = False
+    ep = 0
 
-    import imageio
-
-    for ep in range(max_eval_episodes):
-        # Condizione di stop anticipato: se abbiamo già raccolto tutti i target desiderati
-        if len(success_videos) >= target_successes and len(failure_videos) >= target_failures:
+    while ep < max_eval_episodes and not timeout_triggered:
+        # Condizione di completamento anticipato:
+        # Abbiamo già raccolto sia il target di successi che di fallimenti E raggiunto il minimo di campioni
+        if (
+            len(success_candidates) >= target_successes
+            and len(failure_candidates) >= target_failures
+            and ep >= min_eval_episodes
+        ):
             break
 
-        # Se abbiamo già raccolto tutti i successi ma mancano ancora video di fallimento
-        # e dopo 12 tentativi deterministici non ne abbiamo trovati, testiamo in modalità stocastica
-        # (la stessa usata in fase di addestramento che ha generato il tasso di fallimento)
+        # Politica deterministica per le prime prove standard.
+        # Se abbiamo già abbastanza successi ma mancano ancora fallimenti da mostrare,
+        # testiamo con la politica stocastica (la stessa usata durante il training che ha generato i fallimenti)
         use_deterministic = True
-        if len(success_videos) >= target_successes and len(failure_videos) < target_failures and ep >= 12:
+        if (
+            len(success_candidates) >= target_successes
+            and len(failure_candidates) < target_failures
+            and ep >= min_eval_episodes
+        ):
             use_deterministic = False
 
-        obs, _ = eval_env.reset(seed=seed + ep)
+        cur_seed = seed + ep
+        obs, _ = sweep_env.reset(seed=cur_seed)
         done = False
         ep_rew = 0.0
         steps = 0
+        ep_actions: list[int] = []
         last_info: dict[str, Any] = {}
-        frames = []
-
-        # Raccoglie i frame renderizzati dell'episodio
-        initial_frame = eval_env.render()
-        if initial_frame is not None:
-            frames.append(initial_frame)
 
         while not done:
             action, _ = model.predict(obs, deterministic=use_deterministic)
-            obs, rew, terminated, truncated, last_info = eval_env.step(action)
-            frame = eval_env.render()
-            if frame is not None:
-                frames.append(frame)
+            act_int = int(action)
+            ep_actions.append(act_int)
 
+            obs, rew, terminated, truncated, last_info = sweep_env.step(action)
             ep_rew += float(rew)
             steps += 1
             done = terminated or truncated
+
+            # Controllo timer: se scatta il timeout, segnaliamo la conclusione dello sweep
+            # ma lasciamo completare l'episodio in corso fino a fine volo (done=True)
+            if not timeout_triggered and (time.time() - t_sweep_start >= sweep_timeout_seconds):
+                timeout_triggered = True
 
         eval_rewards.append(ep_rew)
         eval_lengths.append(steps)
@@ -111,37 +129,109 @@ def evaluate_and_record(
         is_crash = bool(last_info.get("is_crashed", False))
         is_time = bool(last_info.get("is_timeout", False))
 
+        candidate = {
+            "seed": cur_seed,
+            "actions": ep_actions,
+            "is_success": is_succ,
+            "is_crashed": is_crash,
+            "is_timeout": is_time,
+            "steps": steps,
+            "fuel": fuel,
+            "reward": ep_rew,
+            "deterministic": use_deterministic,
+        }
+
         if is_succ:
             eval_successes += 1
             success_fuels.append(fuel)
-            if len(success_videos) < target_successes and frames:
-                v_path = video_dir / f"successo_{len(success_videos) + 1}_step_{steps}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                success_videos.append(v_path)
-                if fuel < best_success_fuel:
-                    best_success_fuel = fuel
-                    best_success_video = v_path
+            success_candidates.append(candidate)
         else:
             if is_crash:
                 eval_crashes += 1
             elif is_time:
                 eval_timeouts += 1
             else:
-                eval_crashes += 1  # Fallimento generico classificato come crash
+                eval_crashes += 1  # Fallimento generico
             failure_fuels.append(fuel)
-            if len(failure_videos) < target_failures and frames:
-                causa = "crash" if is_crash else ("timeout" if is_time else "fallimento")
-                v_path = video_dir / f"fallimento_{len(failure_videos) + 1}_{causa}_step_{steps}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                failure_videos.append(v_path)
+            failure_candidates.append(candidate)
 
-    eval_env.close()
+        ep += 1
 
+    sweep_env.close()
+    sweep_duration = time.time() - t_sweep_start
     total_evaluated = max(1, len(eval_rewards))
     success_rate = (eval_successes / total_evaluated) * 100.0
 
-    print(f"[play2learn] Valutazione completata ({total_evaluated} prove): "
-          f"{len(success_videos)} video di successo, {len(failure_videos)} video di fallimento registrati.")
+    if timeout_triggered:
+        print(f"[play2learn] Timeout timer raggiunto ({sweep_timeout_seconds:.1f}s): completato l'ultimo episodio in corso.")
+    print(
+        f"[play2learn] Sweep completato in {sweep_duration:.2f}s ({total_evaluated} episodi valutati): "
+        f"{len(success_candidates)} successi, {len(failure_candidates)} fallimenti trovati."
+    )
+
+    # =========================================================================
+    # FASE 2: ELABORAZIONE VIDEO (SOLO SUI CANDIDATI SELEZIONATI)
+    # =========================================================================
+    # Seleziona fino a target_successes (ordinati per efficienza carburante)
+    selected_successes = sorted(success_candidates, key=lambda c: c["fuel"])[:target_successes]
+
+    # Seleziona fino a target_failures (cercando di includere sia crash che timeout se presenti)
+    selected_failures = failure_candidates[:target_failures]
+
+    success_videos: list[Path] = []
+    failure_videos: list[Path] = []
+    best_success_fuel: float = 9999.0
+    best_success_video: Path | None = None
+
+    to_render = (
+        [("successo", c) for c in selected_successes]
+        + [("fallimento", c) for c in selected_failures]
+    )
+
+    if to_render:
+        print(
+            f"[play2learn] Fase 2: Elaborazione video ({len(selected_successes)} successi, "
+            f"{len(selected_failures)} fallimenti)..."
+        )
+        render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
+        render_env = CustomRewardWrapper(render_env, reward_fn)
+
+        for kind, cand in to_render:
+            obs, _ = render_env.reset(seed=cand["seed"])
+            frames = []
+            init_frame = render_env.render()
+            if init_frame is not None:
+                frames.append(init_frame)
+
+            for act in cand["actions"]:
+                obs, rew, term, trunc, _ = render_env.step(act)
+                frame = render_env.render()
+                if frame is not None:
+                    frames.append(frame)
+                if term or trunc:
+                    break
+
+            if kind == "successo":
+                idx = len(success_videos) + 1
+                v_path = video_dir / f"successo_{idx}_step_{cand['steps']}.mp4"
+                _save_frames_as_mp4(frames, v_path)
+                success_videos.append(v_path)
+                if cand["fuel"] < best_success_fuel:
+                    best_success_fuel = cand["fuel"]
+                    best_success_video = v_path
+            else:
+                idx = len(failure_videos) + 1
+                causa = "crash" if cand["is_crashed"] else ("timeout" if cand["is_timeout"] else "fallimento")
+                v_path = video_dir / f"fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
+                _save_frames_as_mp4(frames, v_path)
+                failure_videos.append(v_path)
+
+        render_env.close()
+
+    print(
+        f"[play2learn] Valutazione conclusa: {len(success_videos)} video di successo "
+        f"e {len(failure_videos)} video di fallimento registrati."
+    )
 
     # Generazione della GIF animata dell'allunaggio di successo migliore
     gif_path: Path | None = None
@@ -151,10 +241,10 @@ def evaluate_and_record(
     all_recorded = success_videos + failure_videos
 
     return {
-        "mean_reward": float(np.mean(eval_rewards)),
-        "std_reward": float(np.std(eval_rewards)),
-        "mean_length": float(np.mean(eval_lengths)),
-        "mean_fuel": float(np.mean(eval_fuels)),
+        "mean_reward": float(np.mean(eval_rewards)) if eval_rewards else 0.0,
+        "std_reward": float(np.std(eval_rewards)) if eval_rewards else 0.0,
+        "mean_length": float(np.mean(eval_lengths)) if eval_lengths else 0.0,
+        "mean_fuel": float(np.mean(eval_fuels)) if eval_fuels else 0.0,
         "eval_success_rate": success_rate,
         "total_evaluated_episodes": total_evaluated,
         "eval_successes": eval_successes,

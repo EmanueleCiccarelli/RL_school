@@ -198,7 +198,7 @@ def run_lab(
         save_path=plot_path
     )
 
-    # 9. Valutazione deterministica e registrazione video (mix successi e fallimenti)
+    # 9. Valutazione e registrazione video con sweep rapido e timer
     eval_stats = evaluate_and_record(
         model=model,
         env_id=env_id,
@@ -206,7 +206,9 @@ def run_lab(
         video_dir=video_dir,
         target_successes=3,
         target_failures=3,
-        max_eval_episodes=30,
+        sweep_timeout_seconds=6.0,
+        min_eval_episodes=15,
+        max_eval_episodes=100,
         seed=seed + 1000,
         env_kwargs=env_kwargs,
         create_gif=crea_gif,
