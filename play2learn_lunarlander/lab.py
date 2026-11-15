@@ -156,6 +156,23 @@ class LabResult(dict):
             env_kwargs=self.get("env_kwargs"),
         )
 
+    def sfida(self, seed: int = 42, mission: str | None = None) -> None:
+        """
+        Avvia la sfida interattiva testa a testa 'Tu vs Agente' (split-screen)
+        contro questo modello addestrato sullo stesso scenario lunare!
+        """
+        from play2learn_lunarlander.interactive import gioca_vs_agente
+        gioca_vs_agente(
+            model_or_result=self,
+            seed=seed,
+            mission=mission or self.get("mission", "luna_standard"),
+            env_kwargs=self.get("env_kwargs"),
+        )
+
+    def gioca_contro(self, seed: int = 42, mission: str | None = None) -> None:
+        """Alias di sfida()."""
+        self.sfida(seed=seed, mission=mission)
+
 
 def run_lab(
     reward_fn: Callable,

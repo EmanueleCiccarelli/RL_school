@@ -32,6 +32,11 @@ from play2learn_lunarlander.storage import (
     mostra_cronologia_run,
 )
 from play2learn_lunarlander.reset import reset_laboratorio
+from play2learn_lunarlander.interactive import (
+    gioca_single_player,
+    gioca_vs_agente,
+    gioca,
+)
 
 __version__ = "2.0.0"
 
@@ -55,6 +60,9 @@ __all__ = [
     "dimostrazione_live",
     "list_all_runs",
     "reset_laboratorio",
+    "gioca_single_player",
+    "gioca_vs_agente",
+    "gioca",
     "MISSIONS",
     "ENV_ID",
     "LabResult",
