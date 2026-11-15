@@ -7,6 +7,17 @@ sezione Preferiti e reportistica tecnica dettagliata.
 
 from __future__ import annotations
 
+import os
+
+# Imposta variabili d'ambiente di threading PRIMA di caricare numpy, torch o matplotlib
+# per evitare conflitti e sovraccaricamento del pool di thread OpenMP/MKL su CPU.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from play2learn_lunarlander.config import MISSIONS, ENV_ID
 from play2learn_lunarlander.visualizer import mostra_mappa_ambiente, plot_comparison
 from play2learn_lunarlander.lab import run_lab, dimostrazione_live, LabResult
@@ -38,11 +49,15 @@ from play2learn_lunarlander.interactive import (
     gioca,
 )
 
+# Alias pubblico allineato a LabResult.salva_preferito
+salva_preferito = salva_nei_preferiti
+
 __version__ = "2.0.0"
 
 __all__ = [
     "run_lab",
     "mostra_mappa_ambiente",
+    "salva_preferito",
     "salva_nei_preferiti",
     "salva_video_preferito",
     "mostra_preferiti",

@@ -443,6 +443,17 @@ sezione Preferiti e reportistica tecnica dettagliata.
 
 from __future__ import annotations
 
+import os
+
+# Imposta variabili d'ambiente di threading PRIMA di caricare numpy, torch o matplotlib
+# per evitare conflitti e sovraccaricamento del pool di thread OpenMP/MKL su CPU.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from play2learn_lunarlander.config import MISSIONS, ENV_ID
 from play2learn_lunarlander.visualizer import mostra_mappa_ambiente, plot_comparison
 from play2learn_lunarlander.lab import run_lab, dimostrazione_live, LabResult
@@ -474,11 +485,15 @@ from play2learn_lunarlander.interactive import (
     gioca,
 )
 
+# Alias pubblico allineato a LabResult.salva_preferito
+salva_preferito = salva_nei_preferiti
+
 __version__ = "2.0.0"
 
 __all__ = [
     "run_lab",
     "mostra_mappa_ambiente",
+    "salva_preferito",
     "salva_nei_preferiti",
     "salva_video_preferito",
     "mostra_preferiti",
@@ -679,7 +694,9 @@ DEFAULT_TIMESTEPS: int = 300_000
 """
 Modulo di gestione dell'ambiente di simulazione Gymnasium e del CustomRewardWrapper.
 Ottimizzato per massimo throughput su Google Colab (2 vCPU) e PC locali Windows:
+- Classificatore unificato e rigoroso degli esiti di allunaggio (classify_lunar_lander_outcome)
 - Dispatch pre-compilato della reward_fn (zero if/elif per step)
+- Protezione da valori non finiti (NaN o Inf) per preservare VecNormalize
 - Zero allocazioni/scritture su `info` nei passi non terminali
 - Rimozione di PassiveEnvChecker durante il training
 - Auto-tuning intelligente di DummyVecEnv vs SubprocVecEnv
@@ -691,6 +708,7 @@ from __future__ import annotations
 import os
 import sys
 import inspect
+import math
 import warnings
 from typing import Callable, Any
 
@@ -728,8 +746,65 @@ from play2learn_lunarlander.config import (
     BOUNDARY_X,
     HELIPAD_X_MAX,
     SAFE_LANDING_ANGLE,
+    SAFE_MAX_VX,
+    SAFE_MAX_VY,
     VECNORM_PARAMS,
 )
+
+
+def classify_lunar_lander_outcome(
+    obs: Any,
+    original_reward: float,
+    terminated: bool,
+    truncated: bool,
+    unwrapped: Any = None,
+) -> tuple[bool, bool, bool, bool]:
+    """
+    Unica fonte di verità per la classificazione dell'esito dell'episodio di volo.
+    Restituisce: (is_success, is_crashed, is_timeout, is_off_target).
+    """
+    is_timeout = bool(truncated and not terminated)
+    if not terminated:
+        return False, False, is_timeout, False
+
+    game_over = bool(getattr(unwrapped, "game_over", False))
+    lander = getattr(unwrapped, "lander", None)
+    is_awake = bool(getattr(lander, "awake", True)) if lander is not None else True
+
+    try:
+        final_x = abs(float(obs.item(0)))
+        final_y = abs(float(obs.item(1)))
+        final_vx = abs(float(obs.item(2)))
+        final_vy = abs(float(obs.item(3)))
+        final_angle = abs(float(obs.item(4)))
+        both_legs = (float(obs.item(6)) > 0.5) and (float(obs.item(7)) > 0.5)
+    except (AttributeError, ValueError):
+        final_x = abs(float(obs[0]))
+        final_y = abs(float(obs[1]))
+        final_vx = abs(float(obs[2]))
+        final_vy = abs(float(obs[3]))
+        final_angle = abs(float(obs[4]))
+        both_legs = (float(obs[6]) > 0.5) and (float(obs[7]) > 0.5)
+
+    # 1. Schianto immediato scafo o fuori schermo
+    if game_over or final_x >= BOUNDARY_X:
+        return False, True, False, (final_x > HELIPAD_X_MAX)
+
+    # 2. Criteri fisici e didattici rigorosi per un vero allunaggio morbido:
+    #    - Entro le bandierine (|x| <= 0.20) e a quota piazzola (|y| <= 0.15)
+    #    - Assetto verticale (|angle| <= 0.25 rad, ~14°)
+    #    - Entrambe le zampe saldamente a contatto
+    #    - Lander fermo (Box2D sleep) o velocità residue entro i margini di sicurezza
+    #    - Segnale Gym non distruttivo
+    on_helipad = (final_x <= HELIPAD_X_MAX) and (final_y <= 0.15)
+    upright = final_angle <= SAFE_LANDING_ANGLE
+    settled = (not is_awake) or (final_vx <= SAFE_MAX_VX and final_vy <= SAFE_MAX_VY)
+    gym_ok = (not is_awake) or (original_reward >= 100.0) or (original_reward > 0.0)
+
+    if on_helipad and upright and both_legs and settled and gym_ok:
+        return True, False, False, False
+
+    return False, True, False, (final_x > HELIPAD_X_MAX)
 
 
 def _build_reward_caller(reward_fn: Callable) -> Callable:
@@ -738,12 +813,18 @@ def _build_reward_caller(reward_fn: Callable) -> Callable:
     un dispatcher specializzato ad alta velocità (zero controlli in step()).
     """
     try:
-        param_count = len(inspect.signature(reward_fn).parameters)
+        sig = inspect.signature(reward_fn)
+        params = list(sig.parameters.values())
+        has_var = any(
+            p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for p in params
+        )
+        param_count = -1 if has_var else len(params)
     except Exception:
         param_count = 5
 
     if param_count == 5:
-        return lambda obs, act, succ, crash, tout: reward_fn(obs, act, succ, crash, tout)
+        return reward_fn
     if param_count == 4:
         return lambda obs, act, succ, crash, tout: reward_fn(obs, succ, crash, tout)
     if param_count == 2:
@@ -767,7 +848,7 @@ def _build_reward_caller(reward_fn: Callable) -> Callable:
 class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
     """
     Wrapper ad alte prestazioni che intercetta ogni `step()`, calcola la telemetria
-    di volo e delega il calcolo della ricompensa alla funzione dello studente.
+    di volo, valida i valori numerici e delega il calcolo della ricompensa.
     Popola il dizionario `info` solo a fine episodio per minimizzare allocazioni e IPC.
     """
 
@@ -804,7 +885,12 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
             self.ep_side_engine_steps += 1
 
         # Accesso scalare diretto (.item) evita allocazione di np.float32
-        if obs.item(6) > 0.5 or obs.item(7) > 0.5:
+        try:
+            contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
+        except (AttributeError, ValueError):
+            contact = (obs[6] > 0.5) or (obs[7] > 0.5)
+
+        if contact:
             self.ep_ground_steps += 1
         else:
             self.ep_air_steps += 1
@@ -813,73 +899,32 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         if not (terminated or truncated):
             try:
                 custom_rew = float(self._call_reward(obs, act_int, False, False, False))
+                if not math.isfinite(custom_rew):
+                    raise ValueError(f"Valore non finito restituito: {custom_rew} (NaN o Inf).")
             except Exception as e:
                 raise RuntimeError(
                     f"[Play2Learn Error] Errore nell'esecuzione della tua 'custom_reward': {e}\n"
-                    f"Controlla i calcoli matematici (es. divisioni per zero o indici errati)."
+                    f"Controlla i calcoli matematici (es. divisioni per zero, log di negativi o indici errati)."
                 ) from e
             return obs, custom_rew, False, False, info
 
-        # 3. Stato terminale / timeout (eseguito 1 volta per episodio)
-        is_timeout = bool(truncated)
-        is_crashed = False
-        is_success = False
-        is_off_target = False
-
-        if terminated:
-            unwrapped = self._unwrapped
-            game_over = getattr(unwrapped, "game_over", False)
-            lander = getattr(unwrapped, "lander", None)
-            is_awake = getattr(lander, "awake", True) if lander is not None else True
-
-            final_x = abs(obs.item(0))
-            final_angle = abs(obs.item(4))
-            legs_contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
-
-            # 1. Schianto catastrofico evidente: scafo tocca terra (game_over) o fuori schermo (|x| >= 1.0)
-            if game_over or final_x >= BOUNDARY_X:
-                is_crashed = True
-                is_success = False
-            # 2. Il modulo ha toccato terra e si è fermato (Box2D sleep / awake=False) o fine episodio positiva Gym
-            elif (not is_awake) or (original_reward >= 100.0):
-                # Per essere un vero SUCCESSO didattico e fisico, l'atterraggio DEVE avvenire:
-                # - Sulla piazzola delimitata dalle bandierine (|x| <= 0.20)
-                # - Con assetto verticale stabile (|angle| <= 0.25 rad, ~14°)
-                # - Con contatto delle zampe
-                on_helipad = final_x <= HELIPAD_X_MAX
-                upright = final_angle <= SAFE_LANDING_ANGLE
-
-                if on_helipad and upright and legs_contact:
-                    is_success = True
-                    is_crashed = False
-                else:
-                    # Atterraggio completato ma fuori piazzola (es. su crateri/pendii) o ribaltato:
-                    # è un fallimento/fuori bersaglio!
-                    is_success = False
-                    is_crashed = True
-                    if not on_helipad:
-                        is_off_target = True
-            else:
-                # Caso residuale
-                on_helipad = final_x <= HELIPAD_X_MAX
-                upright = final_angle <= SAFE_LANDING_ANGLE
-                if on_helipad and upright and legs_contact and original_reward > 0.0:
-                    is_success = True
-                    is_crashed = False
-                else:
-                    is_crashed = True
-                    is_success = False
-                    if not on_helipad:
-                        is_off_target = True
+        # 3. Stato terminale / timeout (eseguito 1 sola volta per episodio)
+        is_success, is_crashed, is_timeout, is_off_target = classify_lunar_lander_outcome(
+            obs=obs,
+            original_reward=float(original_reward),
+            terminated=bool(terminated),
+            truncated=bool(truncated),
+            unwrapped=self._unwrapped,
+        )
 
         try:
-            custom_rew = float(
-                self._call_reward(obs, act_int, is_success, is_crashed, is_timeout)
-            )
+            custom_rew = float(self._call_reward(obs, act_int, is_success, is_crashed, is_timeout))
+            if not math.isfinite(custom_rew):
+                raise ValueError(f"Valore non finito restituito: {custom_rew} (NaN o Inf).")
         except Exception as e:
             raise RuntimeError(
                 f"[Play2Learn Error] Errore nell'esecuzione della tua 'custom_reward': {e}\n"
-                f"Controlla i calcoli matematici (es. divisioni per zero o indici errati)."
+                f"Controlla i calcoli matematici (es. divisioni per zero, log di negativi o indici errati)."
             ) from e
 
         # Popolamento `info` concentrato a fine episodio
@@ -889,17 +934,31 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         info["is_crashed"] = is_crashed
         info["is_timeout"] = is_timeout
         info["is_off_target"] = is_off_target
+
+        try:
+            fx = abs(float(obs.item(0)))
+            fy = abs(float(obs.item(1)))
+            fvx = abs(float(obs.item(2)))
+            fvy = abs(float(obs.item(3)))
+            fa = abs(float(obs.item(4)))
+        except (AttributeError, ValueError):
+            fx = abs(float(obs[0]))
+            fy = abs(float(obs[1]))
+            fvx = abs(float(obs[2]))
+            fvy = abs(float(obs[3]))
+            fa = abs(float(obs[4]))
+
         info["telemetry"] = {
             "fuel_used": float(self.ep_fuel_used),
             "main_engine_steps": self.ep_main_engine_steps,
             "side_engine_steps": self.ep_side_engine_steps,
             "air_steps": self.ep_air_steps,
             "ground_steps": self.ep_ground_steps,
-            "final_abs_x": abs(obs.item(0)),
-            "final_abs_y": abs(obs.item(1)),
-            "final_abs_vx": abs(obs.item(2)),
-            "final_abs_vy": abs(obs.item(3)),
-            "final_abs_angle": abs(obs.item(4)),
+            "final_abs_x": fx,
+            "final_abs_y": fy,
+            "final_abs_vx": fvx,
+            "final_abs_vy": fvy,
+            "final_abs_angle": fa,
         }
 
         return obs, custom_rew, terminated, truncated, info
@@ -1103,11 +1162,13 @@ class RewardTrackerCallback(BaseCallback):
         self.crashes: int = 0
         self.timeouts: int = 0
 
-        # Finestra scorrevole O(1)
+        # Finestra scorrevole O(1) con somme cumulate per azzerare l'overhead di calcolo
         self._window_outcomes: deque[int] = deque(maxlen=self.window_size)
         self._window_fuels: deque[float] = deque(maxlen=self.window_size)
         self._window_rewards: deque[float] = deque(maxlen=self.window_size)
         self._window_successes: int = 0
+        self._window_fuel_sum: float = 0.0
+        self._window_reward_sum: float = 0.0
 
         # Snapshot in RAM del miglior modello
         self.best_moving_success_rate: float = -1.0
@@ -1192,18 +1253,22 @@ class RewardTrackerCallback(BaseCallback):
                 self.final_vy_list.append(0.0)
                 self.final_angle_list.append(0.0)
 
-            # Aggiornamento O(1) della media mobile
+            # Aggiornamento O(1) puro della finestra scorrevole e delle somme
             if len(self._window_outcomes) == self.window_size:
                 self._window_successes -= self._window_outcomes[0]
+                self._window_fuel_sum -= self._window_fuels[0]
+                self._window_reward_sum -= self._window_rewards[0]
             self._window_outcomes.append(succ_flag)
-            self._window_successes += succ_flag
             self._window_fuels.append(fuel)
             self._window_rewards.append(ep_r)
+            self._window_successes += succ_flag
+            self._window_fuel_sum += fuel
+            self._window_reward_sum += ep_r
 
             # Snapshot in RAM del miglior modello (zero disk I/O!)
             if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
                 curr_rate = (self._window_successes / self.window_size) * 100.0
-                curr_fuel = sum(self._window_fuels) / self.window_size
+                curr_fuel = self._window_fuel_sum / self.window_size
                 is_better = (
                     curr_rate >= 40.0
                     and (
@@ -1238,8 +1303,8 @@ class RewardTrackerCallback(BaseCallback):
                 })
                 self._next_milestone_idx += 1
 
-        # Aggiornamento UI throttled (solo per tempo trascorso, non per step)
-        if self.show_progress and self.total_timesteps > 0:
+        # Aggiornamento UI throttled (controllo temporale ogni 64 step per azzerare chiamate di sistema perf_counter)
+        if self.show_progress and self.total_timesteps > 0 and (self.n_calls & 63) == 0:
             now = time.perf_counter()
             if (now - self._last_ui_update) >= self.progress_interval_sec:
                 self._last_ui_update = now
@@ -1272,18 +1337,18 @@ class RewardTrackerCallback(BaseCallback):
     def current_moving_reward(self) -> float:
         if not self._window_rewards:
             return 0.0
-        return sum(self._window_rewards) / len(self._window_rewards)
+        return self._window_reward_sum / len(self._window_rewards)
 
     @property
     def current_moving_fuel(self) -> float:
         if not self._window_fuels:
             return 0.0
-        return sum(self._window_fuels) / len(self._window_fuels)
+        return self._window_fuel_sum / len(self._window_fuels)
 
     def flush_best_model_to_disk(
         self,
         keep_best_loaded_if_superior: bool = True,
-        superiority_margin: float = 5.0,
+        superiority_margin: float = 10.0,
     ) -> bool:
         """
         Scrive su disco una sola volta il miglior modello catturato in RAM.
@@ -1437,8 +1502,8 @@ Modulo di valutazione e registrazione video/GIF ad alte prestazioni.
 Procedura in 2 fasi:
 - Fase 1A: Fast Sweep deterministico (inferenza diretta PyTorch, metriche imparziali).
 - Fase 1B: Caccia stocastica opzionale ai soli candidati video mancanti (senza alterare i KPI).
-- Fase 2: Replay fedele su Box2D dei soli target selezionati, encoding MP4 ultrafast
-  e generazione GIF diretta dai frame in RAM (zero re-decoding da disco).
+- Fase 2: Replay mirato su Box2D con streaming video diretto su disco (consumo RAM ~1 MB),
+  pixel format compatibile yuv420p per browser e generazione GIF ottimizzata.
 """
 
 from __future__ import annotations
@@ -1457,7 +1522,10 @@ except ImportError:
     gym = Any  # type: ignore
     PPO = Any  # type: ignore
 
-from play2learn_lunarlander.environment import CustomRewardWrapper
+from play2learn_lunarlander.environment import (
+    CustomRewardWrapper,
+    classify_lunar_lander_outcome,
+)
 
 
 def _make_fast_predictor(model: PPO) -> Callable[[np.ndarray, bool], int]:
@@ -1530,6 +1598,80 @@ def _run_single_sweep_episode(
     return candidate, timeout_hit
 
 
+def _record_episode_streaming(
+    render_env: gym.Env,
+    seed: int,
+    actions: list[int],
+    output_path: Path,
+    fps: int = 50,
+    capture_gif_frames: bool = False,
+    gif_stride: int = 2,
+    gif_width: int = 400,
+) -> list[np.ndarray]:
+    """
+    Rigioca un episodio e scrive direttamente i frame su disco in streaming (RAM costante ~1 MB).
+    Supporta pixel format yuv420p per massima compatibilità con browser HTML5.
+    """
+    import imageio
+    from PIL import Image
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    gif_frames: list[np.ndarray] = []
+
+    def _open_writer():
+        try:
+            return imageio.get_writer(
+                str(output_path),
+                fps=fps,
+                macro_block_size=1,
+                ffmpeg_params=["-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p"],
+            )
+        except Exception:
+            try:
+                return imageio.get_writer(
+                    str(output_path),
+                    fps=fps,
+                    macro_block_size=1,
+                    ffmpeg_params=["-preset", "ultrafast", "-crf", "26"],
+                )
+            except Exception:
+                return imageio.get_writer(str(output_path), fps=fps, macro_block_size=1)
+
+    def _maybe_collect_gif(frame: np.ndarray, idx: int, force: bool = False) -> None:
+        if not capture_gif_frames or (not force and idx % gif_stride != 0):
+            return
+        h, w = frame.shape[:2]
+        target_h = max(1, int(gif_width * h / w))
+        small = Image.fromarray(frame).resize((gif_width, target_h), Image.Resampling.BILINEAR)
+        gif_frames.append(np.asarray(small))
+
+    render_env.reset(seed=seed)
+    with _open_writer() as writer:
+        frame_idx = 0
+        init_frame = render_env.render()
+        if init_frame is not None:
+            writer.append_data(init_frame)
+            _maybe_collect_gif(init_frame, frame_idx)
+            frame_idx += 1
+
+        last_frame = init_frame
+        for act in actions:
+            _, _, term, trunc, _ = render_env.step(act)
+            frame = render_env.render()
+            if frame is not None:
+                writer.append_data(frame)
+                _maybe_collect_gif(frame, frame_idx)
+                last_frame = frame
+                frame_idx += 1
+            if term or trunc:
+                break
+
+        if last_frame is not None and capture_gif_frames:
+            _maybe_collect_gif(last_frame, frame_idx, force=True)
+
+    return gif_frames
+
+
 def evaluate_and_record(
     model: PPO,
     env_id: str,
@@ -1582,75 +1724,84 @@ def evaluate_and_record(
     timeout_triggered = False
     ep = 0
 
-    # =========================================================================
-    # FASE 1A: SWEEP DETERMINISTICO IMPARZIALE
-    # =========================================================================
-    det_budget_sec = sweep_timeout_seconds * 0.75
-    while ep < max_eval_episodes and not timeout_triggered:
-        have_enough_videos = (
-            len(success_candidates) >= target_successes
-            and len(failure_candidates) >= target_failures
-        )
-        if ep >= min_eval_episodes and (
-            have_enough_videos or (time.perf_counter() - t_sweep_start >= det_budget_sec)
-        ):
-            break
+    # Budget di sicurezza esteso per garantire il completamento di min_eval_episodes
+    hard_timeout_sec = max(sweep_timeout_seconds * 2.5, 15.0)
 
-        cand, timeout_triggered = _run_single_sweep_episode(
-            env=sweep_env,
-            predict_fn=predict_fn,
-            ep_seed=seed + ep,
-            deterministic=True,
-            t_start=t_sweep_start,
-            timeout_sec=sweep_timeout_seconds,
-        )
+    try:
+        # =========================================================================
+        # FASE 1A: SWEEP DETERMINISTICO IMPARZIALE
+        # =========================================================================
+        det_budget_sec = sweep_timeout_seconds * 0.75
+        while ep < max_eval_episodes and not timeout_triggered:
+            have_enough_videos = (
+                len(success_candidates) >= target_successes
+                and len(failure_candidates) >= target_failures
+            )
+            elapsed = time.perf_counter() - t_sweep_start
 
-        eval_rewards.append(cand["reward"])
-        eval_lengths.append(cand["steps"])
-        eval_fuels.append(cand["fuel"])
+            # Interrompe solo se abbiamo raggiunto min_eval_episodes E (abbiamo i video O è scaduto il budget)
+            if ep >= min_eval_episodes and (have_enough_videos or elapsed >= det_budget_sec):
+                break
+            if elapsed >= hard_timeout_sec:
+                break
 
-        if cand["is_success"]:
-            eval_successes += 1
-            success_fuels.append(cand["fuel"])
-            success_candidates.append(cand)
-        else:
-            if cand["is_timeout"]:
-                eval_timeouts += 1
+            cand, timeout_triggered = _run_single_sweep_episode(
+                env=sweep_env,
+                predict_fn=predict_fn,
+                ep_seed=seed + ep,
+                deterministic=True,
+                t_start=t_sweep_start,
+                timeout_sec=hard_timeout_sec,
+            )
+
+            eval_rewards.append(cand["reward"])
+            eval_lengths.append(cand["steps"])
+            eval_fuels.append(cand["fuel"])
+
+            if cand["is_success"]:
+                eval_successes += 1
+                success_fuels.append(cand["fuel"])
+                success_candidates.append(cand)
             else:
-                eval_crashes += 1
-            failure_fuels.append(cand["fuel"])
-            failure_candidates.append(cand)
+                if cand["is_timeout"]:
+                    eval_timeouts += 1
+                else:
+                    eval_crashes += 1
+                failure_fuels.append(cand["fuel"])
+                failure_candidates.append(cand)
 
-        ep += 1
+            ep += 1
 
-    # =========================================================================
-    # FASE 1B: CACCIA RAPIDA STOCASTICA AI SOLI VIDEO MANCANTI (NON ALTERA I KPI)
-    # =========================================================================
-    stoch_ep = 0
-    max_stoch_hunt = 25
-    while (
-        not timeout_triggered
-        and stoch_ep < max_stoch_hunt
-        and (
-            len(success_candidates) < target_successes
-            or len(failure_candidates) < target_failures
-        )
-    ):
-        cand, timeout_triggered = _run_single_sweep_episode(
-            env=sweep_env,
-            predict_fn=predict_fn,
-            ep_seed=seed + 5000 + stoch_ep,
-            deterministic=False,
-            t_start=t_sweep_start,
-            timeout_sec=sweep_timeout_seconds,
-        )
-        if cand["is_success"] and len(success_candidates) < target_successes:
-            success_candidates.append(cand)
-        elif (not cand["is_success"]) and len(failure_candidates) < target_failures:
-            failure_candidates.append(cand)
-        stoch_ep += 1
+        # =========================================================================
+        # FASE 1B: CACCIA RAPIDA STOCASTICA AI SOLI VIDEO MANCANTI (NON ALTERA I KPI)
+        # =========================================================================
+        stoch_ep = 0
+        max_stoch_hunt = 25
+        while (
+            not timeout_triggered
+            and stoch_ep < max_stoch_hunt
+            and (time.perf_counter() - t_sweep_start < hard_timeout_sec)
+            and (
+                len(success_candidates) < target_successes
+                or len(failure_candidates) < target_failures
+            )
+        ):
+            cand, timeout_triggered = _run_single_sweep_episode(
+                env=sweep_env,
+                predict_fn=predict_fn,
+                ep_seed=seed + 5000 + stoch_ep,
+                deterministic=False,
+                t_start=t_sweep_start,
+                timeout_sec=hard_timeout_sec,
+            )
+            if cand["is_success"] and len(success_candidates) < target_successes:
+                success_candidates.append(cand)
+            elif (not cand["is_success"]) and len(failure_candidates) < target_failures:
+                failure_candidates.append(cand)
+            stoch_ep += 1
+    finally:
+        sweep_env.close()
 
-    sweep_env.close()
     sweep_duration = time.perf_counter() - t_sweep_start
     total_evaluated = max(1, len(eval_rewards))
     success_rate = (eval_successes / total_evaluated) * 100.0
@@ -1662,15 +1813,13 @@ def evaluate_and_record(
     )
 
     # =========================================================================
-    # FASE 2: REPLAY VIDEO MIRATO (SENZA WRAPPER, GIF DA FRAME IN RAM)
+    # FASE 2: REPLAY VIDEO MIRATO (STREAMING MP4 A BASSO CONSUMO RAM)
     # =========================================================================
-    # Priorità ai candidati deterministici, ordinati per efficienza carburante
     selected_successes = sorted(
         success_candidates,
         key=lambda c: (not c["deterministic"], c["fuel"]),
     )[:target_successes]
 
-    # Bilancia crash e timeout tra i fallimenti se entrambi presenti
     crashes_pool = [c for c in failure_candidates if c["is_crashed"]]
     timeouts_pool = [c for c in failure_candidates if c["is_timeout"]]
     selected_failures: list[dict[str, Any]] = []
@@ -1687,7 +1836,7 @@ def evaluate_and_record(
     failure_videos: list[Path] = []
     best_success_fuel: float = float("inf")
     best_success_video: Path | None = None
-    best_success_frames: list[np.ndarray] | None = None
+    best_gif_frames: list[np.ndarray] = []
 
     to_render = (
         [("successo", c) for c in selected_successes]
@@ -1696,7 +1845,7 @@ def evaluate_and_record(
 
     if to_render:
         print(
-            f"[play2learn] Fase 2: Rendering video ({len(selected_successes)} successi, "
+            f"[play2learn] Fase 2: Rendering video streaming ({len(selected_successes)} successi, "
             f"{len(selected_failures)} fallimenti)..."
         )
         try:
@@ -1709,54 +1858,60 @@ def evaluate_and_record(
         except TypeError:
             render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
 
-        for kind, cand in to_render:
-            render_env.reset(seed=cand["seed"])
-            frames: list[np.ndarray] = []
-            init_frame = render_env.render()
-            if init_frame is not None:
-                frames.append(init_frame)
-
-            for act in cand["actions"]:
-                _, _, term, trunc, _ = render_env.step(act)
-                frame = render_env.render()
-                if frame is not None:
-                    frames.append(frame)
-                if term or trunc:
-                    break
-
-            pfx = f"{filename_prefix}_" if filename_prefix else ""
-            if kind == "successo":
-                idx = len(success_videos) + 1
-                v_path = video_dir / f"{pfx}successo_{idx}_step_{cand['steps']}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                success_videos.append(v_path)
-                if cand["fuel"] < best_success_fuel:
-                    best_success_fuel = cand["fuel"]
-                    best_success_video = v_path
-                    best_success_frames = frames
-            else:
-                idx = len(failure_videos) + 1
-                if cand.get("is_off_target"):
-                    causa = "fuori_bersaglio"
-                elif cand["is_crashed"]:
-                    causa = "crash"
-                elif cand["is_timeout"]:
-                    causa = "timeout"
+        try:
+            for kind, cand in to_render:
+                pfx = f"{filename_prefix}_" if filename_prefix else ""
+                if kind == "successo":
+                    idx = len(success_videos) + 1
+                    v_path = video_dir / f"{pfx}successo_{idx}_step_{cand['steps']}.mp4"
+                    is_best = cand["fuel"] < best_success_fuel
+                    gif_frames = _record_episode_streaming(
+                        render_env=render_env,
+                        seed=cand["seed"],
+                        actions=cand["actions"],
+                        output_path=v_path,
+                        fps=50,
+                        capture_gif_frames=is_best and create_gif,
+                    )
+                    success_videos.append(v_path)
+                    if is_best:
+                        best_success_fuel = cand["fuel"]
+                        best_success_video = v_path
+                        if gif_frames:
+                            best_gif_frames = gif_frames
                 else:
-                    causa = "fallimento"
-                v_path = video_dir / f"{pfx}fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                failure_videos.append(v_path)
+                    idx = len(failure_videos) + 1
+                    if cand.get("is_off_target"):
+                        causa = "fuori_bersaglio"
+                    elif cand["is_crashed"]:
+                        causa = "crash"
+                    elif cand["is_timeout"]:
+                        causa = "timeout"
+                    else:
+                        causa = "fallimento"
+                    v_path = video_dir / f"{pfx}fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
+                    _record_episode_streaming(
+                        render_env=render_env,
+                        seed=cand["seed"],
+                        actions=cand["actions"],
+                        output_path=v_path,
+                        fps=50,
+                        capture_gif_frames=False,
+                    )
+                    failure_videos.append(v_path)
+        finally:
+            render_env.close()
 
-        render_env.close()
-
-    # Genera GIF direttamente dai frame già in RAM (evita decode H.264 da disco)
+    # Genera GIF direttamente dai frame scalati catturati al volo in streaming
     gif_path: Path | None = None
-    if create_gif and best_success_video and best_success_frames:
-        gif_path = _save_frames_as_gif(
-            best_success_frames,
-            best_success_video.with_suffix(".gif"),
-        )
+    if create_gif and best_success_video and best_gif_frames:
+        try:
+            import imageio
+            g_path = best_success_video.with_suffix(".gif")
+            imageio.mimsave(str(g_path), best_gif_frames, fps=25, loop=0)
+            gif_path = g_path
+        except Exception as e:
+            print(f"[play2learn] Avviso creazione GIF: {e}")
 
     return {
         "mean_reward": float(np.mean(eval_rewards)) if eval_rewards else 0.0,
@@ -1775,50 +1930,6 @@ def evaluate_and_record(
         "mean_fuel_success": float(np.mean(success_fuels)) if success_fuels else 0.0,
         "mean_fuel_failure": float(np.mean(failure_fuels)) if failure_fuels else 0.0,
     }
-
-
-def _save_frames_as_mp4(frames: list[np.ndarray], output_path: Path, fps: int = 50) -> None:
-    """Salva i frame in MP4 usando preset ultrafast (2-3x più veloce e file compatti)."""
-    try:
-        import imageio
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        imageio.mimsave(
-            str(output_path),
-            frames,
-            fps=fps,
-            macro_block_size=1,
-            ffmpeg_params=["-preset", "ultrafast", "-crf", "26"],
-        )
-    except Exception:
-        # Fallback compatibile se il backend ffmpeg non accetta ffmpeg_params
-        try:
-            import imageio
-            imageio.mimsave(str(output_path), frames, fps=fps, macro_block_size=1)
-        except Exception as e:
-            print(f"[play2learn] Errore nel salvataggio video {output_path.name}: {e}")
-
-
-def _save_frames_as_gif(
-    frames: list[np.ndarray],
-    gif_output: Path,
-    source_fps: int = 50,
-    stride: int = 2,
-) -> Path | None:
-    """Crea la GIF animata direttamente dai frame in RAM campionati 1 ogni `stride`."""
-    try:
-        import imageio
-        sampled = frames[::stride]
-        if sampled:
-            imageio.mimsave(
-                str(gif_output),
-                sampled,
-                fps=max(10, source_fps // stride),
-                loop=0,
-            )
-            return gif_output
-    except Exception:
-        pass
-    return None
 
 
 def crea_gif_evoluzione_apprendimento(
@@ -1857,7 +1968,6 @@ def crea_gif_evoluzione_apprendimento(
     if policy is None:
         return None
 
-    # Salva stato originale dei pesi del modello per ripristinarlo intatto
     orig_state = {
         k: v.detach().cpu().clone()
         for k, v in policy.state_dict().items()
@@ -1873,91 +1983,100 @@ def crea_gif_evoluzione_apprendimento(
     except TypeError:
         render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
 
-    all_annotated_frames: list[np.ndarray] = []
-    total_stages = len(milestones)
-
     fasi_titoli = [
-        "Fase 1: Primi Passi (Esplorazione Casuale)",
-        "Fase 2: Accensione Motori (Tentativi Stabilizzazione)",
-        "Fase 3: Discesa Orientata (Controllo Quota)",
+        "Fase 1: Primi Passi (Esplorazione)",
+        "Fase 2: Accensione Motori",
+        "Fase 3: Discesa Orientata",
         "Fase Finale: Atterraggio Controllato",
     ]
+    total_stages = len(milestones)
+    frames_written = 0
 
     try:
-        for idx, m in enumerate(milestones):
-            policy.load_state_dict(m["state_dict"])
-            predict_fn = _make_fast_predictor(model)
+        with imageio.get_writer(str(output_path), mode="I", fps=fps, loop=0) as gif_writer:
+            for idx, m in enumerate(milestones):
+                policy.load_state_dict(m["state_dict"])
+                predict_fn = _make_fast_predictor(model)
 
-            # Usa sempre lo stesso seed per visualizzare la progressione sullo stesso identico terreno
-            obs, _ = render_env.reset(seed=seed)
-            ep_frames: list[np.ndarray] = []
-            f_init = render_env.render()
-            if f_init is not None:
-                ep_frames.append(f_init)
+                obs, _ = render_env.reset(seed=seed)
+                sampled_raw: list[np.ndarray] = []
+                f_init = render_env.render()
+                if f_init is not None:
+                    sampled_raw.append(f_init)
 
-            done = False
-            step_count = 0
-            final_esito = "In volo..."
+                done = False
+                step_count = 0
+                final_esito = "In volo..."
+                last_frame = f_init
 
-            while not done and step_count < max_steps_per_episode:
-                action = predict_fn(obs, deterministic=True)
-                obs, rew, term, trunc, info = render_env.step(action)
-                step_count += 1
-                done = term or trunc
+                while not done and step_count < max_steps_per_episode:
+                    action = predict_fn(obs, deterministic=True)
+                    obs, rew, term, trunc, _ = render_env.step(action)
+                    step_count += 1
+                    done = bool(term or trunc)
 
-                f = render_env.render()
-                if f is not None:
-                    ep_frames.append(f)
+                    if step_count % stride == 0 or done:
+                        f = render_env.render()
+                        if f is not None:
+                            sampled_raw.append(f)
+                            last_frame = f
 
-                if done:
-                    if info.get("is_success", False):
-                        final_esito = "🎯 Allunaggio Riuscito!"
-                    elif info.get("is_crashed", False):
-                        final_esito = "💥 Schianto al suolo"
-                    elif info.get("is_timeout", False):
-                        final_esito = "⏳ Tempo scaduto (Hovering)"
-                    else:
-                        final_esito = "Fine volo"
+                    if done:
+                        is_succ, is_crash, is_tout, is_off = classify_lunar_lander_outcome(
+                            obs=obs,
+                            original_reward=float(rew),
+                            terminated=bool(term),
+                            truncated=bool(trunc),
+                            unwrapped=render_env.unwrapped,
+                        )
+                        if is_succ:
+                            final_esito = "[OK] Allunaggio Riuscito"
+                        elif is_off:
+                            final_esito = "[FUORI] Fuori Piazzola"
+                        elif is_crash:
+                            final_esito = "[CRASH] Schianto al Suolo"
+                        elif is_tout:
+                            final_esito = "[TIMEOUT] Tempo Scaduto"
+                        else:
+                            final_esito = "Fine Volo"
 
-            stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx+1}/{total_stages}"
-            step_val = m.get("step", step_count)
-            pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
-            succ_val = m.get("success_rate", 0.0)
+                if not done and step_count >= max_steps_per_episode:
+                    final_esito = "[VOLO] Hovering Prolungato"
 
-            sampled_ep = ep_frames[::stride]
-            if not sampled_ep:
-                continue
+                if not sampled_raw:
+                    continue
 
-            # Congela il frame finale per 8 frame per rendere leggibile l'esito
-            if done and sampled_ep:
-                sampled_ep = sampled_ep + [sampled_ep[-1]] * 8
+                stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx + 1}/{total_stages}"
+                step_val = m.get("step", step_count)
+                pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
+                succ_val = m.get("success_rate", 0.0)
 
-            for f in sampled_ep:
-                h, w = f.shape[:2]
-                target_h = int(target_width * h / w)
-                img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
-                draw = ImageDraw.Draw(img)
+                last_annotated = None
+                for f in sampled_raw:
+                    h, w = f.shape[:2]
+                    target_h = max(1, int(target_width * h / w))
+                    img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
+                    draw = ImageDraw.Draw(img)
+                    draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
+                    draw.text((8, 4), f"{stage_title} - Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
+                    draw.text((8, 18), f"Esito: {final_esito} | Succ. mobile: {succ_val:.0f}%", fill=(147, 197, 253))
+                    last_annotated = np.asarray(img)
+                    gif_writer.append_data(last_annotated)
+                    frames_written += 1
 
-                draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
-                draw.text((10, 4), f"{stage_title} — Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
-                draw.text((10, 18), f"Esito: {final_esito} | Successo mobile: {succ_val:.0f}%", fill=(147, 197, 253))
-
-                all_annotated_frames.append(np.array(img))
-
-    finally:
-        render_env.close()
-        # Ripristina invariati i pesi del modello originale
-        policy.load_state_dict(orig_state)
-
-    if not all_annotated_frames:
-        return None
-
-    try:
-        imageio.mimsave(str(output_path), all_annotated_frames, fps=fps, loop=0)
-        return output_path
+                # Congela l'ultimo frame annotato per 8 frame per una lettura chiara
+                if last_annotated is not None:
+                    for _ in range(8):
+                        gif_writer.append_data(last_annotated)
+                        frames_written += 1
     except Exception as e:
         print(f"[play2learn] Errore nel salvataggio della GIF evoluzione: {e}")
         return None
+    finally:
+        render_env.close()
+        policy.load_state_dict(orig_state)
+
+    return output_path if frames_written > 0 else None
 
 
 
@@ -2006,9 +2125,21 @@ def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
     mean_len = float(np.mean(tracker.episode_lengths[-tail:]))
     mean_fuel = float(np.mean(tracker.fuel_used_list[-tail:]))
     mean_ground = float(np.mean(tracker.ground_steps_list[-tail:]))
-    mean_x = float(np.mean(tracker.final_x_list[-tail:]))
-    mean_vy = float(np.mean(tracker.final_vy_list[-tail:]))
-    mean_angle = float(np.mean(tracker.final_angle_list[-tail:])) if tracker.final_angle_list else 0.0
+
+    # Calcola le medie fisiche relative agli schianti strettamente sugli episodi falliti (per evitare masking con i successi)
+    crash_indices = [i for i, o in enumerate(recent_outcomes) if o == "crash"]
+    recent_x = tracker.final_x_list[-tail:]
+    recent_vy = tracker.final_vy_list[-tail:]
+    recent_ang = tracker.final_angle_list[-tail:] if tracker.final_angle_list else []
+
+    if crash_indices:
+        mean_x = float(np.mean([recent_x[i] for i in crash_indices]))
+        mean_vy = float(np.mean([recent_vy[i] for i in crash_indices]))
+        mean_angle = float(np.mean([recent_ang[i] for i in crash_indices])) if recent_ang else 0.0
+    else:
+        mean_x = float(np.mean(recent_x))
+        mean_vy = float(np.mean(recent_vy))
+        mean_angle = float(np.mean(recent_ang)) if recent_ang else 0.0
 
     metrics = {
         "tail": tail,
@@ -2188,6 +2319,7 @@ def mostra_mappa_ambiente() -> None:
     ax.legend(loc="upper right", fontsize=8.5, framealpha=0.9)
     plt.tight_layout()
     plt.show()
+    plt.close(fig)
 
 
 def plot_training_results(
@@ -2466,23 +2598,58 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
 ================================================================================
 
 """
-Modulo per la gestione della persistenza, salvataggio dei checkpoint dei modelli,
+Modulo per la gestione della persistenza, salvataggio atomico dei checkpoint dei modelli,
 delle metriche, del codice della funzione di reward e dell'alberatura 'runs/'.
 """
 
 from __future__ import annotations
 
+import os
+import re
 import json
 import inspect
 import datetime
+import tempfile
 from pathlib import Path
 from typing import Callable, Any
 
 
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Scrittura atomica a prova di crash/interruzione tramite file temporaneo e rename os.replace()."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(path))
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Serializza dati in JSON e li scrive su disco in modo atomico."""
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False, default=str))
+
+
 def get_default_runs_dir() -> Path:
-    """Restituisce il percorso della cartella principale 'runs/'."""
-    # Cerchiamo la cartella 'runs/' a livello di root del laboratorio
-    runs_dir = Path("runs").resolve()
+    """
+    Restituisce il percorso della cartella principale 'runs/', garantendo coerenza
+    anche quando eseguito da dentro 'play2learn_lunarlander/' (es. notebook locale).
+    """
+    env_override = os.environ.get("PLAY2LEARN_RUNS_DIR")
+    if env_override:
+        runs_dir = Path(env_override).resolve()
+    else:
+        cwd = Path.cwd().resolve()
+        if cwd.name == "play2learn_lunarlander" and (cwd.parent / "pyproject.toml").exists():
+            runs_dir = cwd.parent / "runs"
+        else:
+            runs_dir = cwd / "runs"
+
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / "favorites").mkdir(parents=True, exist_ok=True)
     (runs_dir / "successi").mkdir(parents=True, exist_ok=True)
@@ -2495,8 +2662,18 @@ def get_default_success_dir() -> Path:
     succ_dir.mkdir(parents=True, exist_ok=True)
     idx_file = succ_dir / "index.json"
     if not idx_file.exists():
-        idx_file.write_text("[]\n", encoding="utf-8")
+        atomic_write_text(idx_file, "[]\n")
     return succ_dir
+
+
+def _unique_dir(base: Path, name: str) -> Path:
+    """Evita collisioni di cartelle timestampate generate nello stesso secondo."""
+    candidate = base / name
+    suffix = 1
+    while candidate.exists():
+        candidate = base / f"{name}_{suffix}"
+        suffix += 1
+    return candidate
 
 
 def create_run_directory(
@@ -2518,7 +2695,7 @@ def create_run_directory(
     else:
         dir_name = f"run_{timestamp}_{mission}"
 
-    run_dir = base / dir_name
+    run_dir = _unique_dir(base, dir_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "videos").mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -2548,17 +2725,17 @@ def save_run_metadata(
 ) -> Path:
     """
     Salva il file JSON con tutti i metadati e il file Python con il codice sorgente esatto
-    della custom_reward utilizzata per questa run.
+    della custom_reward utilizzata per questa run in modalità atomica.
     """
     source_code = extract_reward_function_code(reward_fn)
 
     # 1. Salva il codice Python autonomo per consultazione rapida
     code_path = run_dir / "reward_function.py"
     try:
-        code_path.write_text(
+        atomic_write_text(
+            code_path,
             f'"""\nFunzione di Reward registrata per la run: {run_dir.name}\nData: {datetime.datetime.now().isoformat()}\n"""\n\n'
             f"{source_code}\n",
-            encoding="utf-8"
         )
     except Exception:
         pass
@@ -2602,7 +2779,7 @@ def save_run_metadata(
     }
 
     meta_file = run_dir / "run_metadata.json"
-    meta_file.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(meta_file, metadata)
     return meta_file
 
 
@@ -2646,7 +2823,7 @@ def archivia_esperimento_successo(
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in nome_run)
     dest_name = f"successo_{clean_name}_{timestamp}"
-    dest_dir = succ_base / dest_name
+    dest_dir = _unique_dir(succ_base, dest_name)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     # Copia i file generati dalla run
@@ -2663,7 +2840,7 @@ def archivia_esperimento_successo(
         output_dir=dest_dir,
     )
 
-    # Aggiorna l'indice dei successi
+    # Aggiorna l'indice dei successi in modo atomico
     idx_file = succ_base / "index.json"
     index_data = []
     if idx_file.exists():
@@ -2673,7 +2850,7 @@ def archivia_esperimento_successo(
             index_data = []
 
     entry = {
-        "id": dest_name,
+        "id": dest_dir.name,
         "name": nome_run,
         "success_rate": round(succ_rate, 1),
         "mean_fuel": round(float(eval_stats.get("mean_fuel", 0.0)), 1),
@@ -2684,7 +2861,7 @@ def archivia_esperimento_successo(
         "video_count": len(list((dest_dir / "videos").glob("*.mp4"))) if (dest_dir / "videos").exists() else 0,
     }
     index_data.insert(0, entry)
-    idx_file.write_text(json.dumps(index_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(idx_file, index_data)
 
     return {
         "dest_dir": dest_dir,
@@ -2715,88 +2892,84 @@ def mostra_successi() -> None:
         from IPython.display import HTML, display
         rows = []
         for e in entries:
+            pdf_link = f"<a href='{e.get('pdf_report', '')}' target='_blank' style='color:#1565c0; font-weight:bold;'>📄 Scarica PDF</a>" if e.get("pdf_report") else "-"
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold; color:#2e7d32;'>{e.get('success_rate', 0):.1f}%</td>"
-                f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>🏆 {e.get('name')}</td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:#e8f5e9; color:#2e7d32; padding:3px 8px; border-radius:12px; font-weight:bold;'>{e.get('success_rate', 0)}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_fuel', 0)} un.</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_length', 0)} step</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('video_count', 0)} video</td>"
                 f"<td style='padding:8px 12px;'>{e.get('archived_at', '')}</td>"
-                f"<td style='padding:8px 12px;'><code>runs/successi/{e.get('id')}</code></td>"
+                f"<td style='padding:8px 12px;'>{pdf_link}</td>"
                 f"</tr>"
             )
+
         html = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
-            <h3 style="color:#1b5e20; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (&ge; 80%)</h3>
-            <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
+            <h3 style="color:#2e7d32; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (Successo &ge; 80%)</h3>
+            <p style="color:#555; margin-bottom:12px; font-size:13px;">Tutti i modelli che hanno superato l'80% di allunaggio con le relative Schede Tecniche PDF vettoriali.</p>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #c8e6c9; text-align:left; font-size:13.5px;">
                 <thead style="background:#e8f5e9; color:#1b5e20;">
                     <tr>
-                        <th style="padding:10px 12px;">Nome Esperimento</th>
-                        <th style="padding:10px 12px;">Successo</th>
-                        <th style="padding:10px 12px;">Carburante Medio</th>
+                        <th style="padding:10px 12px;">Esperimento</th>
+                        <th style="padding:10px 12px; text-align:center;">Allunaggio</th>
+                        <th style="padding:10px 12px; text-align:center;">Carburante Medio</th>
+                        <th style="padding:10px 12px; text-align:center;">Durata Media</th>
+                        <th style="padding:10px 12px; text-align:center;">Video</th>
                         <th style="padding:10px 12px;">Data</th>
-                        <th style="padding:10px 12px;">Percorso</th>
+                        <th style="padding:10px 12px;">Report</th>
                     </tr>
                 </thead>
-                <tbody>{''.join(rows)}</tbody>
+                <tbody>
+                    {"".join(rows)}
+                </tbody>
             </table>
         </div>
         """
         display(HTML(html))
     except Exception:
-        print("\n" + "=" * 75)
-        print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (>= 80%)")
-        print("=" * 75)
+        print("\n" + "=" * 80)
+        print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (SUCCESSO >= 80%)")
+        print("=" * 80)
         print(f"{'NOME':<25} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DATA':<15}")
-        print("-" * 75)
+        print("-" * 80)
         for e in entries:
-            print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):.1f}%    | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
-        print("=" * 75 + "\n")
+            print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):<9.1f}% | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
+        print("=" * 80 + "\n")
 
 
-def find_run_by_timestamp(
-    timestamp_or_id: str | Path | None = None,
-    runs_dir: Path | str | None = None,
-) -> Path | None:
+def find_run_by_timestamp(timestamp_query: str, runs_dir: Path | str | None = None) -> Path | None:
     """
-    Individua la cartella di una run a partire dal suo timestamp (es. '20261115_210530'),
-    da una frazione di esso o dal nome della cartella (anche di più esperimenti fa).
-    Se il parametro è vuoto o 'latest', restituisce la run più recente.
+    Individua in modo robusto la cartella di una run passata a partire da un timestamp o parola chiave.
+    Supporta:
+    - 'latest' o 'ultima': la run cronologicamente più recente in assoluto
+    - Timestamp completo (es. '20261114_154500' o '2026-11-14T15:45:00')
+    - Porzione di data/ora (es. '154500' o '20261114')
+    - Nome o ID parziale della run (es. 'luna_standard', 'eco_lander')
+    Cerca in 'runs/', 'runs/successi/' e 'runs/favorites/'.
     """
     base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
     if not base.exists():
         return None
 
-    # Se è già un Path valido su disco
-    if timestamp_or_id is not None:
-        p = Path(timestamp_or_id)
-        if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
-            return p.resolve()
-        if (base / p).exists() and (base / p).is_dir() and ((base / p) / "run_metadata.json").exists():
-            return (base / p).resolve()
-        if (base / "successi" / p).exists() and ((base / "successi" / p) / "run_metadata.json").exists():
-            return (base / "successi" / p).resolve()
-
-    query = str(timestamp_or_id or "").strip()
-    is_latest = query.lower() in ("", "latest", "ultima", "ultimo", "now")
-    is_previous = query.lower() in ("previous", "penultima", "penultimo", "second_latest", "seconda_ultima", "prev")
-
-    # Raccoglie tutte le directory candidate da runs/, runs/successi/ e runs/favorites/
+    query = timestamp_query.strip()
     all_dirs: list[Path] = []
 
-    # 1. runs standard dirette
+    # 1. Cartelle dirette in runs/
     for sub in base.iterdir():
         if sub.is_dir() and sub.name not in ("favorites", "successi"):
             if (sub / "run_metadata.json").exists():
                 all_dirs.append(sub)
 
-    # 2. runs in successi/
+    # 2. Cartelle in runs/successi/
     succ_dir = base / "successi"
     if succ_dir.exists():
         for sub in succ_dir.iterdir():
             if sub.is_dir() and (sub / "run_metadata.json").exists():
                 all_dirs.append(sub)
 
-    # 3. runs in favorites/
+    # 3. Cartelle in runs/favorites/
     fav_dir = base / "favorites"
     if fav_dir.exists():
         for sub in fav_dir.iterdir():
@@ -2806,15 +2979,13 @@ def find_run_by_timestamp(
     if not all_dirs:
         return None
 
-    # Ordina per data di modifica più recente
-    all_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    # Ordina per data di modifica decrescente
+    all_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
-    if is_latest:
+    # Caso speciale: latest / ultima
+    if query.lower() in ("latest", "ultima", "ultimo", "last", "recents", "recente"):
         return all_dirs[0]
-    if is_previous:
-        return all_dirs[1] if len(all_dirs) > 1 else all_dirs[0]
 
-    # Pulizia query: rimozione caratteri non alfanumerici per confronto flessibile
     clean_query = query.lower().replace("-", "").replace(":", "").replace(" ", "_")
 
     # Ricerca esatta o parziale
@@ -2823,7 +2994,6 @@ def find_run_by_timestamp(
         if clean_query in d_name or query.lower() in d_name:
             return d
 
-        # Controlla nei metadati se il timestamp o run_id corrispondono
         meta_file = d / "run_metadata.json"
         if meta_file.exists():
             try:
@@ -2843,7 +3013,6 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
     Restituisce l'elenco cronologico di tutte le run salvate (standard, successi e preferiti),
     estraendo per ciascuna il timestamp esatto, il nome, l'esito percentuale e il consumo.
     """
-    import re
     base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
     if not base.exists():
         return []
@@ -2864,7 +3033,13 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
             ts_str = ts_match.group(1)
         else:
             raw_ts = meta.get("timestamp", "")
-            ts_str = raw_ts.replace("-", "")[:8] + "_" + raw_ts.replace(":", "")[9:15] if len(raw_ts) >= 19 else d.name
+            if raw_ts:
+                try:
+                    ts_str = datetime.datetime.fromisoformat(raw_ts).strftime("%Y%m%d_%H%M%S")
+                except ValueError:
+                    ts_str = d.name
+            else:
+                ts_str = d.name
 
         metrics = meta.get("eval_metrics", {})
         mission = meta.get("mission", {})
@@ -2996,7 +3171,11 @@ import datetime
 from pathlib import Path
 from typing import Any
 
-from play2learn_lunarlander.storage import get_default_runs_dir
+from play2learn_lunarlander.storage import (
+    get_default_runs_dir,
+    atomic_write_json,
+    _unique_dir,
+)
 
 
 def _get_favorites_dir() -> Path:
@@ -3009,7 +3188,7 @@ def _get_index_file() -> Path:
     fav_dir = _get_favorites_dir()
     index_file = fav_dir / "index.json"
     if not index_file.exists():
-        index_file.write_text(json.dumps([], indent=2), encoding="utf-8")
+        atomic_write_json(index_file, [])
     return index_file
 
 
@@ -3023,7 +3202,7 @@ def _load_favorites_index() -> list[dict[str, Any]]:
 
 def _save_favorites_index(data: list[dict[str, Any]]) -> None:
     index_file = _get_index_file()
-    index_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(index_file, data)
 
 
 def salva_nei_preferiti(
@@ -3066,7 +3245,14 @@ def salva_nei_preferiti(
     # 2. Lettura metadati esistenti
     meta_path = source_dir / "run_metadata.json"
     if meta_path.exists():
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = {
+                "run_id": source_dir.name,
+                "mission": {"title": "Missione sconosciuta", "key": "luna_standard"},
+                "eval_metrics": {},
+            }
     else:
         metadata = {
             "run_id": source_dir.name,
@@ -3074,12 +3260,12 @@ def salva_nei_preferiti(
             "eval_metrics": {},
         }
 
-    # 3. Creazione destinazione nel folder favorites
+    # 3. Creazione destinazione nel folder favorites (anti-collisione)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_title = nome_personalizzato or metadata.get("mission", {}).get("key", "modello")
     clean_title = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in clean_title)
     dest_name = f"fav_{clean_title}_{timestamp}"
-    dest_dir = fav_dir / dest_name
+    dest_dir = _unique_dir(fav_dir, dest_name)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     # 4. Copia dei file essenziali (modello, grafici, codice, video/gif)
@@ -3091,23 +3277,20 @@ def salva_nei_preferiti(
 
     # 5. Aggiornamento metadati preferito
     metadata["favorite_info"] = {
-        "display_name": nome_personalizzato or dest_name,
+        "display_name": nome_personalizzato or dest_dir.name,
         "saved_at": datetime.datetime.now().isoformat(),
         "tag": tag,
         "notes": note,
         "favorite_dir": str(dest_dir),
     }
-    (dest_dir / "run_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
+    atomic_write_json(dest_dir / "run_metadata.json", metadata)
 
     # 6. Aggiornamento indice globale preferiti
     index_data = _load_favorites_index()
     entry = {
-        "id": dest_name,
+        "id": dest_dir.name,
         "type": "run",
-        "name": nome_personalizzato or dest_name,
+        "name": nome_personalizzato or dest_dir.name,
         "tag": tag,
         "notes": note,
         "saved_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -3171,7 +3354,7 @@ def salva_video_preferito(
     dest_video_path = video_store / dest_video_name
     shutil.copy2(v_path, dest_video_path)
 
-    # Aggiorna l'indice globale dei preferiti
+    # Aggiorna l'indice globale dei preferiti in modo atomico
     index_data = _load_favorites_index()
     entry = {
         "id": dest_video_name,
@@ -3263,7 +3446,6 @@ def mostra_preferiti() -> None:
         """
         display(HTML(html))
     except Exception:
-        # Fallback a testo console formattato
         print("\n" + "=" * 80)
         print("  ⭐ I TUOI PREFERITI (MODELLI E VIDEO SALVATI DALL'UTENTE)")
         print("=" * 80)
@@ -3281,7 +3463,7 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
     """
     Ricarica il modello PPO e i relativi metadati da un elemento salvato nei Preferiti.
     Può essere specificato l'indice numerico (0 = il più recente) o il nome.
-    Ideale per una dimostrazione dal vivo durante il colloquio orale!
+    Supporta percorsi portabili tra Windows e Linux/Colab.
     """
     entries = _load_favorites_index()
     if not entries:
@@ -3308,7 +3490,11 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
             f"File video: {selected_entry.get('video_path')}"
         )
 
-    dest_dir = Path(selected_entry["dir_path"])
+    # Risoluzione portabile del percorso cartella preferito
+    dest_dir = Path(selected_entry.get("dir_path", ""))
+    if not dest_dir.exists() and selected_entry.get("id"):
+        dest_dir = _get_favorites_dir() / str(selected_entry["id"])
+
     # Cerca il file modello
     model_path = dest_dir / "best_model.zip"
     if not model_path.exists():
@@ -3331,8 +3517,6 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
     model = PPO.load(str(model_path))
     meta_path = dest_dir / "run_metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else selected_entry
-
-    print(f"✅ Modello '{selected_entry['name']}' caricato con successo da: {dest_dir.name}")
     return model, meta
 
 
@@ -3354,16 +3538,56 @@ import json
 import shutil
 import base64
 import datetime
+import html
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 from play2learn_lunarlander.visualizer import plot_comparison
-from play2learn_lunarlander.storage import get_default_runs_dir
+from play2learn_lunarlander.storage import (
+    get_default_runs_dir,
+    atomic_write_text,
+    atomic_write_json,
+)
+
+
+def _serialize_eval_metrics(stats: dict[str, Any]) -> dict[str, Any]:
+    """Isola solo le metriche scalari serializzabili in JSON, eliminando istanze di Path."""
+    keys = (
+        "eval_success_rate",
+        "eval_successes",
+        "eval_crashes",
+        "eval_timeouts",
+        "total_evaluated_episodes",
+        "mean_reward",
+        "std_reward",
+        "mean_length",
+        "mean_fuel",
+        "mean_fuel_success",
+        "mean_fuel_failure",
+    )
+    return {k: stats.get(k, 0.0) for k in keys}
+
+
+def _load_reward_fn_from_source(source_code: str) -> Callable | None:
+    """Ricostruisce in modo sicuro la custom_reward con i moduli numpy e math nello scope."""
+    scope: dict[str, Any] = {"np": np, "numpy": np, "math": math}
+    try:
+        exec(source_code, scope)
+    except Exception:
+        return None
+    if callable(scope.get("custom_reward")):
+        return scope["custom_reward"]
+    for name, obj in scope.items():
+        if callable(obj) and name not in ("np", "numpy", "math") and not name.startswith("_"):
+            return obj
+    return None
 
 
 def genera_pdf_report(
@@ -3716,11 +3940,17 @@ def genera_report_esperimento(
         f'</div>'
     ) if gif_b64 else ''
 
+    safe_titolo = html.escape(str(titolo))
+    safe_autore = html.escape(str(autore))
+    safe_mission_title = html.escape(str(mission_title))
+    safe_code_source = html.escape(str(code_source))
+    safe_note = html.escape(str(note)).replace("\n", "<br>") if note else "<em>Nessuna nota inserita. Modifica questo report per documentare i risultati dell'esperimento.</em>"
+
     html_content = f"""<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <title>{titolo}</title>
+    <title>{safe_titolo}</title>
     <style>
         body {{
             font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
@@ -3797,8 +4027,8 @@ def genera_report_esperimento(
     <div class="card">
         <h1>📊 Scheda Tecnica Esperimento: Reinforcement Learning</h1>
         <div class="header-meta">
-            <div><strong>Titolo:</strong> {titolo} | <strong>Autore:</strong> {autore}</div>
-            <div><strong>Missione:</strong> {mission_title} | <strong>Data:</strong> {datetime.datetime.now().strftime("%d/%m/%Y %H:%M")}</div>
+            <div><strong>Titolo:</strong> {safe_titolo} | <strong>Autore:</strong> {safe_autore}</div>
+            <div><strong>Missione:</strong> {safe_mission_title} | <strong>Data:</strong> {datetime.datetime.now().strftime("%d/%m/%Y %H:%M")}</div>
         </div>
 
         <h2>1. Risultati della Valutazione (Successi e Fallimenti)</h2>
@@ -3850,11 +4080,11 @@ def genera_report_esperimento(
         {gif_html_tag}
 
         <h2>2. Codice Sorgente della Reward Function</h2>
-        <pre><code>{code_source}</code></pre>
+        <pre><code>{safe_code_source}</code></pre>
 
         <h2>3. Note di Debug e Considerazioni Sperimentali</h2>
         <div class="notes-box">
-            {note if note else "<em>Nessuna nota inserita. Modifica questo report per documentare i risultati dell'esperimento.</em>"}
+            {safe_note}
         </div>
     </div>
 </body>
@@ -3864,8 +4094,8 @@ def genera_report_esperimento(
     md_path = target_dir / "report_esperimento.md"
     html_path = target_dir / "report_esperimento.html"
 
-    md_path.write_text(md_content, encoding="utf-8")
-    html_path.write_text(html_content, encoding="utf-8")
+    atomic_write_text(md_path, md_content)
+    atomic_write_text(html_path, html_content)
 
     print(f"✅ Report tecnico generato in: {target_dir.name}")
     print(f"   • PDF:      {pdf_path.name}")
@@ -4124,23 +4354,18 @@ def genera_report_da_timestamp(
                 print(f"📦 Caricamento modello salvato da: {model_path.name}")
                 model = PPO.load(str(model_path))
 
-                # Ricostruzione della funzione custom_reward dalla run
+                # Ricostruzione della funzione custom_reward dalla run con i moduli necessari nello scope
                 reward_fn = None
                 reward_file = run_dir / "reward_function.py"
                 if reward_file.exists():
                     try:
-                        code_txt = reward_file.read_text(encoding="utf-8")
-                        scope = {}
-                        exec(code_txt, scope)
-                        reward_fn = scope.get("custom_reward")
+                        reward_fn = _load_reward_fn_from_source(reward_file.read_text(encoding="utf-8"))
                     except Exception:
                         reward_fn = None
 
                 if reward_fn is None and "reward_source_code" in meta:
                     try:
-                        scope = {}
-                        exec(meta["reward_source_code"], scope)
-                        reward_fn = scope.get("custom_reward")
+                        reward_fn = _load_reward_fn_from_source(meta["reward_source_code"])
                     except Exception:
                         reward_fn = None
 
@@ -4168,9 +4393,11 @@ def genera_report_da_timestamp(
                     filename_prefix="avanzato",
                 )
 
-                meta["eval_metrics_avanzata"] = adv_stats
-                meta["eval_metrics"] = adv_stats
-                meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+                # Serializza solo dati scalari privi di oggetti Path non serializzabili in JSON
+                clean_adv = _serialize_eval_metrics(adv_stats)
+                meta["eval_metrics_avanzata"] = clean_adv
+                meta["eval_metrics"] = clean_adv
+                atomic_write_json(meta_file, meta)
                 print(f"✅ Sessione avanzata completata: {adv_stats.get('eval_success_rate', 0.0):.1f}% di successo su {adv_stats.get('total_evaluated_episodes', 0)} voli!")
             except Exception as e:
                 print(f"⚠️ Impossibile completare la sessione estesa ({e}). Utilizzo dati pregressi.")
@@ -4235,19 +4462,28 @@ from __future__ import annotations
 
 import json
 import random
+import uuid
 from pathlib import Path
 from typing import Any
 
-from play2learn_lunarlander.config import MISSIONS, ENV_ID
+from play2learn_lunarlander.config import (
+    MISSIONS,
+    ENV_ID,
+    FUEL_MAIN_ENGINE,
+    FUEL_SIDE_ENGINE,
+)
+from play2learn_lunarlander.environment import classify_lunar_lander_outcome
 from play2learn_lunarlander.favorites import carica_preferito
 from play2learn_lunarlander.storage import find_run_by_timestamp, get_default_runs_dir
 
 
-def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> None:
+def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Any:
     """Mostra l'HTML inline nel notebook oppure lo apre nel browser se non in ambiente IPython."""
     try:
         from IPython.display import HTML, display
-        display(HTML(html_code))
+        res = HTML(html_code)
+        display(res)
+        return res
     except ImportError:
         import webbrowser
         import tempfile
@@ -4255,6 +4491,7 @@ def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Non
         tmp.write_text(html_code, encoding="utf-8")
         print(f"[play2learn] Apertura del simulatore nel browser: {tmp}")
         webbrowser.open(tmp.as_uri())
+        return html_code
 
 
 def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[float]]:
@@ -4262,20 +4499,28 @@ def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[floa
     un = getattr(env, "unwrapped", env)
     fixtures = getattr(getattr(un, "moon", None), "fixtures", [])
 
+    segments: list[tuple[list[float], list[float]]] = []
+    for fix in fixtures:
+        shape = getattr(fix, "shape", None)
+        verts = getattr(shape, "vertices", None)
+        if not verts or len(verts) != 2:
+            continue
+        p1 = [round(float(verts[0][0]), 3), round(float(verts[0][1]), 3)]
+        p2 = [round(float(verts[1][0]), 3), round(float(verts[1][1]), 3)]
+        # Salta il bordo inferiore del box [(0, 0), (W, 0)]
+        if p1[1] == 0.0 and p2[1] == 0.0:
+            continue
+        if p1[0] > p2[0]:
+            p1, p2 = p2, p1
+        segments.append((p1, p2))
+
     points: list[list[float]] = []
-    if len(fixtures) > 1:
-        # Fixture 1..N sono i segmenti contigui della superficie
-        first = True
-        for i in range(1, len(fixtures)):
-            verts = fixtures[i].shape.vertices
-            p1 = [round(float(verts[0][0]), 3), round(float(verts[0][1]), 3)]
-            p2 = [round(float(verts[1][0]), 3), round(float(verts[1][1]), 3)]
-            if first:
-                points.append(p1)
-                first = False
+    if segments:
+        segments.sort(key=lambda seg: seg[0][0])
+        points.append(segments[0][0])
+        for _, p2 in segments:
             points.append(p2)
     else:
-        # Fallback se non ci sono fixtures
         points = [
             [0.0, 4.5], [2.0, 4.3], [4.0, 3.8], [6.0, 3.9],
             [8.0, 3.3], [10.0, 3.3], [12.0, 3.3],
@@ -4290,20 +4535,28 @@ def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[floa
     return points, helipad
 
 
+def _find_model_zip_in_dir(run_dir: Path) -> Path | None:
+    """Trova il file checkpoint .zip in una cartella di run."""
+    for fname in ("best_model.zip", "ppo_lunar_lander.zip", "final_model.zip"):
+        cand = run_dir / fname
+        if cand.exists():
+            return cand
+    zips = list(run_dir.glob("*.zip"))
+    return zips[0] if zips else None
+
+
 def _resolve_model(model_or_result: Any) -> Any:
     """
     Risolve l'agente PPO a partire da un oggetto LabResult, un'istanza PPO,
     un nome nei Preferiti o un timestamp di una run passata.
     """
     if model_or_result is None:
-        # Cerca nei preferiti o nell'ultima run disponibile
         try:
             model, _ = carica_preferito(0)
             return model
         except Exception:
             pass
 
-        # Cerca l'ultima run in runs/
         runs_dir = get_default_runs_dir()
         if runs_dir.exists():
             runs = sorted(
@@ -4312,9 +4565,7 @@ def _resolve_model(model_or_result: Any) -> Any:
                 reverse=True,
             )
             for r in runs:
-                bp = r / "best_model.zip"
-                fp = r / "final_model.zip"
-                tgt = bp if bp.exists() else (fp if fp.exists() else None)
+                tgt = _find_model_zip_in_dir(r)
                 if tgt:
                     from stable_baselines3 import PPO
                     return PPO.load(str(tgt))
@@ -4357,9 +4608,7 @@ def _resolve_model(model_or_result: Any) -> Any:
         try:
             r_dir = find_run_by_timestamp(str(model_or_result))
             if r_dir:
-                bp = r_dir / "best_model.zip"
-                fp = r_dir / "final_model.zip"
-                tgt = bp if bp.exists() else (fp if fp.exists() else None)
+                tgt = _find_model_zip_in_dir(r_dir)
                 if tgt:
                     from stable_baselines3 import PPO
                     return PPO.load(str(tgt))
@@ -4392,59 +4641,61 @@ def registra_traiettoria_agente(
     except TypeError:
         env = gym.make(ENV_ID, **final_kwargs)
 
-    obs, _ = env.reset(seed=seed)
-    un = env.unwrapped
-    terrain_pts, helipad = _extract_terrain_and_helipad(env)
+    try:
+        obs, _ = env.reset(seed=seed)
+        un = env.unwrapped
+        terrain_pts, helipad = _extract_terrain_and_helipad(env)
 
-    steps_data: list[dict[str, Any]] = []
-    total_fuel = 0.0
-    done = False
-    step_count = 0
-    is_success = False
-    is_crashed = False
+        steps_data: list[dict[str, Any]] = []
+        total_fuel = 0.0
+        done = False
+        step_count = 0
+        is_success = False
+        is_crashed = False
 
-    while not done and step_count < max_steps:
-        action, _ = model.predict(obs, deterministic=True)
-        act_int = int(action)
+        while not done and step_count < max_steps:
+            action, _ = model.predict(obs, deterministic=True)
+            act_int = int(action)
 
-        # Consumo carburante realistico
-        if act_int == 2:
-            total_fuel += 0.30
-        elif act_int in (1, 3):
-            total_fuel += 0.05
+            if act_int == 2:
+                total_fuel += FUEL_MAIN_ENGINE
+            elif act_int in (1, 3):
+                total_fuel += FUEL_SIDE_ENGINE
 
-        pos = un.lander.position
-        vel = un.lander.linearVelocity
-        ang = un.lander.angle
+            obs, rew, term, trunc, _ = env.step(act_int)
+            step_count += 1
+            done = bool(term or trunc)
 
-        steps_data.append({
-            "x": round(float(pos.x), 3),
-            "y": round(float(pos.y), 3),
-            "angle": round(float(ang), 3),
-            "vx": round(float(vel.x), 3),
-            "vy": round(float(vel.y), 3),
-            "action": act_int,
-            "fuel": round(float(total_fuel), 2),
-        })
+            pos = un.lander.position
+            vel = un.lander.linearVelocity
+            ang = un.lander.angle
 
-        obs, rew, term, trunc, info = env.step(act_int)
-        step_count += 1
-        done = term or trunc
+            steps_data.append({
+                "x": round(float(pos.x), 3),
+                "y": round(float(pos.y), 3),
+                "angle": round(float(ang), 3),
+                "vx": round(float(vel.x), 3),
+                "vy": round(float(vel.y), 3),
+                "action": act_int,
+                "fuel": round(float(total_fuel), 2),
+            })
 
-        if done:
-            is_success = bool(info.get("is_success", False))
-            is_crashed = bool(info.get("is_crashed", False))
-            if not is_success and not is_crashed:
-                # Controlla posizione finale
-                on_h = helipad[0] <= pos.x <= helipad[1]
-                soft = abs(vel.y) < 2.2 and abs(vel.x) < 1.3
-                upright = abs(ang) < 0.28
-                if on_h and soft and upright:
-                    is_success = True
-                else:
+            if done:
+                is_success, is_crashed, is_timeout, _ = classify_lunar_lander_outcome(
+                    obs=obs,
+                    original_reward=float(rew),
+                    terminated=bool(term),
+                    truncated=bool(trunc),
+                    unwrapped=un,
+                )
+                if is_timeout:
                     is_crashed = True
 
-    env.close()
+        if not done:
+            is_success = False
+            is_crashed = True
+    finally:
+        env.close()
 
     final_vy = steps_data[-1]["vy"] if steps_data else 0.0
     final_angle = steps_data[-1]["angle"] if steps_data else 0.0
@@ -4540,10 +4791,10 @@ def _get_shared_game_js() -> str:
     function drawLander(ctx, x, y, angle, isMain, isLeft, isRight, isAi, isLanded, isCrashed) {
         ctx.save();
         ctx.translate(x, y);
-        ctx.rotate(angle);
+        // Correzione asse di rotazione Canvas: l'angolo di Box2D e' antiorario (y-up), il canvas e' orario (y-down)
+        ctx.rotate(-angle);
 
         if (isCrashed) {
-            // Relitto danneggiato
             ctx.fillStyle = '#ef4444';
             ctx.beginPath();
             ctx.arc(0, 0, 16, 0, Math.PI * 2);
@@ -4570,7 +4821,6 @@ def _get_shared_game_js() -> str:
             ctx.closePath();
             ctx.fill();
 
-            // Nucleo interno giallo caldo
             ctx.fillStyle = '#fef08a';
             ctx.beginPath();
             ctx.moveTo(-4, 12);
@@ -4609,20 +4859,17 @@ def _get_shared_game_js() -> str:
         ctx.strokeStyle = '#94a3b8';
         ctx.lineWidth = 2.4;
         ctx.beginPath();
-        // Zampa sinistra
         ctx.moveTo(-9, 4);
         ctx.lineTo(-16, 14);
-        // Zampa destra
         ctx.moveTo(9, 4);
         ctx.lineTo(16, 14);
         ctx.stroke();
 
-        // Pattini alla base delle zampe
         ctx.fillStyle = '#64748b';
         ctx.fillRect(-20, 13, 8, 2.5);
         ctx.fillRect(12, 13, 8, 2.5);
 
-        // Corpo inferiore dorato/tecnologico
+        // Corpo inferiore dorato
         ctx.fillStyle = foilCol;
         ctx.fillRect(-11, 2, 22, 10);
         ctx.strokeStyle = '#78350f';
@@ -4683,11 +4930,9 @@ def _get_shared_game_js() -> str:
         const sx = W / 20.0;
         const sy = H / 13.333;
 
-        // Cielo stellato fisso o con sfumatura
         ctx.fillStyle = '#050814';
         ctx.fillRect(0, 0, W, H);
 
-        // Suolo lunare
         ctx.fillStyle = '#1e293b';
         ctx.beginPath();
         ctx.moveTo(0, H);
@@ -4701,7 +4946,6 @@ def _get_shared_game_js() -> str:
         ctx.closePath();
         ctx.fill();
 
-        // Bordo roccioso della superficie
         ctx.strokeStyle = '#475569';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -4713,20 +4957,17 @@ def _get_shared_game_js() -> str:
         });
         ctx.stroke();
 
-        // Piazzola di atterraggio (Helipad)
         const hx1 = helipad[0] * sx;
         const hx2 = helipad[1] * sx;
         const hy = H - helipad[2] * sy;
         const hw = hx2 - hx1;
 
-        // Base metallica della piazzola
         ctx.fillStyle = '#334155';
         ctx.fillRect(hx1, hy - 3, hw, 7);
         ctx.strokeStyle = '#fbbf24';
         ctx.lineWidth = 2;
         ctx.strokeRect(hx1, hy - 3, hw, 7);
 
-        // Strisce zebrate gialle/nere
         ctx.save();
         ctx.beginPath();
         ctx.rect(hx1, hy - 3, hw, 7);
@@ -4741,9 +4982,7 @@ def _get_shared_game_js() -> str:
         }
         ctx.restore();
 
-        // Bandierina sinistra
         drawFlag(ctx, hx1 + 3, hy - 3, '#ef4444');
-        // Bandierina destra
         drawFlag(ctx, hx2 - 3, hy - 3, '#ef4444');
     }
 
@@ -4771,7 +5010,8 @@ def gioca_single_player(
     mission: str = "luna_standard",
     gravity: float | None = None,
     wind: bool | None = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Avvia la modalità arcade Single Player interattiva in Google Colab o Jupyter Notebook.
     Permette allo studente di pilotare manualmente il modulo lunare con frecce da tastiera
@@ -4781,16 +5021,18 @@ def gioca_single_player(
 
     actual_seed = seed if seed is not None else random.randint(100, 99999)
     mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
-    env_kwargs = dict(mission_cfg["env_kwargs"])
+    final_env_kwargs = dict(mission_cfg["env_kwargs"])
+    if env_kwargs:
+        final_env_kwargs.update(env_kwargs)
     if gravity is not None:
-        env_kwargs["gravity"] = float(gravity)
+        final_env_kwargs["gravity"] = float(gravity)
     if wind is not None:
-        env_kwargs["enable_wind"] = bool(wind)
+        final_env_kwargs["enable_wind"] = bool(wind)
 
     try:
-        env = gym.make(ENV_ID, disable_env_checker=True, **env_kwargs)
+        env = gym.make(ENV_ID, disable_env_checker=True, **final_env_kwargs)
     except TypeError:
-        env = gym.make(ENV_ID, **env_kwargs)
+        env = gym.make(ENV_ID, **final_env_kwargs)
 
     env.reset(seed=actual_seed)
     terrain_pts, helipad = _extract_terrain_and_helipad(env)
@@ -4799,44 +5041,43 @@ def gioca_single_player(
     terrain_json = json.dumps(terrain_pts)
     helipad_json = json.dumps(helipad)
     shared_js = _get_shared_game_js()
+    uid = uuid.uuid4().hex[:6]
 
     html_code = f"""
-    <div id="sp_root" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:720px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+    <div id="sp_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:720px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:18px;">🚀 Simulatore Manuale: Pilota il Modulo Lunare!</h3>
                 <span style="font-size:12px; color:#94a3b8;">Missione: {mission_cfg['title']} (Seed: {actual_seed})</span>
             </div>
             <div>
-                <button id="btn_sound" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+                <button id="btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
             </div>
         </div>
 
         <div style="position:relative; width:100%; text-align:center;">
-            <canvas id="sp_canvas" width="640" height="400" tabindex="0" style="background:#050814; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
-            <div id="sp_overlay" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
+            <canvas id="sp_canvas_{uid}" width="640" height="400" tabindex="0" style="background:#050814; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+            <div id="sp_overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
                 <div style="font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom:6px;">Clicca qui o premi [SPAZIO] per decollare!</div>
                 <div style="font-size:12px; color:#94a3b8;">Comandi: Frecce ⬆️ ⬅️ ➡️ oppure tasti W / A / D</div>
             </div>
         </div>
 
-        <!-- Telemetria HUD in tempo reale -->
         <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:12px; font-size:12px; background:#111827; padding:10px; border-radius:8px; border:1px solid #1f2937;">
-            <div><span style="color:#94a3b8;">Carburante:</span> <strong id="hud_fuel" style="color:#10b981;">100%</strong></div>
-            <div><span style="color:#94a3b8;">Quota Y:</span> <strong id="hud_y">13.3 m</strong></div>
-            <div><span style="color:#94a3b8;">Velocità VY:</span> <strong id="hud_vy" style="color:#10b981;">0.0 m/s</strong></div>
-            <div><span style="color:#94a3b8;">Assetto / Tilt:</span> <strong id="hud_ang" style="color:#10b981;">0°</strong></div>
+            <div><span style="color:#94a3b8;">Carburante:</span> <strong id="hud_fuel_{uid}" style="color:#10b981;">100%</strong></div>
+            <div><span style="color:#94a3b8;">Quota Y:</span> <strong id="hud_y_{uid}">13.3 m</strong></div>
+            <div><span style="color:#94a3b8;">Velocità VY:</span> <strong id="hud_vy_{uid}" style="color:#10b981;">0.0 m/s</strong></div>
+            <div><span style="color:#94a3b8;">Assetto / Tilt:</span> <strong id="hud_ang_{uid}" style="color:#10b981;">0°</strong></div>
         </div>
 
-        <!-- Comandi Touch per dispositivi mobili e Chromebook -->
         <div style="display:flex; justify-content:center; gap:12px; margin-top:14px;">
-            <button id="btn_left" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">⬅️ Razzo Dx</button>
-            <button id="btn_main" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:10px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
-            <button id="btn_right" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">➡️ Razzo Sx</button>
+            <button id="btn_left_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">⬅️ Razzo Dx</button>
+            <button id="btn_main_{uid}" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:10px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
+            <button id="btn_right_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">➡️ Razzo Sx</button>
         </div>
 
         <div style="text-align:center; margin-top:12px;">
-            <button id="btn_reset" style="background:#334155; color:#f1f5f9; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer;">🔄 Riavvia Volo (Stesso Terreno)</button>
+            <button id="btn_reset_{uid}" style="background:#334155; color:#f1f5f9; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer;">🔄 Riavvia Volo (Stesso Terreno)</button>
         </div>
     </div>
 
@@ -4846,14 +5087,14 @@ def gioca_single_player(
 
         const terrain = {terrain_json};
         const helipad = {helipad_json};
-        const canvas = document.getElementById('sp_canvas');
+        const canvas = document.getElementById('sp_canvas_{uid}');
         const ctx = canvas.getContext('2d');
-        const overlay = document.getElementById('sp_overlay');
+        const overlay = document.getElementById('sp_overlay_{uid}');
         const W = canvas.width;
         const H = canvas.height;
 
         let x = 10.0, y = 13.2, vx = 0.0, vy = 0.0, angle = 0.0, vangle = 0.0;
-        let fuel = 100.0;
+        let fuel = 100.0, fuelUsed = 0.0;
         let gameActive = false;
         let isLanded = false;
         let isCrashed = false;
@@ -4879,6 +5120,7 @@ def gioca_single_player(
             angle = (Math.random() - 0.5) * 0.08;
             vangle = 0.0;
             fuel = 100.0;
+            fuelUsed = 0.0;
             isLanded = false;
             isCrashed = false;
             gameActive = true;
@@ -4886,33 +5128,37 @@ def gioca_single_player(
             canvas.focus();
         }}
 
-        function updatePhysics() {{
+        function updatePhysics(dt) {{
             if (!gameActive || isLanded || isCrashed) return;
 
-            const dt = 0.02;
-            const g = {float(env_kwargs.get('gravity', -10.0))};
+            const g = {float(final_env_kwargs.get('gravity', -10.0))};
             let ax = 0, ay = g;
 
             if (keyMain && fuel > 0) {{
                 const fMain = 14.5;
                 ax += -Math.sin(angle) * fMain;
                 ay += Math.cos(angle) * fMain;
-                fuel = Math.max(0, fuel - 0.32);
+                fuel = Math.max(0, fuel - 0.4);
+                fuelUsed += 1.0;
                 playThrusterSound(true);
             }}
 
             if (keyLeft && fuel > 0) {{
-                ax += Math.cos(angle) * 1.2;
-                ay += Math.sin(angle) * 1.2;
+                // Razzo destro -> spinge verso sinistra (-x)
+                ax -= Math.cos(angle) * 1.6;
+                ay -= Math.sin(angle) * 1.6;
                 vangle += 2.2 * dt;
-                fuel = Math.max(0, fuel - 0.06);
+                fuel = Math.max(0, fuel - 0.15);
+                fuelUsed += 0.3;
                 playThrusterSound(false);
             }}
             if (keyRight && fuel > 0) {{
-                ax -= Math.cos(angle) * 1.2;
-                ay -= Math.sin(angle) * 1.2;
+                // Razzo sinistro -> spinge verso destra (+x)
+                ax += Math.cos(angle) * 1.6;
+                ay += Math.sin(angle) * 1.6;
                 vangle -= 2.2 * dt;
-                fuel = Math.max(0, fuel - 0.06);
+                fuel = Math.max(0, fuel - 0.15);
+                fuelUsed += 0.3;
                 playThrusterSound(false);
             }}
 
@@ -4923,11 +5169,9 @@ def gioca_single_player(
             y += vy * dt;
             angle += vangle * dt;
 
-            // Limiti laterali
             if (x < 0.6) {{ x = 0.6; vx = 0; }}
             if (x > 19.4) {{ x = 19.4; vx = 0; }}
 
-            // Collisione suolo
             const groundY = getTerrainY(x);
             if (y - 0.5 <= groundY) {{
                 y = groundY + 0.5;
@@ -4940,21 +5184,21 @@ def gioca_single_player(
                 if (onPad && softY && softX && upright) {{
                     isLanded = true;
                     playLandingSound();
-                    overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 ALLUNAGGIO RIUSCITO!</div><div style="font-size:12px; color:#cbd5e1; margin-top:4px;">Carburante rimasto: ' + fuel.toFixed(1) + '% | VY: ' + Math.abs(vy).toFixed(1) + ' m/s</div><button onclick="window.spReset()" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Rigioca</button>';
+                    overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 ALLUNAGGIO RIUSCITO!</div><div style="font-size:12px; color:#cbd5e1; margin-top:4px;">Carburante usato: ' + fuelUsed.toFixed(1) + ' un. | VY: ' + Math.abs(vy).toFixed(1) + ' m/s</div><button id="btn_retry_' + '{uid}' + '" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Rigioca</button>';
                 }} else {{
                     isCrashed = true;
                     playCrashSound();
                     let causa = !onPad ? "Atterraggio fuori dalla piazzola!" : (!softY ? "Impatto troppo violento (VY > 2.2 m/s)!" : "Modulo troppo inclinato (> 15°)!");
-                    overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 SCHIANTO AL SUOLO!</div><div style="font-size:12px; color:#fca5a5; margin-top:4px;">' + causa + '</div><button onclick="window.spReset()" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Riprova</button>';
+                    overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 SCHIANTO AL SUOLO!</div><div style="font-size:12px; color:#fca5a5; margin-top:4px;">' + causa + '</div><button id="btn_retry_' + '{uid}' + '" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Riprova</button>';
                 }}
                 overlay.style.display = 'block';
+                const retryBtn = document.getElementById('btn_retry_' + '{uid}');
+                if (retryBtn) retryBtn.addEventListener('click', resetGame);
             }}
         }}
 
-        function render() {{
-            updatePhysics();
+        function drawScene() {{
             drawTerrain(ctx, terrain, helipad, W, H);
-
             const sx = W / 20.0;
             const sy = H / 13.333;
             const screenX = x * sx;
@@ -4962,22 +5206,43 @@ def gioca_single_player(
 
             drawLander(ctx, screenX, screenY, angle, keyMain && fuel > 0, keyLeft && fuel > 0, keyRight && fuel > 0, false, isLanded, isCrashed);
 
-            // Aggiorna HUD
-            document.getElementById('hud_fuel').innerText = fuel.toFixed(0) + '%';
-            document.getElementById('hud_fuel').style.color = fuel > 40 ? '#10b981' : (fuel > 15 ? '#f59e0b' : '#ef4444');
-            document.getElementById('hud_y').innerText = Math.max(0, y - getTerrainY(x)).toFixed(1) + ' m';
-            const hudVy = document.getElementById('hud_vy');
-            hudVy.innerText = vy.toFixed(1) + ' m/s';
-            hudVy.style.color = Math.abs(vy) < 2.2 ? '#10b981' : '#ef4444';
-            const hudAng = document.getElementById('hud_ang');
-            const angDeg = (angle * 180 / Math.PI).toFixed(0);
-            hudAng.innerText = angDeg + '°';
-            hudAng.style.color = Math.abs(angle) < 0.28 ? '#10b981' : '#ef4444';
-
-            animId = requestAnimationFrame(render);
+            const fuelElem = document.getElementById('hud_fuel_{uid}');
+            if (fuelElem) {{
+                fuelElem.innerText = fuel.toFixed(0) + '%';
+                fuelElem.style.color = fuel > 40 ? '#10b981' : (fuel > 15 ? '#f59e0b' : '#ef4444');
+            }}
+            const yElem = document.getElementById('hud_y_{uid}');
+            if (yElem) yElem.innerText = Math.max(0, y - getTerrainY(x)).toFixed(1) + ' m';
+            const hudVy = document.getElementById('hud_vy_{uid}');
+            if (hudVy) {{
+                hudVy.innerText = vy.toFixed(1) + ' m/s';
+                hudVy.style.color = Math.abs(vy) < 2.2 ? '#10b981' : '#ef4444';
+            }}
+            const hudAng = document.getElementById('hud_ang_{uid}');
+            if (hudAng) {{
+                const angDeg = (angle * 180 / Math.PI).toFixed(0);
+                hudAng.innerText = angDeg + '°';
+                hudAng.style.color = Math.abs(angle) < 0.28 ? '#10b981' : '#ef4444';
+            }}
         }}
 
-        // Gestione tastiera con preventDefault per evitare scroll della pagina
+        // Accumulatore a 50 Hz fisso: indipendente dal refresh rate del monitor (60Hz, 120Hz, 144Hz)
+        const FIXED_DT = 0.02;
+        let lastFrameTs = performance.now();
+        let accumulator = 0.0;
+
+        function loop(now) {{
+            const frameSec = Math.min(0.1, (now - lastFrameTs) / 1000.0);
+            lastFrameTs = now;
+            accumulator += frameSec;
+            while (accumulator >= FIXED_DT) {{
+                updatePhysics(FIXED_DT);
+                accumulator -= FIXED_DT;
+            }}
+            drawScene();
+            animId = requestAnimationFrame(loop);
+        }}
+
         canvas.addEventListener('keydown', function(e) {{
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {{
                 e.preventDefault();
@@ -4997,39 +5262,36 @@ def gioca_single_player(
             if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keyRight = false;
         }});
 
-        canvas.addEventListener('click', function() {{
-            if (!gameActive) resetGame();
-            canvas.focus();
-        }});
+        overlay.addEventListener('click', resetGame);
+        document.getElementById('btn_reset_{uid}').addEventListener('click', resetGame);
 
-        // Pulsanti touch
         function bindBtn(btnId, setFlag) {{
             const btn = document.getElementById(btnId);
+            if (!btn) return;
             const onDown = (e) => {{ e.preventDefault(); if (!gameActive) resetGame(); setFlag(true); }};
             const onUp = (e) => {{ e.preventDefault(); setFlag(false); }};
             btn.addEventListener('mousedown', onDown);
             btn.addEventListener('mouseup', onUp);
+            btn.addEventListener('mouseleave', onUp);
             btn.addEventListener('touchstart', onDown);
             btn.addEventListener('touchend', onUp);
+            btn.addEventListener('touchcancel', onUp);
         }}
-        bindBtn('btn_main', (v) => keyMain = v);
-        bindBtn('btn_left', (v) => keyLeft = v);
-        bindBtn('btn_right', (v) => keyRight = v);
+        bindBtn('btn_main_{uid}', (v) => keyMain = v);
+        bindBtn('btn_left_{uid}', (v) => keyLeft = v);
+        bindBtn('btn_right_{uid}', (v) => keyRight = v);
 
-        document.getElementById('btn_reset').addEventListener('click', resetGame);
-        window.spReset = resetGame;
-
-        const sndBtn = document.getElementById('btn_sound');
+        const sndBtn = document.getElementById('btn_sound_{uid}');
         sndBtn.addEventListener('click', function() {{
             soundEnabled = !soundEnabled;
             sndBtn.innerText = soundEnabled ? '🔊 Audio: ON' : '🔇 Audio: OFF';
         }});
 
-        render();
+        loop(performance.now());
     }})();
     </script>
     """
-    _display_or_open_html(html_code, "lunar_lander_single_player")
+    return _display_or_open_html(html_code, "lunar_lander_single_player")
 
 
 def gioca_vs_agente(
@@ -5039,7 +5301,8 @@ def gioca_vs_agente(
     gravity: float | None = None,
     wind: bool | None = None,
     model: Any = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Avvia la modalità testa a testa 'Tu vs Agente' (Split-Screen interattivo)
     in Google Colab o Jupyter Notebook.
@@ -5049,18 +5312,20 @@ def gioca_vs_agente(
     chosen_model = model if model is not None else model_or_result
     resolved_model = _resolve_model(chosen_model)
     mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
-    env_kwargs = dict(mission_cfg["env_kwargs"])
+    final_env_kwargs = dict(mission_cfg["env_kwargs"])
+    if env_kwargs:
+        final_env_kwargs.update(env_kwargs)
     if gravity is not None:
-        env_kwargs["gravity"] = float(gravity)
+        final_env_kwargs["gravity"] = float(gravity)
     if wind is not None:
-        env_kwargs["enable_wind"] = bool(wind)
+        final_env_kwargs["enable_wind"] = bool(wind)
 
     print("[play2learn] Calcolo della traiettoria dell'Agente AI sullo scenario lunare...")
     agent_data = registra_traiettoria_agente(
         model=resolved_model,
         seed=seed,
         mission=mission,
-        env_kwargs=env_kwargs,
+        env_kwargs=final_env_kwargs,
     )
 
     terrain_json = json.dumps(agent_data["terrain"])
@@ -5068,65 +5333,60 @@ def gioca_vs_agente(
     steps_json = json.dumps(agent_data["steps"])
     stats_json = json.dumps(agent_data["stats"])
     shared_js = _get_shared_game_js()
+    uid = uuid.uuid4().hex[:6]
 
     html_code = f"""
-    <div id="vs_root" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:960px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+    <div id="vs_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:960px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:19px;">⚔️ Sfida Allunaggio: Tu (Pilota Umano) vs Agente AI (PPO)</h3>
                 <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso terreno (Seed: {seed} | Missione: {mission_cfg['title']})</span>
             </div>
             <div>
-                <button id="vs_btn_sound" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+                <button id="vs_btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
             </div>
         </div>
 
-        <!-- Schermo diviso a 2 colonne: Sinistra = Tu, Destra = Agente AI -->
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px; position:relative;">
-            <!-- Canvas Giocatore Umano -->
             <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #0284c7; text-align:center;">
                 <div style="font-weight:bold; color:#38bdf8; font-size:14px; margin-bottom:6px;">🧑 TU (Pilota Umano) — Lander Blu</div>
-                <canvas id="canvas_human" width="440" height="300" tabindex="0" style="background:#050814; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+                <canvas id="canvas_human_{uid}" width="440" height="300" tabindex="0" style="background:#050814; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
-                    <span>Carb: <strong id="h_hud_fuel" style="color:#10b981;">100%</strong></span>
-                    <span>Quota: <strong id="h_hud_y">13.2m</strong></span>
-                    <span>VY: <strong id="h_hud_vy" style="color:#10b981;">0.0m/s</strong></span>
-                    <span>Stato: <strong id="h_hud_status" style="color:#38bdf8;">Pronto</strong></span>
+                    <span>Carb Speso: <strong id="h_hud_fuel_{uid}" style="color:#10b981;">0.0</strong></span>
+                    <span>Quota: <strong id="h_hud_y_{uid}">13.2m</strong></span>
+                    <span>VY: <strong id="h_hud_vy_{uid}" style="color:#10b981;">0.0m/s</strong></span>
+                    <span>Stato: <strong id="h_hud_status_{uid}" style="color:#38bdf8;">Pronto</strong></span>
                 </div>
             </div>
 
-            <!-- Canvas Agente AI -->
             <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #059669; text-align:center;">
                 <div style="font-weight:bold; color:#10b981; font-size:14px; margin-bottom:6px;">🤖 AGENTE AI (PPO) — Lander Verde</div>
-                <canvas id="canvas_ai" width="440" height="300" style="background:#050814; border-radius:6px; max-width:100%;"></canvas>
+                <canvas id="canvas_ai_{uid}" width="440" height="300" style="background:#050814; border-radius:6px; max-width:100%;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
-                    <span>Carb Speso: <strong id="ai_hud_fuel" style="color:#10b981;">0.0</strong></span>
-                    <span>Quota: <strong id="ai_hud_y">13.2m</strong></span>
-                    <span>VY: <strong id="ai_hud_vy" style="color:#10b981;">0.0m/s</strong></span>
-                    <span>Stato: <strong id="ai_hud_status" style="color:#10b981;">Pronto</strong></span>
+                    <span>Carb Speso: <strong id="ai_hud_fuel_{uid}" style="color:#10b981;">0.0</strong></span>
+                    <span>Quota: <strong id="ai_hud_y_{uid}">13.2m</strong></span>
+                    <span>VY: <strong id="ai_hud_vy_{uid}" style="color:#10b981;">0.0m/s</strong></span>
+                    <span>Stato: <strong id="ai_hud_status_{uid}" style="color:#10b981;">Pronto</strong></span>
                 </div>
             </div>
 
-            <!-- Overlay Inizio Gara -->
-            <div id="vs_overlay" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.95); border:2px solid #38bdf8; padding:16px 28px; border-radius:10px; text-align:center; z-index:20; box-shadow:0 8px 30px rgba(0,0,0,0.7);">
+            <div id="vs_overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.95); border:2px solid #38bdf8; padding:16px 28px; border-radius:10px; text-align:center; z-index:20; box-shadow:0 8px 30px rgba(0,0,0,0.7);">
                 <div style="font-size:16px; font-weight:bold; color:#f8fafc; margin-bottom:8px;">Pronto per la sfida Uomo vs Macchina?</div>
                 <div style="font-size:12px; color:#94a3b8; margin-bottom:12px;">Decolla con il lander di sinistra e cerca di allunare consumando meno carburante dell'agente!</div>
-                <button id="vs_btn_start" style="background:#0284c7; color:#fff; border:none; padding:8px 20px; border-radius:6px; font-weight:bold; font-size:14px; cursor:pointer;">🚀 INIZIA LA SFIDA!</button>
+                <button id="vs_btn_start_{uid}" style="background:#0284c7; color:#fff; border:none; padding:8px 20px; border-radius:6px; font-weight:bold; font-size:14px; cursor:pointer;">🚀 INIZIA LA SFIDA!</button>
             </div>
         </div>
 
-        <!-- Comandi Touch per il Giocatore Umano -->
         <div style="display:flex; justify-content:center; gap:12px; margin-top:14px;">
-            <button id="vs_btn_left" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">⬅️ Razzo Dx</button>
-            <button id="vs_btn_main" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:9px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
-            <button id="vs_btn_right" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">➡️ Razzo Sx</button>
+            <button id="vs_btn_left_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">⬅️ Razzo Dx</button>
+            <button id="vs_btn_main_{uid}" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:9px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
+            <button id="vs_btn_right_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">➡️ Razzo Sx</button>
         </div>
 
-        <!-- Box Risultato e Verdetto Finale -->
-        <div id="vs_scoreboard" style="display:none; margin-top:14px; background:#1e293b; border:1.5px solid #38bdf8; border-radius:8px; padding:14px; text-align:center;">
-            <h4 id="vs_verdetto_titolo" style="margin:0 0 8px 0; font-size:16px; color:#f59e0b;">🏆 VERDETTO DELLA SFIDA</h4>
-            <div id="vs_verdetto_desc" style="font-size:13px; color:#e2e8f0; margin-bottom:10px;"></div>
-            <button id="vs_btn_replay" style="background:#0284c7; color:#fff; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold;">🔄 Rigioca Sfida</button>
+        <div id="vs_scoreboard_{uid}" style="display:none; margin-top:14px; background:#1e293b; border:1.5px solid #38bdf8; border-radius:8px; padding:14px; text-align:center;">
+            <h4 id="vs_verdetto_titolo_{uid}" style="margin:0 0 8px 0; font-size:16px; color:#f59e0b;">🏆 VERDETTO DELLA SFIDA</h4>
+            <div id="vs_verdetto_desc_{uid}" style="font-size:13px; color:#e2e8f0; margin-bottom:10px;"></div>
+            <button id="vs_btn_replay_{uid}" style="background:#0284c7; color:#fff; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold;">🔄 Rigioca Sfida</button>
         </div>
     </div>
 
@@ -5139,12 +5399,12 @@ def gioca_vs_agente(
         const aiSteps = {steps_json};
         const aiStats = {stats_json};
 
-        const canvasH = document.getElementById('canvas_human');
+        const canvasH = document.getElementById('canvas_human_{uid}');
         const ctxH = canvasH.getContext('2d');
-        const canvasA = document.getElementById('canvas_ai');
+        const canvasA = document.getElementById('canvas_ai_{uid}');
         const ctxA = canvasA.getContext('2d');
-        const overlay = document.getElementById('vs_overlay');
-        const scoreboard = document.getElementById('vs_scoreboard');
+        const overlay = document.getElementById('vs_overlay_{uid}');
+        const scoreboard = document.getElementById('vs_scoreboard_{uid}');
 
         const W = canvasH.width;
         const H = canvasH.height;
@@ -5174,9 +5434,14 @@ def gioca_vs_agente(
         function startChallenge() {{
             hX = (aiSteps.length > 0 ? aiSteps[0].x : 10.0);
             hY = (aiSteps.length > 0 ? aiSteps[0].y : 13.2);
-            hVx = 0.0; hVy = 0.0; hAngle = 0.0; hVangle = 0.0;
-            hFuel = 100.0; hFuelUsed = 0.0;
-            hLanded = false; hCrashed = false;
+            hVx = 0.0;
+            hVy = 0.0;
+            hAngle = 0.0;
+            hVangle = 0.0;
+            hFuel = 100.0;
+            hFuelUsed = 0.0;
+            hLanded = false;
+            hCrashed = false;
             hStepsCount = 0;
 
             aiIdx = 0;
@@ -5188,35 +5453,36 @@ def gioca_vs_agente(
             canvasH.focus();
         }}
 
-        function updateHumanPhysics() {{
+        function updateHumanPhysics(dt) {{
             if (!gameRunning || hLanded || hCrashed) return;
 
-            const dt = 0.02;
-            const g = {float(env_kwargs.get('gravity', -10.0))};
+            const g = {float(final_env_kwargs.get('gravity', -10.0))};
             let ax = 0, ay = g;
 
             if (hKeyMain && hFuel > 0) {{
                 const fMain = 14.5;
                 ax += -Math.sin(hAngle) * fMain;
                 ay += Math.cos(hAngle) * fMain;
-                hFuel = Math.max(0, hFuel - 0.32);
-                hFuelUsed += 0.30;
+                hFuel = Math.max(0, hFuel - 0.4);
+                hFuelUsed += 1.0;
                 playThrusterSound(true);
             }}
             if (hKeyLeft && hFuel > 0) {{
-                ax += Math.cos(hAngle) * 1.2;
-                ay += Math.sin(hAngle) * 1.2;
+                // Razzo destro -> spinta verso sinistra (-x)
+                ax -= Math.cos(hAngle) * 1.6;
+                ay -= Math.sin(hAngle) * 1.6;
                 hVangle += 2.2 * dt;
-                hFuel = Math.max(0, hFuel - 0.06);
-                hFuelUsed += 0.05;
+                hFuel = Math.max(0, hFuel - 0.15);
+                hFuelUsed += 0.3;
                 playThrusterSound(false);
             }}
             if (hKeyRight && hFuel > 0) {{
-                ax -= Math.cos(hAngle) * 1.2;
-                ay -= Math.sin(hAngle) * 1.2;
+                // Razzo sinistro -> spinta verso destra (+x)
+                ax += Math.cos(hAngle) * 1.6;
+                ay += Math.sin(hAngle) * 1.6;
                 hVangle -= 2.2 * dt;
-                hFuel = Math.max(0, hFuel - 0.06);
-                hFuelUsed += 0.05;
+                hFuel = Math.max(0, hFuel - 0.15);
+                hFuelUsed += 0.3;
                 playThrusterSound(false);
             }}
 
@@ -5260,8 +5526,8 @@ def gioca_vs_agente(
         }}
 
         function evaluateWinner() {{
-            const vTitolo = document.getElementById('vs_verdetto_titolo');
-            const vDesc = document.getElementById('vs_verdetto_desc');
+            const vTitolo = document.getElementById('vs_verdetto_titolo_{uid}');
+            const vDesc = document.getElementById('vs_verdetto_desc_{uid}');
 
             let winnerMsg = "";
             let badgeCol = "#f59e0b";
@@ -5318,31 +5584,31 @@ def gioca_vs_agente(
             scoreboard.style.display = 'block';
         }}
 
-        function renderFrame() {{
-            updateHumanPhysics();
-
-            // 1. Rendering Schermo Umano
-            drawTerrain(ctxH, terrain, helipad, W, H);
+        function drawScenes() {{
             const sx = W / 20.0, sy = H / 13.333;
+
+            // 1. Schermo Umano
+            drawTerrain(ctxH, terrain, helipad, W, H);
             drawLander(ctxH, hX * sx, H - hY * sy, hAngle, hKeyMain && hFuel > 0, hKeyLeft && hFuel > 0, hKeyRight && hFuel > 0, false, hLanded, hCrashed);
 
-            document.getElementById('h_hud_fuel').innerText = hFuel.toFixed(0) + '%';
-            document.getElementById('h_hud_y').innerText = Math.max(0, hY - getTerrainY(hX)).toFixed(1) + 'm';
-            document.getElementById('h_hud_vy').innerText = hVy.toFixed(1) + 'm/s';
-            document.getElementById('h_hud_status').innerText = hLanded ? '🟢 Allunato' : (hCrashed ? '🔴 Schiantato' : 'In Volo');
-            document.getElementById('h_hud_status').style.color = hLanded ? '#10b981' : (hCrashed ? '#ef4444' : '#38bdf8');
+            const hFuelEl = document.getElementById('h_hud_fuel_{uid}');
+            if (hFuelEl) hFuelEl.innerText = hFuelUsed.toFixed(1) + ' un.';
+            const hYEl = document.getElementById('h_hud_y_{uid}');
+            if (hYEl) hYEl.innerText = Math.max(0, hY - getTerrainY(hX)).toFixed(1) + 'm';
+            const hVyEl = document.getElementById('h_hud_vy_{uid}');
+            if (hVyEl) {{
+                hVyEl.innerText = hVy.toFixed(1) + 'm/s';
+                hVyEl.style.color = Math.abs(hVy) < 2.2 ? '#10b981' : '#ef4444';
+            }}
+            const hStEl = document.getElementById('h_hud_status_{uid}');
+            if (hStEl) {{
+                hStEl.innerText = hLanded ? '🟢 Allunato' : (hCrashed ? '🔴 Schiantato' : 'In Volo');
+                hStEl.style.color = hLanded ? '#10b981' : (hCrashed ? '#ef4444' : '#38bdf8');
+            }}
 
-            // 2. Rendering Schermo Agente AI
+            // 2. Schermo Agente AI
             drawTerrain(ctxA, terrain, helipad, W, H);
             let aiCur = (aiSteps.length > 0 ? aiSteps[Math.min(aiIdx, aiSteps.length - 1)] : {{ x: 10, y: 13.2, angle: 0, action: 0, fuel: 0, vy: 0 }});
-
-            if (gameRunning && !aiFinished) {{
-                aiIdx++;
-                if (aiIdx >= aiSteps.length) {{
-                    aiFinished = true;
-                    checkBothFinished();
-                }}
-            }}
 
             const aiIsMain = (aiCur.action === 2 && !aiFinished);
             const aiIsLeft = (aiCur.action === 1 && !aiFinished);
@@ -5350,16 +5616,43 @@ def gioca_vs_agente(
 
             drawLander(ctxA, aiCur.x * sx, H - aiCur.y * sy, aiCur.angle, aiIsMain, aiIsLeft, aiIsRight, true, aiFinished && aiStats.success, aiFinished && aiStats.crashed);
 
-            document.getElementById('ai_hud_fuel').innerText = aiCur.fuel.toFixed(1) + ' un.';
-            document.getElementById('ai_hud_y').innerText = Math.max(0, aiCur.y - getTerrainY(aiCur.x)).toFixed(1) + 'm';
-            document.getElementById('ai_hud_vy').innerText = (aiCur.vy || 0).toFixed(1) + 'm/s';
-            document.getElementById('ai_hud_status').innerText = aiFinished ? (aiStats.success ? '🟢 Allunato' : '🔴 Schiantato') : 'In Volo';
-            document.getElementById('ai_hud_status').style.color = aiFinished ? (aiStats.success ? '#10b981' : '#ef4444') : '#10b981';
-
-            animId = requestAnimationFrame(renderFrame);
+            const aiFuelEl = document.getElementById('ai_hud_fuel_{uid}');
+            if (aiFuelEl) aiFuelEl.innerText = aiCur.fuel.toFixed(1) + ' un.';
+            const aiYEl = document.getElementById('ai_hud_y_{uid}');
+            if (aiYEl) aiYEl.innerText = Math.max(0, aiCur.y - getTerrainY(aiCur.x)).toFixed(1) + 'm';
+            const aiVyEl = document.getElementById('ai_hud_vy_{uid}');
+            if (aiVyEl) aiVyEl.innerText = (aiCur.vy || 0).toFixed(1) + 'm/s';
+            const aiStEl = document.getElementById('ai_hud_status_{uid}');
+            if (aiStEl) {{
+                aiStEl.innerText = aiFinished ? (aiStats.success ? '🟢 Allunato' : '🔴 Schiantato') : 'In Volo';
+                aiStEl.style.color = aiFinished ? (aiStats.success ? '#10b981' : '#ef4444') : '#10b981';
+            }}
         }}
 
-        // Gestione tastiera
+        // Accumulatore 50 Hz per gara simultanea
+        const FIXED_DT = 0.02;
+        let lastFrameTs = performance.now();
+        let accumulator = 0.0;
+
+        function loop(now) {{
+            const frameSec = Math.min(0.1, (now - lastFrameTs) / 1000.0);
+            lastFrameTs = now;
+            accumulator += frameSec;
+            while (accumulator >= FIXED_DT) {{
+                updateHumanPhysics(FIXED_DT);
+                if (gameRunning && !aiFinished) {{
+                    aiIdx++;
+                    if (aiIdx >= aiSteps.length) {{
+                        aiFinished = true;
+                        checkBothFinished();
+                    }}
+                }}
+                accumulator -= FIXED_DT;
+            }}
+            drawScenes();
+            animId = requestAnimationFrame(loop);
+        }}
+
         canvasH.addEventListener('keydown', function(e) {{
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {{
                 e.preventDefault();
@@ -5379,33 +5672,36 @@ def gioca_vs_agente(
             if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') hKeyRight = false;
         }});
 
-        document.getElementById('vs_btn_start').addEventListener('click', startChallenge);
-        document.getElementById('vs_btn_replay').addEventListener('click', startChallenge);
+        document.getElementById('vs_btn_start_{uid}').addEventListener('click', startChallenge);
+        document.getElementById('vs_btn_replay_{uid}').addEventListener('click', startChallenge);
 
         function bindBtn(btnId, setFlag) {{
             const btn = document.getElementById(btnId);
+            if (!btn) return;
             const onDown = (e) => {{ e.preventDefault(); if (!gameRunning) startChallenge(); setFlag(true); }};
             const onUp = (e) => {{ e.preventDefault(); setFlag(false); }};
             btn.addEventListener('mousedown', onDown);
             btn.addEventListener('mouseup', onUp);
+            btn.addEventListener('mouseleave', onUp);
             btn.addEventListener('touchstart', onDown);
             btn.addEventListener('touchend', onUp);
+            btn.addEventListener('touchcancel', onUp);
         }}
-        bindBtn('vs_btn_main', (v) => hKeyMain = v);
-        bindBtn('vs_btn_left', (v) => hKeyLeft = v);
-        bindBtn('vs_btn_right', (v) => hKeyRight = v);
+        bindBtn('vs_btn_main_{uid}', (v) => hKeyMain = v);
+        bindBtn('vs_btn_left_{uid}', (v) => hKeyLeft = v);
+        bindBtn('vs_btn_right_{uid}', (v) => hKeyRight = v);
 
-        const sndBtn = document.getElementById('vs_btn_sound');
+        const sndBtn = document.getElementById('vs_btn_sound_{uid}');
         sndBtn.addEventListener('click', function() {{
             soundEnabled = !soundEnabled;
             sndBtn.innerText = soundEnabled ? '🔊 Audio: ON' : '🔇 Audio: OFF';
         }});
 
-        renderFrame();
+        loop(performance.now());
     }})();
     </script>
     """
-    _display_or_open_html(html_code, "lunar_lander_vs_agente")
+    return _display_or_open_html(html_code, "lunar_lander_vs_agente")
 
 
 def gioca(
@@ -5415,16 +5711,26 @@ def gioca(
     mission: str = "luna_standard",
     gravity: float | None = None,
     wind: bool | None = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Punto di ingresso unificato per il simulatore interattivo.
     Supporta `modalita='single'` (oppure 'single_player') e `modalita='vs_agente'` (oppure 'sfida').
     """
     mod_clean = str(modalita).lower().strip()
     if "single" in mod_clean or "solo" in mod_clean:
-        gioca_single_player(seed=seed, mission=mission, gravity=gravity, wind=wind)
+        return gioca_single_player(
+            seed=seed, mission=mission, gravity=gravity, wind=wind, env_kwargs=env_kwargs
+        )
     else:
-        gioca_vs_agente(model_or_result=model, seed=seed, mission=mission, gravity=gravity, wind=wind)
+        return gioca_vs_agente(
+            model_or_result=model,
+            seed=seed,
+            mission=mission,
+            gravity=gravity,
+            wind=wind,
+            env_kwargs=env_kwargs,
+        )
 
 
 
@@ -5656,6 +5962,7 @@ from play2learn_lunarlander.environment import (
     make_parallel_envs,
     wrap_vec_normalize,
     CustomRewardWrapper,
+    classify_lunar_lander_outcome,
 )
 from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
 from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
@@ -5863,50 +6170,53 @@ def run_lab(
         env_kwargs=env_kwargs,
         total_timesteps=total_timesteps,
     )
-    actual_n_envs = raw_vec_env.num_envs
-    vec_backend = raw_vec_env.__class__.__name__
-
-    vec_env = (
-        wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
-        if use_reward_norm
-        else raw_vec_env
-    )
-
-    print("=" * 76)
-    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
-    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
-    print(
-        f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
-        f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
-    )
-    print(
-        f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
-        f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
-    )
-    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
-    print("=" * 76)
-
-    # 4. Callback con checkpoint in RAM e progress bar leggera throttled
-    tracker = RewardTrackerCallback(
-        best_model_save_dir=run_dir,
-        total_timesteps=total_timesteps,
-        show_progress=True,
-        progress_interval_sec=1.0,
-        capture_milestones=crea_gif_evoluzione,
-    )
-
-    # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
-    model = create_ppo_agent(
-        env=vec_env,
-        seed=seed,
-        device=device,
-        verbose=0,
-    )
-
-    # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
-    print("\n[play2learn] Inizio addestramento dell'agente...")
+    vec_env = raw_vec_env
     t_start = time.perf_counter()
+
     try:
+        actual_n_envs = raw_vec_env.num_envs
+        vec_backend = raw_vec_env.__class__.__name__
+
+        vec_env = (
+            wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
+            if use_reward_norm
+            else raw_vec_env
+        )
+
+        print("=" * 76)
+        print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
+        print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
+        print(
+            f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
+            f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
+        )
+        print(
+            f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
+            f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
+        )
+        print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+        print("=" * 76)
+
+        # 4. Callback con checkpoint in RAM e progress bar leggera throttled
+        tracker = RewardTrackerCallback(
+            best_model_save_dir=run_dir,
+            total_timesteps=total_timesteps,
+            show_progress=True,
+            progress_interval_sec=1.0,
+            capture_milestones=crea_gif_evoluzione,
+        )
+
+        # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
+        model = create_ppo_agent(
+            env=vec_env,
+            seed=seed,
+            device=device,
+            verbose=0,
+        )
+
+        # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
+        print("\n[play2learn] Inizio addestramento dell'agente...")
+        t_start = time.perf_counter()
         model.learn(
             total_timesteps=total_timesteps,
             callback=tracker,
@@ -6061,6 +6371,7 @@ def run_lab(
         "run_id": run_dir.name,
         "run_dir": run_dir,
         "checkpoint_dir": run_dir,
+        "mission": mission,
         "model_path": final_model_path,
         "best_model_path": tracker.best_model_path or final_model_path,
         "plot_path": plot_path,
@@ -6154,38 +6465,56 @@ def dimostrazione_live(
     print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA")
     print("=" * 65)
 
-    for ep in range(n_episodi):
-        obs, _ = env.reset(seed=seed + ep)
-        done = False
-        step = 0
-        tot_fuel = 0.0
+    try:
+        for ep in range(n_episodi):
+            obs, _ = env.reset(seed=seed + ep)
+            done = False
+            step = 0
+            tot_fuel = 0.0
+            last_rew = 0.0
+            last_term = False
+            last_trunc = False
 
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, rew, term, trunc, info = env.step(action)
-            step += 1
-            done = term or trunc
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, rew, term, trunc, info = env.step(action)
+                step += 1
+                done = term or trunc
+                last_rew = float(rew)
+                last_term = bool(term)
+                last_trunc = bool(trunc)
 
-            act_int = int(action)
-            if act_int == 2:
-                tot_fuel += 1.0
-            elif act_int in (1, 3):
-                tot_fuel += 0.3
+                act_int = int(action)
+                if act_int == 2:
+                    tot_fuel += 1.0
+                elif act_int in (1, 3):
+                    tot_fuel += 0.3
 
-            if step % 35 == 0 or done:
-                x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
-                print(
-                    f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
-                    f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
+                if step % 35 == 0 or done:
+                    x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
+                    print(
+                        f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
+                        f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
+                    )
+
+            if reward_fn is not None and isinstance(info, dict):
+                is_succ = bool(info.get("is_success", False))
+            else:
+                un = getattr(env, "unwrapped", env)
+                is_succ, _, _, _ = classify_lunar_lander_outcome(
+                    obs=obs,
+                    original_reward=last_rew,
+                    terminated=last_term,
+                    truncated=last_trunc,
+                    unwrapped=un,
                 )
 
-        is_succ = info.get("is_success", False) if isinstance(info, dict) else False
-        esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
-        print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
-        print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
-        print("-" * 65)
-
-    env.close()
+            esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
+            print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
+            print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
+            print("-" * 65)
+    finally:
+        env.close()
 
 
 
@@ -6268,8 +6597,13 @@ if __name__ == "__main__":
 
 import unittest
 import numpy as np
+import gymnasium as gym
 
-from play2learn_lunarlander.environment import _build_reward_caller
+from play2learn_lunarlander.environment import (
+    _build_reward_caller,
+    classify_lunar_lander_outcome,
+    CustomRewardWrapper,
+)
 
 
 class TestEnvironment(unittest.TestCase):
@@ -6306,6 +6640,53 @@ class TestEnvironment(unittest.TestCase):
         caller = _build_reward_caller(rew_fn)
         obs = np.zeros(8)
         self.assertEqual(caller(obs, 2, False, False, False), 99.0)
+
+    def test_classify_lunar_lander_outcome(self):
+        # Stato di successo perfetto:
+        # x=0.0, y=0.05, vx=0.02, vy=-0.05, angle=0.01, w=0.0, leg_l=1.0, leg_r=1.0
+        obs_success = np.array([0.0, 0.05, 0.02, -0.05, 0.01, 0.0, 1.0, 1.0], dtype=np.float32)
+        success, crashed, timeout, off = classify_lunar_lander_outcome(
+            obs=obs_success,
+            original_reward=100.0,
+            terminated=True,
+            truncated=False,
+        )
+        self.assertTrue(success)
+        self.assertFalse(crashed)
+        self.assertFalse(timeout)
+        self.assertFalse(off)
+
+        # Un solo piede tocca terra (in bilico sul bordo): non deve essere successo
+        obs_single_leg = np.array([0.15, 0.05, 0.02, -0.05, 0.01, 0.0, 1.0, 0.0], dtype=np.float32)
+        success_sl, crashed_sl, _, _ = classify_lunar_lander_outcome(
+            obs=obs_single_leg,
+            original_reward=0.0,
+            terminated=True,
+            truncated=False,
+        )
+        self.assertFalse(success_sl)
+
+        # Schianto (Gym penalty -100)
+        obs_crash = np.array([0.0, 0.0, 0.5, -2.0, 1.5, 0.0, 0.0, 0.0], dtype=np.float32)
+        success_cr, crashed_cr, _, _ = classify_lunar_lander_outcome(
+            obs=obs_crash,
+            original_reward=-100.0,
+            terminated=True,
+            truncated=False,
+        )
+        self.assertFalse(success_cr)
+        self.assertTrue(crashed_cr)
+
+    def test_custom_reward_wrapper_nan_raises_error(self):
+        def bad_reward(obs, action):
+            return float("nan")
+
+        env = gym.make("LunarLander-v3")
+        wrapped = CustomRewardWrapper(env, reward_fn=bad_reward)
+        wrapped.reset(seed=42)
+        with self.assertRaises(RuntimeError):
+            wrapped.step(0)
+        wrapped.close()
 
 
 if __name__ == "__main__":
@@ -6454,6 +6835,8 @@ from stable_baselines3 import PPO
 from play2learn_lunarlander.interactive import (
     _extract_terrain_and_helipad,
     registra_traiettoria_agente,
+    gioca_single_player,
+    gioca_vs_agente,
 )
 
 
@@ -6482,6 +6865,27 @@ class TestInteractive(unittest.TestCase):
         self.assertIn("x", data["steps"][0])
         self.assertIn("y", data["steps"][0])
         self.assertIn("action", data["steps"][0])
+
+    def test_gioca_single_player_smoke(self):
+        ui = gioca_single_player(seed=42)
+        self.assertIsNotNone(ui)
+        html_str = str(getattr(ui, "data", ui))
+        self.assertIn("Simulatore Manuale", html_str)
+
+    def test_gioca_vs_agente_signature_and_smoke(self):
+        env = gym.make("LunarLander-v3")
+        model = PPO("MlpPolicy", env, n_steps=64, batch_size=64)
+        env.close()
+
+        ui = gioca_vs_agente(
+            model=model,
+            seed=42,
+            mission="luna_standard",
+            env_kwargs={"gravity": -10.0},
+        )
+        self.assertIsNotNone(ui)
+        html_str = str(getattr(ui, "data", ui))
+        self.assertIn("Sfida Allunaggio", html_str)
 
 
 if __name__ == "__main__":

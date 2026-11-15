@@ -1,7 +1,9 @@
 """
 Modulo di gestione dell'ambiente di simulazione Gymnasium e del CustomRewardWrapper.
 Ottimizzato per massimo throughput su Google Colab (2 vCPU) e PC locali Windows:
+- Classificatore unificato e rigoroso degli esiti di allunaggio (classify_lunar_lander_outcome)
 - Dispatch pre-compilato della reward_fn (zero if/elif per step)
+- Protezione da valori non finiti (NaN o Inf) per preservare VecNormalize
 - Zero allocazioni/scritture su `info` nei passi non terminali
 - Rimozione di PassiveEnvChecker durante il training
 - Auto-tuning intelligente di DummyVecEnv vs SubprocVecEnv
@@ -13,6 +15,7 @@ from __future__ import annotations
 import os
 import sys
 import inspect
+import math
 import warnings
 from typing import Callable, Any
 
@@ -50,8 +53,65 @@ from play2learn_lunarlander.config import (
     BOUNDARY_X,
     HELIPAD_X_MAX,
     SAFE_LANDING_ANGLE,
+    SAFE_MAX_VX,
+    SAFE_MAX_VY,
     VECNORM_PARAMS,
 )
+
+
+def classify_lunar_lander_outcome(
+    obs: Any,
+    original_reward: float,
+    terminated: bool,
+    truncated: bool,
+    unwrapped: Any = None,
+) -> tuple[bool, bool, bool, bool]:
+    """
+    Unica fonte di verità per la classificazione dell'esito dell'episodio di volo.
+    Restituisce: (is_success, is_crashed, is_timeout, is_off_target).
+    """
+    is_timeout = bool(truncated and not terminated)
+    if not terminated:
+        return False, False, is_timeout, False
+
+    game_over = bool(getattr(unwrapped, "game_over", False))
+    lander = getattr(unwrapped, "lander", None)
+    is_awake = bool(getattr(lander, "awake", True)) if lander is not None else True
+
+    try:
+        final_x = abs(float(obs.item(0)))
+        final_y = abs(float(obs.item(1)))
+        final_vx = abs(float(obs.item(2)))
+        final_vy = abs(float(obs.item(3)))
+        final_angle = abs(float(obs.item(4)))
+        both_legs = (float(obs.item(6)) > 0.5) and (float(obs.item(7)) > 0.5)
+    except (AttributeError, ValueError):
+        final_x = abs(float(obs[0]))
+        final_y = abs(float(obs[1]))
+        final_vx = abs(float(obs[2]))
+        final_vy = abs(float(obs[3]))
+        final_angle = abs(float(obs[4]))
+        both_legs = (float(obs[6]) > 0.5) and (float(obs[7]) > 0.5)
+
+    # 1. Schianto immediato scafo o fuori schermo
+    if game_over or final_x >= BOUNDARY_X:
+        return False, True, False, (final_x > HELIPAD_X_MAX)
+
+    # 2. Criteri fisici e didattici rigorosi per un vero allunaggio morbido:
+    #    - Entro le bandierine (|x| <= 0.20) e a quota piazzola (|y| <= 0.15)
+    #    - Assetto verticale (|angle| <= 0.25 rad, ~14°)
+    #    - Entrambe le zampe saldamente a contatto
+    #    - Lander fermo (Box2D sleep) o velocità residue entro i margini di sicurezza
+    #    - Segnale Gym non distruttivo
+    on_helipad = (final_x <= HELIPAD_X_MAX) and (final_y <= 0.15)
+    upright = final_angle <= SAFE_LANDING_ANGLE
+    settled = (not is_awake) or (final_vx <= SAFE_MAX_VX and final_vy <= SAFE_MAX_VY)
+    gym_ok = (not is_awake) or (original_reward >= 100.0) or (original_reward > 0.0)
+
+    if on_helipad and upright and both_legs and settled and gym_ok:
+        return True, False, False, False
+
+    return False, True, False, (final_x > HELIPAD_X_MAX)
 
 
 def _build_reward_caller(reward_fn: Callable) -> Callable:
@@ -60,12 +120,18 @@ def _build_reward_caller(reward_fn: Callable) -> Callable:
     un dispatcher specializzato ad alta velocità (zero controlli in step()).
     """
     try:
-        param_count = len(inspect.signature(reward_fn).parameters)
+        sig = inspect.signature(reward_fn)
+        params = list(sig.parameters.values())
+        has_var = any(
+            p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for p in params
+        )
+        param_count = -1 if has_var else len(params)
     except Exception:
         param_count = 5
 
     if param_count == 5:
-        return lambda obs, act, succ, crash, tout: reward_fn(obs, act, succ, crash, tout)
+        return reward_fn
     if param_count == 4:
         return lambda obs, act, succ, crash, tout: reward_fn(obs, succ, crash, tout)
     if param_count == 2:
@@ -89,7 +155,7 @@ def _build_reward_caller(reward_fn: Callable) -> Callable:
 class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
     """
     Wrapper ad alte prestazioni che intercetta ogni `step()`, calcola la telemetria
-    di volo e delega il calcolo della ricompensa alla funzione dello studente.
+    di volo, valida i valori numerici e delega il calcolo della ricompensa.
     Popola il dizionario `info` solo a fine episodio per minimizzare allocazioni e IPC.
     """
 
@@ -126,7 +192,12 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
             self.ep_side_engine_steps += 1
 
         # Accesso scalare diretto (.item) evita allocazione di np.float32
-        if obs.item(6) > 0.5 or obs.item(7) > 0.5:
+        try:
+            contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
+        except (AttributeError, ValueError):
+            contact = (obs[6] > 0.5) or (obs[7] > 0.5)
+
+        if contact:
             self.ep_ground_steps += 1
         else:
             self.ep_air_steps += 1
@@ -135,73 +206,32 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         if not (terminated or truncated):
             try:
                 custom_rew = float(self._call_reward(obs, act_int, False, False, False))
+                if not math.isfinite(custom_rew):
+                    raise ValueError(f"Valore non finito restituito: {custom_rew} (NaN o Inf).")
             except Exception as e:
                 raise RuntimeError(
                     f"[Play2Learn Error] Errore nell'esecuzione della tua 'custom_reward': {e}\n"
-                    f"Controlla i calcoli matematici (es. divisioni per zero o indici errati)."
+                    f"Controlla i calcoli matematici (es. divisioni per zero, log di negativi o indici errati)."
                 ) from e
             return obs, custom_rew, False, False, info
 
-        # 3. Stato terminale / timeout (eseguito 1 volta per episodio)
-        is_timeout = bool(truncated)
-        is_crashed = False
-        is_success = False
-        is_off_target = False
-
-        if terminated:
-            unwrapped = self._unwrapped
-            game_over = getattr(unwrapped, "game_over", False)
-            lander = getattr(unwrapped, "lander", None)
-            is_awake = getattr(lander, "awake", True) if lander is not None else True
-
-            final_x = abs(obs.item(0))
-            final_angle = abs(obs.item(4))
-            legs_contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
-
-            # 1. Schianto catastrofico evidente: scafo tocca terra (game_over) o fuori schermo (|x| >= 1.0)
-            if game_over or final_x >= BOUNDARY_X:
-                is_crashed = True
-                is_success = False
-            # 2. Il modulo ha toccato terra e si è fermato (Box2D sleep / awake=False) o fine episodio positiva Gym
-            elif (not is_awake) or (original_reward >= 100.0):
-                # Per essere un vero SUCCESSO didattico e fisico, l'atterraggio DEVE avvenire:
-                # - Sulla piazzola delimitata dalle bandierine (|x| <= 0.20)
-                # - Con assetto verticale stabile (|angle| <= 0.25 rad, ~14°)
-                # - Con contatto delle zampe
-                on_helipad = final_x <= HELIPAD_X_MAX
-                upright = final_angle <= SAFE_LANDING_ANGLE
-
-                if on_helipad and upright and legs_contact:
-                    is_success = True
-                    is_crashed = False
-                else:
-                    # Atterraggio completato ma fuori piazzola (es. su crateri/pendii) o ribaltato:
-                    # è un fallimento/fuori bersaglio!
-                    is_success = False
-                    is_crashed = True
-                    if not on_helipad:
-                        is_off_target = True
-            else:
-                # Caso residuale
-                on_helipad = final_x <= HELIPAD_X_MAX
-                upright = final_angle <= SAFE_LANDING_ANGLE
-                if on_helipad and upright and legs_contact and original_reward > 0.0:
-                    is_success = True
-                    is_crashed = False
-                else:
-                    is_crashed = True
-                    is_success = False
-                    if not on_helipad:
-                        is_off_target = True
+        # 3. Stato terminale / timeout (eseguito 1 sola volta per episodio)
+        is_success, is_crashed, is_timeout, is_off_target = classify_lunar_lander_outcome(
+            obs=obs,
+            original_reward=float(original_reward),
+            terminated=bool(terminated),
+            truncated=bool(truncated),
+            unwrapped=self._unwrapped,
+        )
 
         try:
-            custom_rew = float(
-                self._call_reward(obs, act_int, is_success, is_crashed, is_timeout)
-            )
+            custom_rew = float(self._call_reward(obs, act_int, is_success, is_crashed, is_timeout))
+            if not math.isfinite(custom_rew):
+                raise ValueError(f"Valore non finito restituito: {custom_rew} (NaN o Inf).")
         except Exception as e:
             raise RuntimeError(
                 f"[Play2Learn Error] Errore nell'esecuzione della tua 'custom_reward': {e}\n"
-                f"Controlla i calcoli matematici (es. divisioni per zero o indici errati)."
+                f"Controlla i calcoli matematici (es. divisioni per zero, log di negativi o indici errati)."
             ) from e
 
         # Popolamento `info` concentrato a fine episodio
@@ -211,17 +241,31 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
         info["is_crashed"] = is_crashed
         info["is_timeout"] = is_timeout
         info["is_off_target"] = is_off_target
+
+        try:
+            fx = abs(float(obs.item(0)))
+            fy = abs(float(obs.item(1)))
+            fvx = abs(float(obs.item(2)))
+            fvy = abs(float(obs.item(3)))
+            fa = abs(float(obs.item(4)))
+        except (AttributeError, ValueError):
+            fx = abs(float(obs[0]))
+            fy = abs(float(obs[1]))
+            fvx = abs(float(obs[2]))
+            fvy = abs(float(obs[3]))
+            fa = abs(float(obs[4]))
+
         info["telemetry"] = {
             "fuel_used": float(self.ep_fuel_used),
             "main_engine_steps": self.ep_main_engine_steps,
             "side_engine_steps": self.ep_side_engine_steps,
             "air_steps": self.ep_air_steps,
             "ground_steps": self.ep_ground_steps,
-            "final_abs_x": abs(obs.item(0)),
-            "final_abs_y": abs(obs.item(1)),
-            "final_abs_vx": abs(obs.item(2)),
-            "final_abs_vy": abs(obs.item(3)),
-            "final_abs_angle": abs(obs.item(4)),
+            "final_abs_x": fx,
+            "final_abs_y": fy,
+            "final_abs_vx": fvx,
+            "final_abs_vy": fvy,
+            "final_abs_angle": fa,
         }
 
         return obs, custom_rew, terminated, truncated, info

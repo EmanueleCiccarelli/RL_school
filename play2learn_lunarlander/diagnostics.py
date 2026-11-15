@@ -38,9 +38,21 @@ def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
     mean_len = float(np.mean(tracker.episode_lengths[-tail:]))
     mean_fuel = float(np.mean(tracker.fuel_used_list[-tail:]))
     mean_ground = float(np.mean(tracker.ground_steps_list[-tail:]))
-    mean_x = float(np.mean(tracker.final_x_list[-tail:]))
-    mean_vy = float(np.mean(tracker.final_vy_list[-tail:]))
-    mean_angle = float(np.mean(tracker.final_angle_list[-tail:])) if tracker.final_angle_list else 0.0
+
+    # Calcola le medie fisiche relative agli schianti strettamente sugli episodi falliti (per evitare masking con i successi)
+    crash_indices = [i for i, o in enumerate(recent_outcomes) if o == "crash"]
+    recent_x = tracker.final_x_list[-tail:]
+    recent_vy = tracker.final_vy_list[-tail:]
+    recent_ang = tracker.final_angle_list[-tail:] if tracker.final_angle_list else []
+
+    if crash_indices:
+        mean_x = float(np.mean([recent_x[i] for i in crash_indices]))
+        mean_vy = float(np.mean([recent_vy[i] for i in crash_indices]))
+        mean_angle = float(np.mean([recent_ang[i] for i in crash_indices])) if recent_ang else 0.0
+    else:
+        mean_x = float(np.mean(recent_x))
+        mean_vy = float(np.mean(recent_vy))
+        mean_angle = float(np.mean(recent_ang)) if recent_ang else 0.0
 
     metrics = {
         "tail": tail,

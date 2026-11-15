@@ -3,8 +3,8 @@ Modulo di valutazione e registrazione video/GIF ad alte prestazioni.
 Procedura in 2 fasi:
 - Fase 1A: Fast Sweep deterministico (inferenza diretta PyTorch, metriche imparziali).
 - Fase 1B: Caccia stocastica opzionale ai soli candidati video mancanti (senza alterare i KPI).
-- Fase 2: Replay fedele su Box2D dei soli target selezionati, encoding MP4 ultrafast
-  e generazione GIF diretta dai frame in RAM (zero re-decoding da disco).
+- Fase 2: Replay mirato su Box2D con streaming video diretto su disco (consumo RAM ~1 MB),
+  pixel format compatibile yuv420p per browser e generazione GIF ottimizzata.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ except ImportError:
     gym = Any  # type: ignore
     PPO = Any  # type: ignore
 
-from play2learn_lunarlander.environment import CustomRewardWrapper
+from play2learn_lunarlander.environment import (
+    CustomRewardWrapper,
+    classify_lunar_lander_outcome,
+)
 
 
 def _make_fast_predictor(model: PPO) -> Callable[[np.ndarray, bool], int]:
@@ -96,6 +99,80 @@ def _run_single_sweep_episode(
     return candidate, timeout_hit
 
 
+def _record_episode_streaming(
+    render_env: gym.Env,
+    seed: int,
+    actions: list[int],
+    output_path: Path,
+    fps: int = 50,
+    capture_gif_frames: bool = False,
+    gif_stride: int = 2,
+    gif_width: int = 400,
+) -> list[np.ndarray]:
+    """
+    Rigioca un episodio e scrive direttamente i frame su disco in streaming (RAM costante ~1 MB).
+    Supporta pixel format yuv420p per massima compatibilità con browser HTML5.
+    """
+    import imageio
+    from PIL import Image
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    gif_frames: list[np.ndarray] = []
+
+    def _open_writer():
+        try:
+            return imageio.get_writer(
+                str(output_path),
+                fps=fps,
+                macro_block_size=1,
+                ffmpeg_params=["-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p"],
+            )
+        except Exception:
+            try:
+                return imageio.get_writer(
+                    str(output_path),
+                    fps=fps,
+                    macro_block_size=1,
+                    ffmpeg_params=["-preset", "ultrafast", "-crf", "26"],
+                )
+            except Exception:
+                return imageio.get_writer(str(output_path), fps=fps, macro_block_size=1)
+
+    def _maybe_collect_gif(frame: np.ndarray, idx: int, force: bool = False) -> None:
+        if not capture_gif_frames or (not force and idx % gif_stride != 0):
+            return
+        h, w = frame.shape[:2]
+        target_h = max(1, int(gif_width * h / w))
+        small = Image.fromarray(frame).resize((gif_width, target_h), Image.Resampling.BILINEAR)
+        gif_frames.append(np.asarray(small))
+
+    render_env.reset(seed=seed)
+    with _open_writer() as writer:
+        frame_idx = 0
+        init_frame = render_env.render()
+        if init_frame is not None:
+            writer.append_data(init_frame)
+            _maybe_collect_gif(init_frame, frame_idx)
+            frame_idx += 1
+
+        last_frame = init_frame
+        for act in actions:
+            _, _, term, trunc, _ = render_env.step(act)
+            frame = render_env.render()
+            if frame is not None:
+                writer.append_data(frame)
+                _maybe_collect_gif(frame, frame_idx)
+                last_frame = frame
+                frame_idx += 1
+            if term or trunc:
+                break
+
+        if last_frame is not None and capture_gif_frames:
+            _maybe_collect_gif(last_frame, frame_idx, force=True)
+
+    return gif_frames
+
+
 def evaluate_and_record(
     model: PPO,
     env_id: str,
@@ -148,75 +225,84 @@ def evaluate_and_record(
     timeout_triggered = False
     ep = 0
 
-    # =========================================================================
-    # FASE 1A: SWEEP DETERMINISTICO IMPARZIALE
-    # =========================================================================
-    det_budget_sec = sweep_timeout_seconds * 0.75
-    while ep < max_eval_episodes and not timeout_triggered:
-        have_enough_videos = (
-            len(success_candidates) >= target_successes
-            and len(failure_candidates) >= target_failures
-        )
-        if ep >= min_eval_episodes and (
-            have_enough_videos or (time.perf_counter() - t_sweep_start >= det_budget_sec)
-        ):
-            break
+    # Budget di sicurezza esteso per garantire il completamento di min_eval_episodes
+    hard_timeout_sec = max(sweep_timeout_seconds * 2.5, 15.0)
 
-        cand, timeout_triggered = _run_single_sweep_episode(
-            env=sweep_env,
-            predict_fn=predict_fn,
-            ep_seed=seed + ep,
-            deterministic=True,
-            t_start=t_sweep_start,
-            timeout_sec=sweep_timeout_seconds,
-        )
+    try:
+        # =========================================================================
+        # FASE 1A: SWEEP DETERMINISTICO IMPARZIALE
+        # =========================================================================
+        det_budget_sec = sweep_timeout_seconds * 0.75
+        while ep < max_eval_episodes and not timeout_triggered:
+            have_enough_videos = (
+                len(success_candidates) >= target_successes
+                and len(failure_candidates) >= target_failures
+            )
+            elapsed = time.perf_counter() - t_sweep_start
 
-        eval_rewards.append(cand["reward"])
-        eval_lengths.append(cand["steps"])
-        eval_fuels.append(cand["fuel"])
+            # Interrompe solo se abbiamo raggiunto min_eval_episodes E (abbiamo i video O è scaduto il budget)
+            if ep >= min_eval_episodes and (have_enough_videos or elapsed >= det_budget_sec):
+                break
+            if elapsed >= hard_timeout_sec:
+                break
 
-        if cand["is_success"]:
-            eval_successes += 1
-            success_fuels.append(cand["fuel"])
-            success_candidates.append(cand)
-        else:
-            if cand["is_timeout"]:
-                eval_timeouts += 1
+            cand, timeout_triggered = _run_single_sweep_episode(
+                env=sweep_env,
+                predict_fn=predict_fn,
+                ep_seed=seed + ep,
+                deterministic=True,
+                t_start=t_sweep_start,
+                timeout_sec=hard_timeout_sec,
+            )
+
+            eval_rewards.append(cand["reward"])
+            eval_lengths.append(cand["steps"])
+            eval_fuels.append(cand["fuel"])
+
+            if cand["is_success"]:
+                eval_successes += 1
+                success_fuels.append(cand["fuel"])
+                success_candidates.append(cand)
             else:
-                eval_crashes += 1
-            failure_fuels.append(cand["fuel"])
-            failure_candidates.append(cand)
+                if cand["is_timeout"]:
+                    eval_timeouts += 1
+                else:
+                    eval_crashes += 1
+                failure_fuels.append(cand["fuel"])
+                failure_candidates.append(cand)
 
-        ep += 1
+            ep += 1
 
-    # =========================================================================
-    # FASE 1B: CACCIA RAPIDA STOCASTICA AI SOLI VIDEO MANCANTI (NON ALTERA I KPI)
-    # =========================================================================
-    stoch_ep = 0
-    max_stoch_hunt = 25
-    while (
-        not timeout_triggered
-        and stoch_ep < max_stoch_hunt
-        and (
-            len(success_candidates) < target_successes
-            or len(failure_candidates) < target_failures
-        )
-    ):
-        cand, timeout_triggered = _run_single_sweep_episode(
-            env=sweep_env,
-            predict_fn=predict_fn,
-            ep_seed=seed + 5000 + stoch_ep,
-            deterministic=False,
-            t_start=t_sweep_start,
-            timeout_sec=sweep_timeout_seconds,
-        )
-        if cand["is_success"] and len(success_candidates) < target_successes:
-            success_candidates.append(cand)
-        elif (not cand["is_success"]) and len(failure_candidates) < target_failures:
-            failure_candidates.append(cand)
-        stoch_ep += 1
+        # =========================================================================
+        # FASE 1B: CACCIA RAPIDA STOCASTICA AI SOLI VIDEO MANCANTI (NON ALTERA I KPI)
+        # =========================================================================
+        stoch_ep = 0
+        max_stoch_hunt = 25
+        while (
+            not timeout_triggered
+            and stoch_ep < max_stoch_hunt
+            and (time.perf_counter() - t_sweep_start < hard_timeout_sec)
+            and (
+                len(success_candidates) < target_successes
+                or len(failure_candidates) < target_failures
+            )
+        ):
+            cand, timeout_triggered = _run_single_sweep_episode(
+                env=sweep_env,
+                predict_fn=predict_fn,
+                ep_seed=seed + 5000 + stoch_ep,
+                deterministic=False,
+                t_start=t_sweep_start,
+                timeout_sec=hard_timeout_sec,
+            )
+            if cand["is_success"] and len(success_candidates) < target_successes:
+                success_candidates.append(cand)
+            elif (not cand["is_success"]) and len(failure_candidates) < target_failures:
+                failure_candidates.append(cand)
+            stoch_ep += 1
+    finally:
+        sweep_env.close()
 
-    sweep_env.close()
     sweep_duration = time.perf_counter() - t_sweep_start
     total_evaluated = max(1, len(eval_rewards))
     success_rate = (eval_successes / total_evaluated) * 100.0
@@ -228,15 +314,13 @@ def evaluate_and_record(
     )
 
     # =========================================================================
-    # FASE 2: REPLAY VIDEO MIRATO (SENZA WRAPPER, GIF DA FRAME IN RAM)
+    # FASE 2: REPLAY VIDEO MIRATO (STREAMING MP4 A BASSO CONSUMO RAM)
     # =========================================================================
-    # Priorità ai candidati deterministici, ordinati per efficienza carburante
     selected_successes = sorted(
         success_candidates,
         key=lambda c: (not c["deterministic"], c["fuel"]),
     )[:target_successes]
 
-    # Bilancia crash e timeout tra i fallimenti se entrambi presenti
     crashes_pool = [c for c in failure_candidates if c["is_crashed"]]
     timeouts_pool = [c for c in failure_candidates if c["is_timeout"]]
     selected_failures: list[dict[str, Any]] = []
@@ -253,7 +337,7 @@ def evaluate_and_record(
     failure_videos: list[Path] = []
     best_success_fuel: float = float("inf")
     best_success_video: Path | None = None
-    best_success_frames: list[np.ndarray] | None = None
+    best_gif_frames: list[np.ndarray] = []
 
     to_render = (
         [("successo", c) for c in selected_successes]
@@ -262,7 +346,7 @@ def evaluate_and_record(
 
     if to_render:
         print(
-            f"[play2learn] Fase 2: Rendering video ({len(selected_successes)} successi, "
+            f"[play2learn] Fase 2: Rendering video streaming ({len(selected_successes)} successi, "
             f"{len(selected_failures)} fallimenti)..."
         )
         try:
@@ -275,54 +359,60 @@ def evaluate_and_record(
         except TypeError:
             render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
 
-        for kind, cand in to_render:
-            render_env.reset(seed=cand["seed"])
-            frames: list[np.ndarray] = []
-            init_frame = render_env.render()
-            if init_frame is not None:
-                frames.append(init_frame)
-
-            for act in cand["actions"]:
-                _, _, term, trunc, _ = render_env.step(act)
-                frame = render_env.render()
-                if frame is not None:
-                    frames.append(frame)
-                if term or trunc:
-                    break
-
-            pfx = f"{filename_prefix}_" if filename_prefix else ""
-            if kind == "successo":
-                idx = len(success_videos) + 1
-                v_path = video_dir / f"{pfx}successo_{idx}_step_{cand['steps']}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                success_videos.append(v_path)
-                if cand["fuel"] < best_success_fuel:
-                    best_success_fuel = cand["fuel"]
-                    best_success_video = v_path
-                    best_success_frames = frames
-            else:
-                idx = len(failure_videos) + 1
-                if cand.get("is_off_target"):
-                    causa = "fuori_bersaglio"
-                elif cand["is_crashed"]:
-                    causa = "crash"
-                elif cand["is_timeout"]:
-                    causa = "timeout"
+        try:
+            for kind, cand in to_render:
+                pfx = f"{filename_prefix}_" if filename_prefix else ""
+                if kind == "successo":
+                    idx = len(success_videos) + 1
+                    v_path = video_dir / f"{pfx}successo_{idx}_step_{cand['steps']}.mp4"
+                    is_best = cand["fuel"] < best_success_fuel
+                    gif_frames = _record_episode_streaming(
+                        render_env=render_env,
+                        seed=cand["seed"],
+                        actions=cand["actions"],
+                        output_path=v_path,
+                        fps=50,
+                        capture_gif_frames=is_best and create_gif,
+                    )
+                    success_videos.append(v_path)
+                    if is_best:
+                        best_success_fuel = cand["fuel"]
+                        best_success_video = v_path
+                        if gif_frames:
+                            best_gif_frames = gif_frames
                 else:
-                    causa = "fallimento"
-                v_path = video_dir / f"{pfx}fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
-                _save_frames_as_mp4(frames, v_path)
-                failure_videos.append(v_path)
+                    idx = len(failure_videos) + 1
+                    if cand.get("is_off_target"):
+                        causa = "fuori_bersaglio"
+                    elif cand["is_crashed"]:
+                        causa = "crash"
+                    elif cand["is_timeout"]:
+                        causa = "timeout"
+                    else:
+                        causa = "fallimento"
+                    v_path = video_dir / f"{pfx}fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
+                    _record_episode_streaming(
+                        render_env=render_env,
+                        seed=cand["seed"],
+                        actions=cand["actions"],
+                        output_path=v_path,
+                        fps=50,
+                        capture_gif_frames=False,
+                    )
+                    failure_videos.append(v_path)
+        finally:
+            render_env.close()
 
-        render_env.close()
-
-    # Genera GIF direttamente dai frame già in RAM (evita decode H.264 da disco)
+    # Genera GIF direttamente dai frame scalati catturati al volo in streaming
     gif_path: Path | None = None
-    if create_gif and best_success_video and best_success_frames:
-        gif_path = _save_frames_as_gif(
-            best_success_frames,
-            best_success_video.with_suffix(".gif"),
-        )
+    if create_gif and best_success_video and best_gif_frames:
+        try:
+            import imageio
+            g_path = best_success_video.with_suffix(".gif")
+            imageio.mimsave(str(g_path), best_gif_frames, fps=25, loop=0)
+            gif_path = g_path
+        except Exception as e:
+            print(f"[play2learn] Avviso creazione GIF: {e}")
 
     return {
         "mean_reward": float(np.mean(eval_rewards)) if eval_rewards else 0.0,
@@ -341,50 +431,6 @@ def evaluate_and_record(
         "mean_fuel_success": float(np.mean(success_fuels)) if success_fuels else 0.0,
         "mean_fuel_failure": float(np.mean(failure_fuels)) if failure_fuels else 0.0,
     }
-
-
-def _save_frames_as_mp4(frames: list[np.ndarray], output_path: Path, fps: int = 50) -> None:
-    """Salva i frame in MP4 usando preset ultrafast (2-3x più veloce e file compatti)."""
-    try:
-        import imageio
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        imageio.mimsave(
-            str(output_path),
-            frames,
-            fps=fps,
-            macro_block_size=1,
-            ffmpeg_params=["-preset", "ultrafast", "-crf", "26"],
-        )
-    except Exception:
-        # Fallback compatibile se il backend ffmpeg non accetta ffmpeg_params
-        try:
-            import imageio
-            imageio.mimsave(str(output_path), frames, fps=fps, macro_block_size=1)
-        except Exception as e:
-            print(f"[play2learn] Errore nel salvataggio video {output_path.name}: {e}")
-
-
-def _save_frames_as_gif(
-    frames: list[np.ndarray],
-    gif_output: Path,
-    source_fps: int = 50,
-    stride: int = 2,
-) -> Path | None:
-    """Crea la GIF animata direttamente dai frame in RAM campionati 1 ogni `stride`."""
-    try:
-        import imageio
-        sampled = frames[::stride]
-        if sampled:
-            imageio.mimsave(
-                str(gif_output),
-                sampled,
-                fps=max(10, source_fps // stride),
-                loop=0,
-            )
-            return gif_output
-    except Exception:
-        pass
-    return None
 
 
 def crea_gif_evoluzione_apprendimento(
@@ -423,7 +469,6 @@ def crea_gif_evoluzione_apprendimento(
     if policy is None:
         return None
 
-    # Salva stato originale dei pesi del modello per ripristinarlo intatto
     orig_state = {
         k: v.detach().cpu().clone()
         for k, v in policy.state_dict().items()
@@ -439,88 +484,97 @@ def crea_gif_evoluzione_apprendimento(
     except TypeError:
         render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
 
-    all_annotated_frames: list[np.ndarray] = []
-    total_stages = len(milestones)
-
     fasi_titoli = [
-        "Fase 1: Primi Passi (Esplorazione Casuale)",
-        "Fase 2: Accensione Motori (Tentativi Stabilizzazione)",
-        "Fase 3: Discesa Orientata (Controllo Quota)",
+        "Fase 1: Primi Passi (Esplorazione)",
+        "Fase 2: Accensione Motori",
+        "Fase 3: Discesa Orientata",
         "Fase Finale: Atterraggio Controllato",
     ]
+    total_stages = len(milestones)
+    frames_written = 0
 
     try:
-        for idx, m in enumerate(milestones):
-            policy.load_state_dict(m["state_dict"])
-            predict_fn = _make_fast_predictor(model)
+        with imageio.get_writer(str(output_path), mode="I", fps=fps, loop=0) as gif_writer:
+            for idx, m in enumerate(milestones):
+                policy.load_state_dict(m["state_dict"])
+                predict_fn = _make_fast_predictor(model)
 
-            # Usa sempre lo stesso seed per visualizzare la progressione sullo stesso identico terreno
-            obs, _ = render_env.reset(seed=seed)
-            ep_frames: list[np.ndarray] = []
-            f_init = render_env.render()
-            if f_init is not None:
-                ep_frames.append(f_init)
+                obs, _ = render_env.reset(seed=seed)
+                sampled_raw: list[np.ndarray] = []
+                f_init = render_env.render()
+                if f_init is not None:
+                    sampled_raw.append(f_init)
 
-            done = False
-            step_count = 0
-            final_esito = "In volo..."
+                done = False
+                step_count = 0
+                final_esito = "In volo..."
+                last_frame = f_init
 
-            while not done and step_count < max_steps_per_episode:
-                action = predict_fn(obs, deterministic=True)
-                obs, rew, term, trunc, info = render_env.step(action)
-                step_count += 1
-                done = term or trunc
+                while not done and step_count < max_steps_per_episode:
+                    action = predict_fn(obs, deterministic=True)
+                    obs, rew, term, trunc, _ = render_env.step(action)
+                    step_count += 1
+                    done = bool(term or trunc)
 
-                f = render_env.render()
-                if f is not None:
-                    ep_frames.append(f)
+                    if step_count % stride == 0 or done:
+                        f = render_env.render()
+                        if f is not None:
+                            sampled_raw.append(f)
+                            last_frame = f
 
-                if done:
-                    if info.get("is_success", False):
-                        final_esito = "🎯 Allunaggio Riuscito!"
-                    elif info.get("is_crashed", False):
-                        final_esito = "💥 Schianto al suolo"
-                    elif info.get("is_timeout", False):
-                        final_esito = "⏳ Tempo scaduto (Hovering)"
-                    else:
-                        final_esito = "Fine volo"
+                    if done:
+                        is_succ, is_crash, is_tout, is_off = classify_lunar_lander_outcome(
+                            obs=obs,
+                            original_reward=float(rew),
+                            terminated=bool(term),
+                            truncated=bool(trunc),
+                            unwrapped=render_env.unwrapped,
+                        )
+                        if is_succ:
+                            final_esito = "[OK] Allunaggio Riuscito"
+                        elif is_off:
+                            final_esito = "[FUORI] Fuori Piazzola"
+                        elif is_crash:
+                            final_esito = "[CRASH] Schianto al Suolo"
+                        elif is_tout:
+                            final_esito = "[TIMEOUT] Tempo Scaduto"
+                        else:
+                            final_esito = "Fine Volo"
 
-            stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx+1}/{total_stages}"
-            step_val = m.get("step", step_count)
-            pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
-            succ_val = m.get("success_rate", 0.0)
+                if not done and step_count >= max_steps_per_episode:
+                    final_esito = "[VOLO] Hovering Prolungato"
 
-            sampled_ep = ep_frames[::stride]
-            if not sampled_ep:
-                continue
+                if not sampled_raw:
+                    continue
 
-            # Congela il frame finale per 8 frame per rendere leggibile l'esito
-            if done and sampled_ep:
-                sampled_ep = sampled_ep + [sampled_ep[-1]] * 8
+                stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx + 1}/{total_stages}"
+                step_val = m.get("step", step_count)
+                pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
+                succ_val = m.get("success_rate", 0.0)
 
-            for f in sampled_ep:
-                h, w = f.shape[:2]
-                target_h = int(target_width * h / w)
-                img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
-                draw = ImageDraw.Draw(img)
+                last_annotated = None
+                for f in sampled_raw:
+                    h, w = f.shape[:2]
+                    target_h = max(1, int(target_width * h / w))
+                    img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
+                    draw = ImageDraw.Draw(img)
+                    draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
+                    draw.text((8, 4), f"{stage_title} - Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
+                    draw.text((8, 18), f"Esito: {final_esito} | Succ. mobile: {succ_val:.0f}%", fill=(147, 197, 253))
+                    last_annotated = np.asarray(img)
+                    gif_writer.append_data(last_annotated)
+                    frames_written += 1
 
-                draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
-                draw.text((10, 4), f"{stage_title} — Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
-                draw.text((10, 18), f"Esito: {final_esito} | Successo mobile: {succ_val:.0f}%", fill=(147, 197, 253))
-
-                all_annotated_frames.append(np.array(img))
-
-    finally:
-        render_env.close()
-        # Ripristina invariati i pesi del modello originale
-        policy.load_state_dict(orig_state)
-
-    if not all_annotated_frames:
-        return None
-
-    try:
-        imageio.mimsave(str(output_path), all_annotated_frames, fps=fps, loop=0)
-        return output_path
+                # Congela l'ultimo frame annotato per 8 frame per una lettura chiara
+                if last_annotated is not None:
+                    for _ in range(8):
+                        gif_writer.append_data(last_annotated)
+                        frames_written += 1
     except Exception as e:
         print(f"[play2learn] Errore nel salvataggio della GIF evoluzione: {e}")
         return None
+    finally:
+        render_env.close()
+        policy.load_state_dict(orig_state)
+
+    return output_path if frames_written > 0 else None

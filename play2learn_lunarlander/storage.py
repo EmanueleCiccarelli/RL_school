@@ -1,21 +1,56 @@
 """
-Modulo per la gestione della persistenza, salvataggio dei checkpoint dei modelli,
+Modulo per la gestione della persistenza, salvataggio atomico dei checkpoint dei modelli,
 delle metriche, del codice della funzione di reward e dell'alberatura 'runs/'.
 """
 
 from __future__ import annotations
 
+import os
+import re
 import json
 import inspect
 import datetime
+import tempfile
 from pathlib import Path
 from typing import Callable, Any
 
 
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Scrittura atomica a prova di crash/interruzione tramite file temporaneo e rename os.replace()."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(path))
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Serializza dati in JSON e li scrive su disco in modo atomico."""
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False, default=str))
+
+
 def get_default_runs_dir() -> Path:
-    """Restituisce il percorso della cartella principale 'runs/'."""
-    # Cerchiamo la cartella 'runs/' a livello di root del laboratorio
-    runs_dir = Path("runs").resolve()
+    """
+    Restituisce il percorso della cartella principale 'runs/', garantendo coerenza
+    anche quando eseguito da dentro 'play2learn_lunarlander/' (es. notebook locale).
+    """
+    env_override = os.environ.get("PLAY2LEARN_RUNS_DIR")
+    if env_override:
+        runs_dir = Path(env_override).resolve()
+    else:
+        cwd = Path.cwd().resolve()
+        if cwd.name == "play2learn_lunarlander" and (cwd.parent / "pyproject.toml").exists():
+            runs_dir = cwd.parent / "runs"
+        else:
+            runs_dir = cwd / "runs"
+
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / "favorites").mkdir(parents=True, exist_ok=True)
     (runs_dir / "successi").mkdir(parents=True, exist_ok=True)
@@ -28,8 +63,18 @@ def get_default_success_dir() -> Path:
     succ_dir.mkdir(parents=True, exist_ok=True)
     idx_file = succ_dir / "index.json"
     if not idx_file.exists():
-        idx_file.write_text("[]\n", encoding="utf-8")
+        atomic_write_text(idx_file, "[]\n")
     return succ_dir
+
+
+def _unique_dir(base: Path, name: str) -> Path:
+    """Evita collisioni di cartelle timestampate generate nello stesso secondo."""
+    candidate = base / name
+    suffix = 1
+    while candidate.exists():
+        candidate = base / f"{name}_{suffix}"
+        suffix += 1
+    return candidate
 
 
 def create_run_directory(
@@ -51,7 +96,7 @@ def create_run_directory(
     else:
         dir_name = f"run_{timestamp}_{mission}"
 
-    run_dir = base / dir_name
+    run_dir = _unique_dir(base, dir_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "videos").mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -81,17 +126,17 @@ def save_run_metadata(
 ) -> Path:
     """
     Salva il file JSON con tutti i metadati e il file Python con il codice sorgente esatto
-    della custom_reward utilizzata per questa run.
+    della custom_reward utilizzata per questa run in modalità atomica.
     """
     source_code = extract_reward_function_code(reward_fn)
 
     # 1. Salva il codice Python autonomo per consultazione rapida
     code_path = run_dir / "reward_function.py"
     try:
-        code_path.write_text(
+        atomic_write_text(
+            code_path,
             f'"""\nFunzione di Reward registrata per la run: {run_dir.name}\nData: {datetime.datetime.now().isoformat()}\n"""\n\n'
             f"{source_code}\n",
-            encoding="utf-8"
         )
     except Exception:
         pass
@@ -135,7 +180,7 @@ def save_run_metadata(
     }
 
     meta_file = run_dir / "run_metadata.json"
-    meta_file.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(meta_file, metadata)
     return meta_file
 
 
@@ -179,7 +224,7 @@ def archivia_esperimento_successo(
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in nome_run)
     dest_name = f"successo_{clean_name}_{timestamp}"
-    dest_dir = succ_base / dest_name
+    dest_dir = _unique_dir(succ_base, dest_name)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     # Copia i file generati dalla run
@@ -196,7 +241,7 @@ def archivia_esperimento_successo(
         output_dir=dest_dir,
     )
 
-    # Aggiorna l'indice dei successi
+    # Aggiorna l'indice dei successi in modo atomico
     idx_file = succ_base / "index.json"
     index_data = []
     if idx_file.exists():
@@ -206,7 +251,7 @@ def archivia_esperimento_successo(
             index_data = []
 
     entry = {
-        "id": dest_name,
+        "id": dest_dir.name,
         "name": nome_run,
         "success_rate": round(succ_rate, 1),
         "mean_fuel": round(float(eval_stats.get("mean_fuel", 0.0)), 1),
@@ -217,7 +262,7 @@ def archivia_esperimento_successo(
         "video_count": len(list((dest_dir / "videos").glob("*.mp4"))) if (dest_dir / "videos").exists() else 0,
     }
     index_data.insert(0, entry)
-    idx_file.write_text(json.dumps(index_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(idx_file, index_data)
 
     return {
         "dest_dir": dest_dir,
@@ -248,88 +293,84 @@ def mostra_successi() -> None:
         from IPython.display import HTML, display
         rows = []
         for e in entries:
+            pdf_link = f"<a href='{e.get('pdf_report', '')}' target='_blank' style='color:#1565c0; font-weight:bold;'>📄 Scarica PDF</a>" if e.get("pdf_report") else "-"
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold; color:#2e7d32;'>{e.get('success_rate', 0):.1f}%</td>"
-                f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>🏆 {e.get('name')}</td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:#e8f5e9; color:#2e7d32; padding:3px 8px; border-radius:12px; font-weight:bold;'>{e.get('success_rate', 0)}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_fuel', 0)} un.</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_length', 0)} step</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e.get('video_count', 0)} video</td>"
                 f"<td style='padding:8px 12px;'>{e.get('archived_at', '')}</td>"
-                f"<td style='padding:8px 12px;'><code>runs/successi/{e.get('id')}</code></td>"
+                f"<td style='padding:8px 12px;'>{pdf_link}</td>"
                 f"</tr>"
             )
+
         html = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
-            <h3 style="color:#1b5e20; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (&ge; 80%)</h3>
-            <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
+            <h3 style="color:#2e7d32; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (Successo &ge; 80%)</h3>
+            <p style="color:#555; margin-bottom:12px; font-size:13px;">Tutti i modelli che hanno superato l'80% di allunaggio con le relative Schede Tecniche PDF vettoriali.</p>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #c8e6c9; text-align:left; font-size:13.5px;">
                 <thead style="background:#e8f5e9; color:#1b5e20;">
                     <tr>
-                        <th style="padding:10px 12px;">Nome Esperimento</th>
-                        <th style="padding:10px 12px;">Successo</th>
-                        <th style="padding:10px 12px;">Carburante Medio</th>
+                        <th style="padding:10px 12px;">Esperimento</th>
+                        <th style="padding:10px 12px; text-align:center;">Allunaggio</th>
+                        <th style="padding:10px 12px; text-align:center;">Carburante Medio</th>
+                        <th style="padding:10px 12px; text-align:center;">Durata Media</th>
+                        <th style="padding:10px 12px; text-align:center;">Video</th>
                         <th style="padding:10px 12px;">Data</th>
-                        <th style="padding:10px 12px;">Percorso</th>
+                        <th style="padding:10px 12px;">Report</th>
                     </tr>
                 </thead>
-                <tbody>{''.join(rows)}</tbody>
+                <tbody>
+                    {"".join(rows)}
+                </tbody>
             </table>
         </div>
         """
         display(HTML(html))
     except Exception:
-        print("\n" + "=" * 75)
-        print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (>= 80%)")
-        print("=" * 75)
+        print("\n" + "=" * 80)
+        print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (SUCCESSO >= 80%)")
+        print("=" * 80)
         print(f"{'NOME':<25} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DATA':<15}")
-        print("-" * 75)
+        print("-" * 80)
         for e in entries:
-            print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):.1f}%    | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
-        print("=" * 75 + "\n")
+            print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):<9.1f}% | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
+        print("=" * 80 + "\n")
 
 
-def find_run_by_timestamp(
-    timestamp_or_id: str | Path | None = None,
-    runs_dir: Path | str | None = None,
-) -> Path | None:
+def find_run_by_timestamp(timestamp_query: str, runs_dir: Path | str | None = None) -> Path | None:
     """
-    Individua la cartella di una run a partire dal suo timestamp (es. '20261115_210530'),
-    da una frazione di esso o dal nome della cartella (anche di più esperimenti fa).
-    Se il parametro è vuoto o 'latest', restituisce la run più recente.
+    Individua in modo robusto la cartella di una run passata a partire da un timestamp o parola chiave.
+    Supporta:
+    - 'latest' o 'ultima': la run cronologicamente più recente in assoluto
+    - Timestamp completo (es. '20261114_154500' o '2026-11-14T15:45:00')
+    - Porzione di data/ora (es. '154500' o '20261114')
+    - Nome o ID parziale della run (es. 'luna_standard', 'eco_lander')
+    Cerca in 'runs/', 'runs/successi/' e 'runs/favorites/'.
     """
     base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
     if not base.exists():
         return None
 
-    # Se è già un Path valido su disco
-    if timestamp_or_id is not None:
-        p = Path(timestamp_or_id)
-        if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
-            return p.resolve()
-        if (base / p).exists() and (base / p).is_dir() and ((base / p) / "run_metadata.json").exists():
-            return (base / p).resolve()
-        if (base / "successi" / p).exists() and ((base / "successi" / p) / "run_metadata.json").exists():
-            return (base / "successi" / p).resolve()
-
-    query = str(timestamp_or_id or "").strip()
-    is_latest = query.lower() in ("", "latest", "ultima", "ultimo", "now")
-    is_previous = query.lower() in ("previous", "penultima", "penultimo", "second_latest", "seconda_ultima", "prev")
-
-    # Raccoglie tutte le directory candidate da runs/, runs/successi/ e runs/favorites/
+    query = timestamp_query.strip()
     all_dirs: list[Path] = []
 
-    # 1. runs standard dirette
+    # 1. Cartelle dirette in runs/
     for sub in base.iterdir():
         if sub.is_dir() and sub.name not in ("favorites", "successi"):
             if (sub / "run_metadata.json").exists():
                 all_dirs.append(sub)
 
-    # 2. runs in successi/
+    # 2. Cartelle in runs/successi/
     succ_dir = base / "successi"
     if succ_dir.exists():
         for sub in succ_dir.iterdir():
             if sub.is_dir() and (sub / "run_metadata.json").exists():
                 all_dirs.append(sub)
 
-    # 3. runs in favorites/
+    # 3. Cartelle in runs/favorites/
     fav_dir = base / "favorites"
     if fav_dir.exists():
         for sub in fav_dir.iterdir():
@@ -339,15 +380,13 @@ def find_run_by_timestamp(
     if not all_dirs:
         return None
 
-    # Ordina per data di modifica più recente
-    all_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    # Ordina per data di modifica decrescente
+    all_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
-    if is_latest:
+    # Caso speciale: latest / ultima
+    if query.lower() in ("latest", "ultima", "ultimo", "last", "recents", "recente"):
         return all_dirs[0]
-    if is_previous:
-        return all_dirs[1] if len(all_dirs) > 1 else all_dirs[0]
 
-    # Pulizia query: rimozione caratteri non alfanumerici per confronto flessibile
     clean_query = query.lower().replace("-", "").replace(":", "").replace(" ", "_")
 
     # Ricerca esatta o parziale
@@ -356,7 +395,6 @@ def find_run_by_timestamp(
         if clean_query in d_name or query.lower() in d_name:
             return d
 
-        # Controlla nei metadati se il timestamp o run_id corrispondono
         meta_file = d / "run_metadata.json"
         if meta_file.exists():
             try:
@@ -376,7 +414,6 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
     Restituisce l'elenco cronologico di tutte le run salvate (standard, successi e preferiti),
     estraendo per ciascuna il timestamp esatto, il nome, l'esito percentuale e il consumo.
     """
-    import re
     base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
     if not base.exists():
         return []
@@ -397,7 +434,13 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
             ts_str = ts_match.group(1)
         else:
             raw_ts = meta.get("timestamp", "")
-            ts_str = raw_ts.replace("-", "")[:8] + "_" + raw_ts.replace(":", "")[9:15] if len(raw_ts) >= 19 else d.name
+            if raw_ts:
+                try:
+                    ts_str = datetime.datetime.fromisoformat(raw_ts).strftime("%Y%m%d_%H%M%S")
+                except ValueError:
+                    ts_str = d.name
+            else:
+                ts_str = d.name
 
         metrics = meta.get("eval_metrics", {})
         mission = meta.get("mission", {})

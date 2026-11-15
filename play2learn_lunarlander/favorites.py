@@ -12,7 +12,11 @@ import datetime
 from pathlib import Path
 from typing import Any
 
-from play2learn_lunarlander.storage import get_default_runs_dir
+from play2learn_lunarlander.storage import (
+    get_default_runs_dir,
+    atomic_write_json,
+    _unique_dir,
+)
 
 
 def _get_favorites_dir() -> Path:
@@ -25,7 +29,7 @@ def _get_index_file() -> Path:
     fav_dir = _get_favorites_dir()
     index_file = fav_dir / "index.json"
     if not index_file.exists():
-        index_file.write_text(json.dumps([], indent=2), encoding="utf-8")
+        atomic_write_json(index_file, [])
     return index_file
 
 
@@ -39,7 +43,7 @@ def _load_favorites_index() -> list[dict[str, Any]]:
 
 def _save_favorites_index(data: list[dict[str, Any]]) -> None:
     index_file = _get_index_file()
-    index_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(index_file, data)
 
 
 def salva_nei_preferiti(
@@ -82,7 +86,14 @@ def salva_nei_preferiti(
     # 2. Lettura metadati esistenti
     meta_path = source_dir / "run_metadata.json"
     if meta_path.exists():
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = {
+                "run_id": source_dir.name,
+                "mission": {"title": "Missione sconosciuta", "key": "luna_standard"},
+                "eval_metrics": {},
+            }
     else:
         metadata = {
             "run_id": source_dir.name,
@@ -90,12 +101,12 @@ def salva_nei_preferiti(
             "eval_metrics": {},
         }
 
-    # 3. Creazione destinazione nel folder favorites
+    # 3. Creazione destinazione nel folder favorites (anti-collisione)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_title = nome_personalizzato or metadata.get("mission", {}).get("key", "modello")
     clean_title = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in clean_title)
     dest_name = f"fav_{clean_title}_{timestamp}"
-    dest_dir = fav_dir / dest_name
+    dest_dir = _unique_dir(fav_dir, dest_name)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     # 4. Copia dei file essenziali (modello, grafici, codice, video/gif)
@@ -107,23 +118,20 @@ def salva_nei_preferiti(
 
     # 5. Aggiornamento metadati preferito
     metadata["favorite_info"] = {
-        "display_name": nome_personalizzato or dest_name,
+        "display_name": nome_personalizzato or dest_dir.name,
         "saved_at": datetime.datetime.now().isoformat(),
         "tag": tag,
         "notes": note,
         "favorite_dir": str(dest_dir),
     }
-    (dest_dir / "run_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
+    atomic_write_json(dest_dir / "run_metadata.json", metadata)
 
     # 6. Aggiornamento indice globale preferiti
     index_data = _load_favorites_index()
     entry = {
-        "id": dest_name,
+        "id": dest_dir.name,
         "type": "run",
-        "name": nome_personalizzato or dest_name,
+        "name": nome_personalizzato or dest_dir.name,
         "tag": tag,
         "notes": note,
         "saved_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -187,7 +195,7 @@ def salva_video_preferito(
     dest_video_path = video_store / dest_video_name
     shutil.copy2(v_path, dest_video_path)
 
-    # Aggiorna l'indice globale dei preferiti
+    # Aggiorna l'indice globale dei preferiti in modo atomico
     index_data = _load_favorites_index()
     entry = {
         "id": dest_video_name,
@@ -279,7 +287,6 @@ def mostra_preferiti() -> None:
         """
         display(HTML(html))
     except Exception:
-        # Fallback a testo console formattato
         print("\n" + "=" * 80)
         print("  ⭐ I TUOI PREFERITI (MODELLI E VIDEO SALVATI DALL'UTENTE)")
         print("=" * 80)
@@ -297,7 +304,7 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
     """
     Ricarica il modello PPO e i relativi metadati da un elemento salvato nei Preferiti.
     Può essere specificato l'indice numerico (0 = il più recente) o il nome.
-    Ideale per una dimostrazione dal vivo durante il colloquio orale!
+    Supporta percorsi portabili tra Windows e Linux/Colab.
     """
     entries = _load_favorites_index()
     if not entries:
@@ -324,7 +331,11 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
             f"File video: {selected_entry.get('video_path')}"
         )
 
-    dest_dir = Path(selected_entry["dir_path"])
+    # Risoluzione portabile del percorso cartella preferito
+    dest_dir = Path(selected_entry.get("dir_path", ""))
+    if not dest_dir.exists() and selected_entry.get("id"):
+        dest_dir = _get_favorites_dir() / str(selected_entry["id"])
+
     # Cerca il file modello
     model_path = dest_dir / "best_model.zip"
     if not model_path.exists():
@@ -347,6 +358,4 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
     model = PPO.load(str(model_path))
     meta_path = dest_dir / "run_metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else selected_entry
-
-    print(f"✅ Modello '{selected_entry['name']}' caricato con successo da: {dest_dir.name}")
     return model, meta

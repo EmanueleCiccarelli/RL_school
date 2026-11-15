@@ -31,6 +31,7 @@ from play2learn_lunarlander.environment import (
     make_parallel_envs,
     wrap_vec_normalize,
     CustomRewardWrapper,
+    classify_lunar_lander_outcome,
 )
 from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
 from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
@@ -238,50 +239,53 @@ def run_lab(
         env_kwargs=env_kwargs,
         total_timesteps=total_timesteps,
     )
-    actual_n_envs = raw_vec_env.num_envs
-    vec_backend = raw_vec_env.__class__.__name__
-
-    vec_env = (
-        wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
-        if use_reward_norm
-        else raw_vec_env
-    )
-
-    print("=" * 76)
-    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
-    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
-    print(
-        f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
-        f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
-    )
-    print(
-        f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
-        f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
-    )
-    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
-    print("=" * 76)
-
-    # 4. Callback con checkpoint in RAM e progress bar leggera throttled
-    tracker = RewardTrackerCallback(
-        best_model_save_dir=run_dir,
-        total_timesteps=total_timesteps,
-        show_progress=True,
-        progress_interval_sec=1.0,
-        capture_milestones=crea_gif_evoluzione,
-    )
-
-    # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
-    model = create_ppo_agent(
-        env=vec_env,
-        seed=seed,
-        device=device,
-        verbose=0,
-    )
-
-    # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
-    print("\n[play2learn] Inizio addestramento dell'agente...")
+    vec_env = raw_vec_env
     t_start = time.perf_counter()
+
     try:
+        actual_n_envs = raw_vec_env.num_envs
+        vec_backend = raw_vec_env.__class__.__name__
+
+        vec_env = (
+            wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
+            if use_reward_norm
+            else raw_vec_env
+        )
+
+        print("=" * 76)
+        print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
+        print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
+        print(
+            f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
+            f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
+        )
+        print(
+            f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
+            f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
+        )
+        print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+        print("=" * 76)
+
+        # 4. Callback con checkpoint in RAM e progress bar leggera throttled
+        tracker = RewardTrackerCallback(
+            best_model_save_dir=run_dir,
+            total_timesteps=total_timesteps,
+            show_progress=True,
+            progress_interval_sec=1.0,
+            capture_milestones=crea_gif_evoluzione,
+        )
+
+        # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
+        model = create_ppo_agent(
+            env=vec_env,
+            seed=seed,
+            device=device,
+            verbose=0,
+        )
+
+        # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
+        print("\n[play2learn] Inizio addestramento dell'agente...")
+        t_start = time.perf_counter()
         model.learn(
             total_timesteps=total_timesteps,
             callback=tracker,
@@ -436,6 +440,7 @@ def run_lab(
         "run_id": run_dir.name,
         "run_dir": run_dir,
         "checkpoint_dir": run_dir,
+        "mission": mission,
         "model_path": final_model_path,
         "best_model_path": tracker.best_model_path or final_model_path,
         "plot_path": plot_path,
@@ -529,35 +534,53 @@ def dimostrazione_live(
     print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA")
     print("=" * 65)
 
-    for ep in range(n_episodi):
-        obs, _ = env.reset(seed=seed + ep)
-        done = False
-        step = 0
-        tot_fuel = 0.0
+    try:
+        for ep in range(n_episodi):
+            obs, _ = env.reset(seed=seed + ep)
+            done = False
+            step = 0
+            tot_fuel = 0.0
+            last_rew = 0.0
+            last_term = False
+            last_trunc = False
 
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, rew, term, trunc, info = env.step(action)
-            step += 1
-            done = term or trunc
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, rew, term, trunc, info = env.step(action)
+                step += 1
+                done = term or trunc
+                last_rew = float(rew)
+                last_term = bool(term)
+                last_trunc = bool(trunc)
 
-            act_int = int(action)
-            if act_int == 2:
-                tot_fuel += 1.0
-            elif act_int in (1, 3):
-                tot_fuel += 0.3
+                act_int = int(action)
+                if act_int == 2:
+                    tot_fuel += 1.0
+                elif act_int in (1, 3):
+                    tot_fuel += 0.3
 
-            if step % 35 == 0 or done:
-                x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
-                print(
-                    f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
-                    f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
+                if step % 35 == 0 or done:
+                    x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
+                    print(
+                        f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
+                        f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
+                    )
+
+            if reward_fn is not None and isinstance(info, dict):
+                is_succ = bool(info.get("is_success", False))
+            else:
+                un = getattr(env, "unwrapped", env)
+                is_succ, _, _, _ = classify_lunar_lander_outcome(
+                    obs=obs,
+                    original_reward=last_rew,
+                    terminated=last_term,
+                    truncated=last_trunc,
+                    unwrapped=un,
                 )
 
-        is_succ = info.get("is_success", False) if isinstance(info, dict) else False
-        esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
-        print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
-        print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
-        print("-" * 65)
-
-    env.close()
+            esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
+            print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
+            print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
+            print("-" * 65)
+    finally:
+        env.close()

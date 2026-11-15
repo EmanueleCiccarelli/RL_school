@@ -10,19 +10,28 @@ from __future__ import annotations
 
 import json
 import random
+import uuid
 from pathlib import Path
 from typing import Any
 
-from play2learn_lunarlander.config import MISSIONS, ENV_ID
+from play2learn_lunarlander.config import (
+    MISSIONS,
+    ENV_ID,
+    FUEL_MAIN_ENGINE,
+    FUEL_SIDE_ENGINE,
+)
+from play2learn_lunarlander.environment import classify_lunar_lander_outcome
 from play2learn_lunarlander.favorites import carica_preferito
 from play2learn_lunarlander.storage import find_run_by_timestamp, get_default_runs_dir
 
 
-def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> None:
+def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Any:
     """Mostra l'HTML inline nel notebook oppure lo apre nel browser se non in ambiente IPython."""
     try:
         from IPython.display import HTML, display
-        display(HTML(html_code))
+        res = HTML(html_code)
+        display(res)
+        return res
     except ImportError:
         import webbrowser
         import tempfile
@@ -30,6 +39,7 @@ def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Non
         tmp.write_text(html_code, encoding="utf-8")
         print(f"[play2learn] Apertura del simulatore nel browser: {tmp}")
         webbrowser.open(tmp.as_uri())
+        return html_code
 
 
 def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[float]]:
@@ -37,20 +47,28 @@ def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[floa
     un = getattr(env, "unwrapped", env)
     fixtures = getattr(getattr(un, "moon", None), "fixtures", [])
 
+    segments: list[tuple[list[float], list[float]]] = []
+    for fix in fixtures:
+        shape = getattr(fix, "shape", None)
+        verts = getattr(shape, "vertices", None)
+        if not verts or len(verts) != 2:
+            continue
+        p1 = [round(float(verts[0][0]), 3), round(float(verts[0][1]), 3)]
+        p2 = [round(float(verts[1][0]), 3), round(float(verts[1][1]), 3)]
+        # Salta il bordo inferiore del box [(0, 0), (W, 0)]
+        if p1[1] == 0.0 and p2[1] == 0.0:
+            continue
+        if p1[0] > p2[0]:
+            p1, p2 = p2, p1
+        segments.append((p1, p2))
+
     points: list[list[float]] = []
-    if len(fixtures) > 1:
-        # Fixture 1..N sono i segmenti contigui della superficie
-        first = True
-        for i in range(1, len(fixtures)):
-            verts = fixtures[i].shape.vertices
-            p1 = [round(float(verts[0][0]), 3), round(float(verts[0][1]), 3)]
-            p2 = [round(float(verts[1][0]), 3), round(float(verts[1][1]), 3)]
-            if first:
-                points.append(p1)
-                first = False
+    if segments:
+        segments.sort(key=lambda seg: seg[0][0])
+        points.append(segments[0][0])
+        for _, p2 in segments:
             points.append(p2)
     else:
-        # Fallback se non ci sono fixtures
         points = [
             [0.0, 4.5], [2.0, 4.3], [4.0, 3.8], [6.0, 3.9],
             [8.0, 3.3], [10.0, 3.3], [12.0, 3.3],
@@ -65,20 +83,28 @@ def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[floa
     return points, helipad
 
 
+def _find_model_zip_in_dir(run_dir: Path) -> Path | None:
+    """Trova il file checkpoint .zip in una cartella di run."""
+    for fname in ("best_model.zip", "ppo_lunar_lander.zip", "final_model.zip"):
+        cand = run_dir / fname
+        if cand.exists():
+            return cand
+    zips = list(run_dir.glob("*.zip"))
+    return zips[0] if zips else None
+
+
 def _resolve_model(model_or_result: Any) -> Any:
     """
     Risolve l'agente PPO a partire da un oggetto LabResult, un'istanza PPO,
     un nome nei Preferiti o un timestamp di una run passata.
     """
     if model_or_result is None:
-        # Cerca nei preferiti o nell'ultima run disponibile
         try:
             model, _ = carica_preferito(0)
             return model
         except Exception:
             pass
 
-        # Cerca l'ultima run in runs/
         runs_dir = get_default_runs_dir()
         if runs_dir.exists():
             runs = sorted(
@@ -87,9 +113,7 @@ def _resolve_model(model_or_result: Any) -> Any:
                 reverse=True,
             )
             for r in runs:
-                bp = r / "best_model.zip"
-                fp = r / "final_model.zip"
-                tgt = bp if bp.exists() else (fp if fp.exists() else None)
+                tgt = _find_model_zip_in_dir(r)
                 if tgt:
                     from stable_baselines3 import PPO
                     return PPO.load(str(tgt))
@@ -132,9 +156,7 @@ def _resolve_model(model_or_result: Any) -> Any:
         try:
             r_dir = find_run_by_timestamp(str(model_or_result))
             if r_dir:
-                bp = r_dir / "best_model.zip"
-                fp = r_dir / "final_model.zip"
-                tgt = bp if bp.exists() else (fp if fp.exists() else None)
+                tgt = _find_model_zip_in_dir(r_dir)
                 if tgt:
                     from stable_baselines3 import PPO
                     return PPO.load(str(tgt))
@@ -167,59 +189,61 @@ def registra_traiettoria_agente(
     except TypeError:
         env = gym.make(ENV_ID, **final_kwargs)
 
-    obs, _ = env.reset(seed=seed)
-    un = env.unwrapped
-    terrain_pts, helipad = _extract_terrain_and_helipad(env)
+    try:
+        obs, _ = env.reset(seed=seed)
+        un = env.unwrapped
+        terrain_pts, helipad = _extract_terrain_and_helipad(env)
 
-    steps_data: list[dict[str, Any]] = []
-    total_fuel = 0.0
-    done = False
-    step_count = 0
-    is_success = False
-    is_crashed = False
+        steps_data: list[dict[str, Any]] = []
+        total_fuel = 0.0
+        done = False
+        step_count = 0
+        is_success = False
+        is_crashed = False
 
-    while not done and step_count < max_steps:
-        action, _ = model.predict(obs, deterministic=True)
-        act_int = int(action)
+        while not done and step_count < max_steps:
+            action, _ = model.predict(obs, deterministic=True)
+            act_int = int(action)
 
-        # Consumo carburante realistico
-        if act_int == 2:
-            total_fuel += 0.30
-        elif act_int in (1, 3):
-            total_fuel += 0.05
+            if act_int == 2:
+                total_fuel += FUEL_MAIN_ENGINE
+            elif act_int in (1, 3):
+                total_fuel += FUEL_SIDE_ENGINE
 
-        pos = un.lander.position
-        vel = un.lander.linearVelocity
-        ang = un.lander.angle
+            obs, rew, term, trunc, _ = env.step(act_int)
+            step_count += 1
+            done = bool(term or trunc)
 
-        steps_data.append({
-            "x": round(float(pos.x), 3),
-            "y": round(float(pos.y), 3),
-            "angle": round(float(ang), 3),
-            "vx": round(float(vel.x), 3),
-            "vy": round(float(vel.y), 3),
-            "action": act_int,
-            "fuel": round(float(total_fuel), 2),
-        })
+            pos = un.lander.position
+            vel = un.lander.linearVelocity
+            ang = un.lander.angle
 
-        obs, rew, term, trunc, info = env.step(act_int)
-        step_count += 1
-        done = term or trunc
+            steps_data.append({
+                "x": round(float(pos.x), 3),
+                "y": round(float(pos.y), 3),
+                "angle": round(float(ang), 3),
+                "vx": round(float(vel.x), 3),
+                "vy": round(float(vel.y), 3),
+                "action": act_int,
+                "fuel": round(float(total_fuel), 2),
+            })
 
-        if done:
-            is_success = bool(info.get("is_success", False))
-            is_crashed = bool(info.get("is_crashed", False))
-            if not is_success and not is_crashed:
-                # Controlla posizione finale
-                on_h = helipad[0] <= pos.x <= helipad[1]
-                soft = abs(vel.y) < 2.2 and abs(vel.x) < 1.3
-                upright = abs(ang) < 0.28
-                if on_h and soft and upright:
-                    is_success = True
-                else:
+            if done:
+                is_success, is_crashed, is_timeout, _ = classify_lunar_lander_outcome(
+                    obs=obs,
+                    original_reward=float(rew),
+                    terminated=bool(term),
+                    truncated=bool(trunc),
+                    unwrapped=un,
+                )
+                if is_timeout:
                     is_crashed = True
 
-    env.close()
+        if not done:
+            is_success = False
+            is_crashed = True
+    finally:
+        env.close()
 
     final_vy = steps_data[-1]["vy"] if steps_data else 0.0
     final_angle = steps_data[-1]["angle"] if steps_data else 0.0
@@ -315,10 +339,10 @@ def _get_shared_game_js() -> str:
     function drawLander(ctx, x, y, angle, isMain, isLeft, isRight, isAi, isLanded, isCrashed) {
         ctx.save();
         ctx.translate(x, y);
-        ctx.rotate(angle);
+        // Correzione asse di rotazione Canvas: l'angolo di Box2D e' antiorario (y-up), il canvas e' orario (y-down)
+        ctx.rotate(-angle);
 
         if (isCrashed) {
-            // Relitto danneggiato
             ctx.fillStyle = '#ef4444';
             ctx.beginPath();
             ctx.arc(0, 0, 16, 0, Math.PI * 2);
@@ -345,7 +369,6 @@ def _get_shared_game_js() -> str:
             ctx.closePath();
             ctx.fill();
 
-            // Nucleo interno giallo caldo
             ctx.fillStyle = '#fef08a';
             ctx.beginPath();
             ctx.moveTo(-4, 12);
@@ -384,20 +407,17 @@ def _get_shared_game_js() -> str:
         ctx.strokeStyle = '#94a3b8';
         ctx.lineWidth = 2.4;
         ctx.beginPath();
-        // Zampa sinistra
         ctx.moveTo(-9, 4);
         ctx.lineTo(-16, 14);
-        // Zampa destra
         ctx.moveTo(9, 4);
         ctx.lineTo(16, 14);
         ctx.stroke();
 
-        // Pattini alla base delle zampe
         ctx.fillStyle = '#64748b';
         ctx.fillRect(-20, 13, 8, 2.5);
         ctx.fillRect(12, 13, 8, 2.5);
 
-        // Corpo inferiore dorato/tecnologico
+        // Corpo inferiore dorato
         ctx.fillStyle = foilCol;
         ctx.fillRect(-11, 2, 22, 10);
         ctx.strokeStyle = '#78350f';
@@ -458,11 +478,9 @@ def _get_shared_game_js() -> str:
         const sx = W / 20.0;
         const sy = H / 13.333;
 
-        // Cielo stellato fisso o con sfumatura
         ctx.fillStyle = '#050814';
         ctx.fillRect(0, 0, W, H);
 
-        // Suolo lunare
         ctx.fillStyle = '#1e293b';
         ctx.beginPath();
         ctx.moveTo(0, H);
@@ -476,7 +494,6 @@ def _get_shared_game_js() -> str:
         ctx.closePath();
         ctx.fill();
 
-        // Bordo roccioso della superficie
         ctx.strokeStyle = '#475569';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -488,20 +505,17 @@ def _get_shared_game_js() -> str:
         });
         ctx.stroke();
 
-        // Piazzola di atterraggio (Helipad)
         const hx1 = helipad[0] * sx;
         const hx2 = helipad[1] * sx;
         const hy = H - helipad[2] * sy;
         const hw = hx2 - hx1;
 
-        // Base metallica della piazzola
         ctx.fillStyle = '#334155';
         ctx.fillRect(hx1, hy - 3, hw, 7);
         ctx.strokeStyle = '#fbbf24';
         ctx.lineWidth = 2;
         ctx.strokeRect(hx1, hy - 3, hw, 7);
 
-        // Strisce zebrate gialle/nere
         ctx.save();
         ctx.beginPath();
         ctx.rect(hx1, hy - 3, hw, 7);
@@ -516,9 +530,7 @@ def _get_shared_game_js() -> str:
         }
         ctx.restore();
 
-        // Bandierina sinistra
         drawFlag(ctx, hx1 + 3, hy - 3, '#ef4444');
-        // Bandierina destra
         drawFlag(ctx, hx2 - 3, hy - 3, '#ef4444');
     }
 
@@ -546,7 +558,8 @@ def gioca_single_player(
     mission: str = "luna_standard",
     gravity: float | None = None,
     wind: bool | None = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Avvia la modalità arcade Single Player interattiva in Google Colab o Jupyter Notebook.
     Permette allo studente di pilotare manualmente il modulo lunare con frecce da tastiera
@@ -556,16 +569,18 @@ def gioca_single_player(
 
     actual_seed = seed if seed is not None else random.randint(100, 99999)
     mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
-    env_kwargs = dict(mission_cfg["env_kwargs"])
+    final_env_kwargs = dict(mission_cfg["env_kwargs"])
+    if env_kwargs:
+        final_env_kwargs.update(env_kwargs)
     if gravity is not None:
-        env_kwargs["gravity"] = float(gravity)
+        final_env_kwargs["gravity"] = float(gravity)
     if wind is not None:
-        env_kwargs["enable_wind"] = bool(wind)
+        final_env_kwargs["enable_wind"] = bool(wind)
 
     try:
-        env = gym.make(ENV_ID, disable_env_checker=True, **env_kwargs)
+        env = gym.make(ENV_ID, disable_env_checker=True, **final_env_kwargs)
     except TypeError:
-        env = gym.make(ENV_ID, **env_kwargs)
+        env = gym.make(ENV_ID, **final_env_kwargs)
 
     env.reset(seed=actual_seed)
     terrain_pts, helipad = _extract_terrain_and_helipad(env)
@@ -574,44 +589,43 @@ def gioca_single_player(
     terrain_json = json.dumps(terrain_pts)
     helipad_json = json.dumps(helipad)
     shared_js = _get_shared_game_js()
+    uid = uuid.uuid4().hex[:6]
 
     html_code = f"""
-    <div id="sp_root" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:720px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+    <div id="sp_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:720px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:18px;">🚀 Simulatore Manuale: Pilota il Modulo Lunare!</h3>
                 <span style="font-size:12px; color:#94a3b8;">Missione: {mission_cfg['title']} (Seed: {actual_seed})</span>
             </div>
             <div>
-                <button id="btn_sound" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+                <button id="btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
             </div>
         </div>
 
         <div style="position:relative; width:100%; text-align:center;">
-            <canvas id="sp_canvas" width="640" height="400" tabindex="0" style="background:#050814; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
-            <div id="sp_overlay" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
+            <canvas id="sp_canvas_{uid}" width="640" height="400" tabindex="0" style="background:#050814; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+            <div id="sp_overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
                 <div style="font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom:6px;">Clicca qui o premi [SPAZIO] per decollare!</div>
                 <div style="font-size:12px; color:#94a3b8;">Comandi: Frecce ⬆️ ⬅️ ➡️ oppure tasti W / A / D</div>
             </div>
         </div>
 
-        <!-- Telemetria HUD in tempo reale -->
         <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:12px; font-size:12px; background:#111827; padding:10px; border-radius:8px; border:1px solid #1f2937;">
-            <div><span style="color:#94a3b8;">Carburante:</span> <strong id="hud_fuel" style="color:#10b981;">100%</strong></div>
-            <div><span style="color:#94a3b8;">Quota Y:</span> <strong id="hud_y">13.3 m</strong></div>
-            <div><span style="color:#94a3b8;">Velocità VY:</span> <strong id="hud_vy" style="color:#10b981;">0.0 m/s</strong></div>
-            <div><span style="color:#94a3b8;">Assetto / Tilt:</span> <strong id="hud_ang" style="color:#10b981;">0°</strong></div>
+            <div><span style="color:#94a3b8;">Carburante:</span> <strong id="hud_fuel_{uid}" style="color:#10b981;">100%</strong></div>
+            <div><span style="color:#94a3b8;">Quota Y:</span> <strong id="hud_y_{uid}">13.3 m</strong></div>
+            <div><span style="color:#94a3b8;">Velocità VY:</span> <strong id="hud_vy_{uid}" style="color:#10b981;">0.0 m/s</strong></div>
+            <div><span style="color:#94a3b8;">Assetto / Tilt:</span> <strong id="hud_ang_{uid}" style="color:#10b981;">0°</strong></div>
         </div>
 
-        <!-- Comandi Touch per dispositivi mobili e Chromebook -->
         <div style="display:flex; justify-content:center; gap:12px; margin-top:14px;">
-            <button id="btn_left" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">⬅️ Razzo Dx</button>
-            <button id="btn_main" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:10px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
-            <button id="btn_right" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">➡️ Razzo Sx</button>
+            <button id="btn_left_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">⬅️ Razzo Dx</button>
+            <button id="btn_main_{uid}" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:10px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
+            <button id="btn_right_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:14px; user-select:none;">➡️ Razzo Sx</button>
         </div>
 
         <div style="text-align:center; margin-top:12px;">
-            <button id="btn_reset" style="background:#334155; color:#f1f5f9; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer;">🔄 Riavvia Volo (Stesso Terreno)</button>
+            <button id="btn_reset_{uid}" style="background:#334155; color:#f1f5f9; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer;">🔄 Riavvia Volo (Stesso Terreno)</button>
         </div>
     </div>
 
@@ -621,14 +635,14 @@ def gioca_single_player(
 
         const terrain = {terrain_json};
         const helipad = {helipad_json};
-        const canvas = document.getElementById('sp_canvas');
+        const canvas = document.getElementById('sp_canvas_{uid}');
         const ctx = canvas.getContext('2d');
-        const overlay = document.getElementById('sp_overlay');
+        const overlay = document.getElementById('sp_overlay_{uid}');
         const W = canvas.width;
         const H = canvas.height;
 
         let x = 10.0, y = 13.2, vx = 0.0, vy = 0.0, angle = 0.0, vangle = 0.0;
-        let fuel = 100.0;
+        let fuel = 100.0, fuelUsed = 0.0;
         let gameActive = false;
         let isLanded = false;
         let isCrashed = false;
@@ -654,6 +668,7 @@ def gioca_single_player(
             angle = (Math.random() - 0.5) * 0.08;
             vangle = 0.0;
             fuel = 100.0;
+            fuelUsed = 0.0;
             isLanded = false;
             isCrashed = false;
             gameActive = true;
@@ -661,33 +676,37 @@ def gioca_single_player(
             canvas.focus();
         }}
 
-        function updatePhysics() {{
+        function updatePhysics(dt) {{
             if (!gameActive || isLanded || isCrashed) return;
 
-            const dt = 0.02;
-            const g = {float(env_kwargs.get('gravity', -10.0))};
+            const g = {float(final_env_kwargs.get('gravity', -10.0))};
             let ax = 0, ay = g;
 
             if (keyMain && fuel > 0) {{
                 const fMain = 14.5;
                 ax += -Math.sin(angle) * fMain;
                 ay += Math.cos(angle) * fMain;
-                fuel = Math.max(0, fuel - 0.32);
+                fuel = Math.max(0, fuel - 0.4);
+                fuelUsed += 1.0;
                 playThrusterSound(true);
             }}
 
             if (keyLeft && fuel > 0) {{
-                ax += Math.cos(angle) * 1.2;
-                ay += Math.sin(angle) * 1.2;
+                // Razzo destro -> spinge verso sinistra (-x)
+                ax -= Math.cos(angle) * 1.6;
+                ay -= Math.sin(angle) * 1.6;
                 vangle += 2.2 * dt;
-                fuel = Math.max(0, fuel - 0.06);
+                fuel = Math.max(0, fuel - 0.15);
+                fuelUsed += 0.3;
                 playThrusterSound(false);
             }}
             if (keyRight && fuel > 0) {{
-                ax -= Math.cos(angle) * 1.2;
-                ay -= Math.sin(angle) * 1.2;
+                // Razzo sinistro -> spinge verso destra (+x)
+                ax += Math.cos(angle) * 1.6;
+                ay += Math.sin(angle) * 1.6;
                 vangle -= 2.2 * dt;
-                fuel = Math.max(0, fuel - 0.06);
+                fuel = Math.max(0, fuel - 0.15);
+                fuelUsed += 0.3;
                 playThrusterSound(false);
             }}
 
@@ -698,11 +717,9 @@ def gioca_single_player(
             y += vy * dt;
             angle += vangle * dt;
 
-            // Limiti laterali
             if (x < 0.6) {{ x = 0.6; vx = 0; }}
             if (x > 19.4) {{ x = 19.4; vx = 0; }}
 
-            // Collisione suolo
             const groundY = getTerrainY(x);
             if (y - 0.5 <= groundY) {{
                 y = groundY + 0.5;
@@ -715,21 +732,21 @@ def gioca_single_player(
                 if (onPad && softY && softX && upright) {{
                     isLanded = true;
                     playLandingSound();
-                    overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 ALLUNAGGIO RIUSCITO!</div><div style="font-size:12px; color:#cbd5e1; margin-top:4px;">Carburante rimasto: ' + fuel.toFixed(1) + '% | VY: ' + Math.abs(vy).toFixed(1) + ' m/s</div><button onclick="window.spReset()" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Rigioca</button>';
+                    overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 ALLUNAGGIO RIUSCITO!</div><div style="font-size:12px; color:#cbd5e1; margin-top:4px;">Carburante usato: ' + fuelUsed.toFixed(1) + ' un. | VY: ' + Math.abs(vy).toFixed(1) + ' m/s</div><button id="btn_retry_' + '{uid}' + '" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Rigioca</button>';
                 }} else {{
                     isCrashed = true;
                     playCrashSound();
                     let causa = !onPad ? "Atterraggio fuori dalla piazzola!" : (!softY ? "Impatto troppo violento (VY > 2.2 m/s)!" : "Modulo troppo inclinato (> 15°)!");
-                    overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 SCHIANTO AL SUOLO!</div><div style="font-size:12px; color:#fca5a5; margin-top:4px;">' + causa + '</div><button onclick="window.spReset()" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Riprova</button>';
+                    overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 SCHIANTO AL SUOLO!</div><div style="font-size:12px; color:#fca5a5; margin-top:4px;">' + causa + '</div><button id="btn_retry_' + '{uid}' + '" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:4px 12px; border-radius:4px; cursor:pointer;">Riprova</button>';
                 }}
                 overlay.style.display = 'block';
+                const retryBtn = document.getElementById('btn_retry_' + '{uid}');
+                if (retryBtn) retryBtn.addEventListener('click', resetGame);
             }}
         }}
 
-        function render() {{
-            updatePhysics();
+        function drawScene() {{
             drawTerrain(ctx, terrain, helipad, W, H);
-
             const sx = W / 20.0;
             const sy = H / 13.333;
             const screenX = x * sx;
@@ -737,22 +754,43 @@ def gioca_single_player(
 
             drawLander(ctx, screenX, screenY, angle, keyMain && fuel > 0, keyLeft && fuel > 0, keyRight && fuel > 0, false, isLanded, isCrashed);
 
-            // Aggiorna HUD
-            document.getElementById('hud_fuel').innerText = fuel.toFixed(0) + '%';
-            document.getElementById('hud_fuel').style.color = fuel > 40 ? '#10b981' : (fuel > 15 ? '#f59e0b' : '#ef4444');
-            document.getElementById('hud_y').innerText = Math.max(0, y - getTerrainY(x)).toFixed(1) + ' m';
-            const hudVy = document.getElementById('hud_vy');
-            hudVy.innerText = vy.toFixed(1) + ' m/s';
-            hudVy.style.color = Math.abs(vy) < 2.2 ? '#10b981' : '#ef4444';
-            const hudAng = document.getElementById('hud_ang');
-            const angDeg = (angle * 180 / Math.PI).toFixed(0);
-            hudAng.innerText = angDeg + '°';
-            hudAng.style.color = Math.abs(angle) < 0.28 ? '#10b981' : '#ef4444';
-
-            animId = requestAnimationFrame(render);
+            const fuelElem = document.getElementById('hud_fuel_{uid}');
+            if (fuelElem) {{
+                fuelElem.innerText = fuel.toFixed(0) + '%';
+                fuelElem.style.color = fuel > 40 ? '#10b981' : (fuel > 15 ? '#f59e0b' : '#ef4444');
+            }}
+            const yElem = document.getElementById('hud_y_{uid}');
+            if (yElem) yElem.innerText = Math.max(0, y - getTerrainY(x)).toFixed(1) + ' m';
+            const hudVy = document.getElementById('hud_vy_{uid}');
+            if (hudVy) {{
+                hudVy.innerText = vy.toFixed(1) + ' m/s';
+                hudVy.style.color = Math.abs(vy) < 2.2 ? '#10b981' : '#ef4444';
+            }}
+            const hudAng = document.getElementById('hud_ang_{uid}');
+            if (hudAng) {{
+                const angDeg = (angle * 180 / Math.PI).toFixed(0);
+                hudAng.innerText = angDeg + '°';
+                hudAng.style.color = Math.abs(angle) < 0.28 ? '#10b981' : '#ef4444';
+            }}
         }}
 
-        // Gestione tastiera con preventDefault per evitare scroll della pagina
+        // Accumulatore a 50 Hz fisso: indipendente dal refresh rate del monitor (60Hz, 120Hz, 144Hz)
+        const FIXED_DT = 0.02;
+        let lastFrameTs = performance.now();
+        let accumulator = 0.0;
+
+        function loop(now) {{
+            const frameSec = Math.min(0.1, (now - lastFrameTs) / 1000.0);
+            lastFrameTs = now;
+            accumulator += frameSec;
+            while (accumulator >= FIXED_DT) {{
+                updatePhysics(FIXED_DT);
+                accumulator -= FIXED_DT;
+            }}
+            drawScene();
+            animId = requestAnimationFrame(loop);
+        }}
+
         canvas.addEventListener('keydown', function(e) {{
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {{
                 e.preventDefault();
@@ -772,39 +810,36 @@ def gioca_single_player(
             if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keyRight = false;
         }});
 
-        canvas.addEventListener('click', function() {{
-            if (!gameActive) resetGame();
-            canvas.focus();
-        }});
+        overlay.addEventListener('click', resetGame);
+        document.getElementById('btn_reset_{uid}').addEventListener('click', resetGame);
 
-        // Pulsanti touch
         function bindBtn(btnId, setFlag) {{
             const btn = document.getElementById(btnId);
+            if (!btn) return;
             const onDown = (e) => {{ e.preventDefault(); if (!gameActive) resetGame(); setFlag(true); }};
             const onUp = (e) => {{ e.preventDefault(); setFlag(false); }};
             btn.addEventListener('mousedown', onDown);
             btn.addEventListener('mouseup', onUp);
+            btn.addEventListener('mouseleave', onUp);
             btn.addEventListener('touchstart', onDown);
             btn.addEventListener('touchend', onUp);
+            btn.addEventListener('touchcancel', onUp);
         }}
-        bindBtn('btn_main', (v) => keyMain = v);
-        bindBtn('btn_left', (v) => keyLeft = v);
-        bindBtn('btn_right', (v) => keyRight = v);
+        bindBtn('btn_main_{uid}', (v) => keyMain = v);
+        bindBtn('btn_left_{uid}', (v) => keyLeft = v);
+        bindBtn('btn_right_{uid}', (v) => keyRight = v);
 
-        document.getElementById('btn_reset').addEventListener('click', resetGame);
-        window.spReset = resetGame;
-
-        const sndBtn = document.getElementById('btn_sound');
+        const sndBtn = document.getElementById('btn_sound_{uid}');
         sndBtn.addEventListener('click', function() {{
             soundEnabled = !soundEnabled;
             sndBtn.innerText = soundEnabled ? '🔊 Audio: ON' : '🔇 Audio: OFF';
         }});
 
-        render();
+        loop(performance.now());
     }})();
     </script>
     """
-    _display_or_open_html(html_code, "lunar_lander_single_player")
+    return _display_or_open_html(html_code, "lunar_lander_single_player")
 
 
 def gioca_vs_agente(
@@ -814,7 +849,8 @@ def gioca_vs_agente(
     gravity: float | None = None,
     wind: bool | None = None,
     model: Any = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Avvia la modalità testa a testa 'Tu vs Agente' (Split-Screen interattivo)
     in Google Colab o Jupyter Notebook.
@@ -824,18 +860,20 @@ def gioca_vs_agente(
     chosen_model = model if model is not None else model_or_result
     resolved_model = _resolve_model(chosen_model)
     mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
-    env_kwargs = dict(mission_cfg["env_kwargs"])
+    final_env_kwargs = dict(mission_cfg["env_kwargs"])
+    if env_kwargs:
+        final_env_kwargs.update(env_kwargs)
     if gravity is not None:
-        env_kwargs["gravity"] = float(gravity)
+        final_env_kwargs["gravity"] = float(gravity)
     if wind is not None:
-        env_kwargs["enable_wind"] = bool(wind)
+        final_env_kwargs["enable_wind"] = bool(wind)
 
     print("[play2learn] Calcolo della traiettoria dell'Agente AI sullo scenario lunare...")
     agent_data = registra_traiettoria_agente(
         model=resolved_model,
         seed=seed,
         mission=mission,
-        env_kwargs=env_kwargs,
+        env_kwargs=final_env_kwargs,
     )
 
     terrain_json = json.dumps(agent_data["terrain"])
@@ -843,65 +881,60 @@ def gioca_vs_agente(
     steps_json = json.dumps(agent_data["steps"])
     stats_json = json.dumps(agent_data["stats"])
     shared_js = _get_shared_game_js()
+    uid = uuid.uuid4().hex[:6]
 
     html_code = f"""
-    <div id="vs_root" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:960px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+    <div id="vs_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:960px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:19px;">⚔️ Sfida Allunaggio: Tu (Pilota Umano) vs Agente AI (PPO)</h3>
                 <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso terreno (Seed: {seed} | Missione: {mission_cfg['title']})</span>
             </div>
             <div>
-                <button id="vs_btn_sound" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+                <button id="vs_btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
             </div>
         </div>
 
-        <!-- Schermo diviso a 2 colonne: Sinistra = Tu, Destra = Agente AI -->
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px; position:relative;">
-            <!-- Canvas Giocatore Umano -->
             <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #0284c7; text-align:center;">
                 <div style="font-weight:bold; color:#38bdf8; font-size:14px; margin-bottom:6px;">🧑 TU (Pilota Umano) — Lander Blu</div>
-                <canvas id="canvas_human" width="440" height="300" tabindex="0" style="background:#050814; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+                <canvas id="canvas_human_{uid}" width="440" height="300" tabindex="0" style="background:#050814; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
-                    <span>Carb: <strong id="h_hud_fuel" style="color:#10b981;">100%</strong></span>
-                    <span>Quota: <strong id="h_hud_y">13.2m</strong></span>
-                    <span>VY: <strong id="h_hud_vy" style="color:#10b981;">0.0m/s</strong></span>
-                    <span>Stato: <strong id="h_hud_status" style="color:#38bdf8;">Pronto</strong></span>
+                    <span>Carb Speso: <strong id="h_hud_fuel_{uid}" style="color:#10b981;">0.0</strong></span>
+                    <span>Quota: <strong id="h_hud_y_{uid}">13.2m</strong></span>
+                    <span>VY: <strong id="h_hud_vy_{uid}" style="color:#10b981;">0.0m/s</strong></span>
+                    <span>Stato: <strong id="h_hud_status_{uid}" style="color:#38bdf8;">Pronto</strong></span>
                 </div>
             </div>
 
-            <!-- Canvas Agente AI -->
             <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #059669; text-align:center;">
                 <div style="font-weight:bold; color:#10b981; font-size:14px; margin-bottom:6px;">🤖 AGENTE AI (PPO) — Lander Verde</div>
-                <canvas id="canvas_ai" width="440" height="300" style="background:#050814; border-radius:6px; max-width:100%;"></canvas>
+                <canvas id="canvas_ai_{uid}" width="440" height="300" style="background:#050814; border-radius:6px; max-width:100%;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
-                    <span>Carb Speso: <strong id="ai_hud_fuel" style="color:#10b981;">0.0</strong></span>
-                    <span>Quota: <strong id="ai_hud_y">13.2m</strong></span>
-                    <span>VY: <strong id="ai_hud_vy" style="color:#10b981;">0.0m/s</strong></span>
-                    <span>Stato: <strong id="ai_hud_status" style="color:#10b981;">Pronto</strong></span>
+                    <span>Carb Speso: <strong id="ai_hud_fuel_{uid}" style="color:#10b981;">0.0</strong></span>
+                    <span>Quota: <strong id="ai_hud_y_{uid}">13.2m</strong></span>
+                    <span>VY: <strong id="ai_hud_vy_{uid}" style="color:#10b981;">0.0m/s</strong></span>
+                    <span>Stato: <strong id="ai_hud_status_{uid}" style="color:#10b981;">Pronto</strong></span>
                 </div>
             </div>
 
-            <!-- Overlay Inizio Gara -->
-            <div id="vs_overlay" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.95); border:2px solid #38bdf8; padding:16px 28px; border-radius:10px; text-align:center; z-index:20; box-shadow:0 8px 30px rgba(0,0,0,0.7);">
+            <div id="vs_overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.95); border:2px solid #38bdf8; padding:16px 28px; border-radius:10px; text-align:center; z-index:20; box-shadow:0 8px 30px rgba(0,0,0,0.7);">
                 <div style="font-size:16px; font-weight:bold; color:#f8fafc; margin-bottom:8px;">Pronto per la sfida Uomo vs Macchina?</div>
                 <div style="font-size:12px; color:#94a3b8; margin-bottom:12px;">Decolla con il lander di sinistra e cerca di allunare consumando meno carburante dell'agente!</div>
-                <button id="vs_btn_start" style="background:#0284c7; color:#fff; border:none; padding:8px 20px; border-radius:6px; font-weight:bold; font-size:14px; cursor:pointer;">🚀 INIZIA LA SFIDA!</button>
+                <button id="vs_btn_start_{uid}" style="background:#0284c7; color:#fff; border:none; padding:8px 20px; border-radius:6px; font-weight:bold; font-size:14px; cursor:pointer;">🚀 INIZIA LA SFIDA!</button>
             </div>
         </div>
 
-        <!-- Comandi Touch per il Giocatore Umano -->
         <div style="display:flex; justify-content:center; gap:12px; margin-top:14px;">
-            <button id="vs_btn_left" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">⬅️ Razzo Dx</button>
-            <button id="vs_btn_main" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:9px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
-            <button id="vs_btn_right" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">➡️ Razzo Sx</button>
+            <button id="vs_btn_left_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">⬅️ Razzo Dx</button>
+            <button id="vs_btn_main_{uid}" style="background:#0369a1; color:#fff; border:1.5px solid #38bdf8; padding:9px 24px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">🚀 MOTORE PRINCIPALE</button>
+            <button id="vs_btn_right_{uid}" style="background:#1e293b; color:#38bdf8; border:1.5px solid #0284c7; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; user-select:none;">➡️ Razzo Sx</button>
         </div>
 
-        <!-- Box Risultato e Verdetto Finale -->
-        <div id="vs_scoreboard" style="display:none; margin-top:14px; background:#1e293b; border:1.5px solid #38bdf8; border-radius:8px; padding:14px; text-align:center;">
-            <h4 id="vs_verdetto_titolo" style="margin:0 0 8px 0; font-size:16px; color:#f59e0b;">🏆 VERDETTO DELLA SFIDA</h4>
-            <div id="vs_verdetto_desc" style="font-size:13px; color:#e2e8f0; margin-bottom:10px;"></div>
-            <button id="vs_btn_replay" style="background:#0284c7; color:#fff; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold;">🔄 Rigioca Sfida</button>
+        <div id="vs_scoreboard_{uid}" style="display:none; margin-top:14px; background:#1e293b; border:1.5px solid #38bdf8; border-radius:8px; padding:14px; text-align:center;">
+            <h4 id="vs_verdetto_titolo_{uid}" style="margin:0 0 8px 0; font-size:16px; color:#f59e0b;">🏆 VERDETTO DELLA SFIDA</h4>
+            <div id="vs_verdetto_desc_{uid}" style="font-size:13px; color:#e2e8f0; margin-bottom:10px;"></div>
+            <button id="vs_btn_replay_{uid}" style="background:#0284c7; color:#fff; border:none; padding:6px 16px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold;">🔄 Rigioca Sfida</button>
         </div>
     </div>
 
@@ -914,12 +947,12 @@ def gioca_vs_agente(
         const aiSteps = {steps_json};
         const aiStats = {stats_json};
 
-        const canvasH = document.getElementById('canvas_human');
+        const canvasH = document.getElementById('canvas_human_{uid}');
         const ctxH = canvasH.getContext('2d');
-        const canvasA = document.getElementById('canvas_ai');
+        const canvasA = document.getElementById('canvas_ai_{uid}');
         const ctxA = canvasA.getContext('2d');
-        const overlay = document.getElementById('vs_overlay');
-        const scoreboard = document.getElementById('vs_scoreboard');
+        const overlay = document.getElementById('vs_overlay_{uid}');
+        const scoreboard = document.getElementById('vs_scoreboard_{uid}');
 
         const W = canvasH.width;
         const H = canvasH.height;
@@ -949,9 +982,14 @@ def gioca_vs_agente(
         function startChallenge() {{
             hX = (aiSteps.length > 0 ? aiSteps[0].x : 10.0);
             hY = (aiSteps.length > 0 ? aiSteps[0].y : 13.2);
-            hVx = 0.0; hVy = 0.0; hAngle = 0.0; hVangle = 0.0;
-            hFuel = 100.0; hFuelUsed = 0.0;
-            hLanded = false; hCrashed = false;
+            hVx = 0.0;
+            hVy = 0.0;
+            hAngle = 0.0;
+            hVangle = 0.0;
+            hFuel = 100.0;
+            hFuelUsed = 0.0;
+            hLanded = false;
+            hCrashed = false;
             hStepsCount = 0;
 
             aiIdx = 0;
@@ -963,35 +1001,36 @@ def gioca_vs_agente(
             canvasH.focus();
         }}
 
-        function updateHumanPhysics() {{
+        function updateHumanPhysics(dt) {{
             if (!gameRunning || hLanded || hCrashed) return;
 
-            const dt = 0.02;
-            const g = {float(env_kwargs.get('gravity', -10.0))};
+            const g = {float(final_env_kwargs.get('gravity', -10.0))};
             let ax = 0, ay = g;
 
             if (hKeyMain && hFuel > 0) {{
                 const fMain = 14.5;
                 ax += -Math.sin(hAngle) * fMain;
                 ay += Math.cos(hAngle) * fMain;
-                hFuel = Math.max(0, hFuel - 0.32);
-                hFuelUsed += 0.30;
+                hFuel = Math.max(0, hFuel - 0.4);
+                hFuelUsed += 1.0;
                 playThrusterSound(true);
             }}
             if (hKeyLeft && hFuel > 0) {{
-                ax += Math.cos(hAngle) * 1.2;
-                ay += Math.sin(hAngle) * 1.2;
+                // Razzo destro -> spinta verso sinistra (-x)
+                ax -= Math.cos(hAngle) * 1.6;
+                ay -= Math.sin(hAngle) * 1.6;
                 hVangle += 2.2 * dt;
-                hFuel = Math.max(0, hFuel - 0.06);
-                hFuelUsed += 0.05;
+                hFuel = Math.max(0, hFuel - 0.15);
+                hFuelUsed += 0.3;
                 playThrusterSound(false);
             }}
             if (hKeyRight && hFuel > 0) {{
-                ax -= Math.cos(hAngle) * 1.2;
-                ay -= Math.sin(hAngle) * 1.2;
+                // Razzo sinistro -> spinta verso destra (+x)
+                ax += Math.cos(hAngle) * 1.6;
+                ay += Math.sin(hAngle) * 1.6;
                 hVangle -= 2.2 * dt;
-                hFuel = Math.max(0, hFuel - 0.06);
-                hFuelUsed += 0.05;
+                hFuel = Math.max(0, hFuel - 0.15);
+                hFuelUsed += 0.3;
                 playThrusterSound(false);
             }}
 
@@ -1035,8 +1074,8 @@ def gioca_vs_agente(
         }}
 
         function evaluateWinner() {{
-            const vTitolo = document.getElementById('vs_verdetto_titolo');
-            const vDesc = document.getElementById('vs_verdetto_desc');
+            const vTitolo = document.getElementById('vs_verdetto_titolo_{uid}');
+            const vDesc = document.getElementById('vs_verdetto_desc_{uid}');
 
             let winnerMsg = "";
             let badgeCol = "#f59e0b";
@@ -1093,31 +1132,31 @@ def gioca_vs_agente(
             scoreboard.style.display = 'block';
         }}
 
-        function renderFrame() {{
-            updateHumanPhysics();
-
-            // 1. Rendering Schermo Umano
-            drawTerrain(ctxH, terrain, helipad, W, H);
+        function drawScenes() {{
             const sx = W / 20.0, sy = H / 13.333;
+
+            // 1. Schermo Umano
+            drawTerrain(ctxH, terrain, helipad, W, H);
             drawLander(ctxH, hX * sx, H - hY * sy, hAngle, hKeyMain && hFuel > 0, hKeyLeft && hFuel > 0, hKeyRight && hFuel > 0, false, hLanded, hCrashed);
 
-            document.getElementById('h_hud_fuel').innerText = hFuel.toFixed(0) + '%';
-            document.getElementById('h_hud_y').innerText = Math.max(0, hY - getTerrainY(hX)).toFixed(1) + 'm';
-            document.getElementById('h_hud_vy').innerText = hVy.toFixed(1) + 'm/s';
-            document.getElementById('h_hud_status').innerText = hLanded ? '🟢 Allunato' : (hCrashed ? '🔴 Schiantato' : 'In Volo');
-            document.getElementById('h_hud_status').style.color = hLanded ? '#10b981' : (hCrashed ? '#ef4444' : '#38bdf8');
+            const hFuelEl = document.getElementById('h_hud_fuel_{uid}');
+            if (hFuelEl) hFuelEl.innerText = hFuelUsed.toFixed(1) + ' un.';
+            const hYEl = document.getElementById('h_hud_y_{uid}');
+            if (hYEl) hYEl.innerText = Math.max(0, hY - getTerrainY(hX)).toFixed(1) + 'm';
+            const hVyEl = document.getElementById('h_hud_vy_{uid}');
+            if (hVyEl) {{
+                hVyEl.innerText = hVy.toFixed(1) + 'm/s';
+                hVyEl.style.color = Math.abs(hVy) < 2.2 ? '#10b981' : '#ef4444';
+            }}
+            const hStEl = document.getElementById('h_hud_status_{uid}');
+            if (hStEl) {{
+                hStEl.innerText = hLanded ? '🟢 Allunato' : (hCrashed ? '🔴 Schiantato' : 'In Volo');
+                hStEl.style.color = hLanded ? '#10b981' : (hCrashed ? '#ef4444' : '#38bdf8');
+            }}
 
-            // 2. Rendering Schermo Agente AI
+            // 2. Schermo Agente AI
             drawTerrain(ctxA, terrain, helipad, W, H);
             let aiCur = (aiSteps.length > 0 ? aiSteps[Math.min(aiIdx, aiSteps.length - 1)] : {{ x: 10, y: 13.2, angle: 0, action: 0, fuel: 0, vy: 0 }});
-
-            if (gameRunning && !aiFinished) {{
-                aiIdx++;
-                if (aiIdx >= aiSteps.length) {{
-                    aiFinished = true;
-                    checkBothFinished();
-                }}
-            }}
 
             const aiIsMain = (aiCur.action === 2 && !aiFinished);
             const aiIsLeft = (aiCur.action === 1 && !aiFinished);
@@ -1125,16 +1164,43 @@ def gioca_vs_agente(
 
             drawLander(ctxA, aiCur.x * sx, H - aiCur.y * sy, aiCur.angle, aiIsMain, aiIsLeft, aiIsRight, true, aiFinished && aiStats.success, aiFinished && aiStats.crashed);
 
-            document.getElementById('ai_hud_fuel').innerText = aiCur.fuel.toFixed(1) + ' un.';
-            document.getElementById('ai_hud_y').innerText = Math.max(0, aiCur.y - getTerrainY(aiCur.x)).toFixed(1) + 'm';
-            document.getElementById('ai_hud_vy').innerText = (aiCur.vy || 0).toFixed(1) + 'm/s';
-            document.getElementById('ai_hud_status').innerText = aiFinished ? (aiStats.success ? '🟢 Allunato' : '🔴 Schiantato') : 'In Volo';
-            document.getElementById('ai_hud_status').style.color = aiFinished ? (aiStats.success ? '#10b981' : '#ef4444') : '#10b981';
-
-            animId = requestAnimationFrame(renderFrame);
+            const aiFuelEl = document.getElementById('ai_hud_fuel_{uid}');
+            if (aiFuelEl) aiFuelEl.innerText = aiCur.fuel.toFixed(1) + ' un.';
+            const aiYEl = document.getElementById('ai_hud_y_{uid}');
+            if (aiYEl) aiYEl.innerText = Math.max(0, aiCur.y - getTerrainY(aiCur.x)).toFixed(1) + 'm';
+            const aiVyEl = document.getElementById('ai_hud_vy_{uid}');
+            if (aiVyEl) aiVyEl.innerText = (aiCur.vy || 0).toFixed(1) + 'm/s';
+            const aiStEl = document.getElementById('ai_hud_status_{uid}');
+            if (aiStEl) {{
+                aiStEl.innerText = aiFinished ? (aiStats.success ? '🟢 Allunato' : '🔴 Schiantato') : 'In Volo';
+                aiStEl.style.color = aiFinished ? (aiStats.success ? '#10b981' : '#ef4444') : '#10b981';
+            }}
         }}
 
-        // Gestione tastiera
+        // Accumulatore 50 Hz per gara simultanea
+        const FIXED_DT = 0.02;
+        let lastFrameTs = performance.now();
+        let accumulator = 0.0;
+
+        function loop(now) {{
+            const frameSec = Math.min(0.1, (now - lastFrameTs) / 1000.0);
+            lastFrameTs = now;
+            accumulator += frameSec;
+            while (accumulator >= FIXED_DT) {{
+                updateHumanPhysics(FIXED_DT);
+                if (gameRunning && !aiFinished) {{
+                    aiIdx++;
+                    if (aiIdx >= aiSteps.length) {{
+                        aiFinished = true;
+                        checkBothFinished();
+                    }}
+                }}
+                accumulator -= FIXED_DT;
+            }}
+            drawScenes();
+            animId = requestAnimationFrame(loop);
+        }}
+
         canvasH.addEventListener('keydown', function(e) {{
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {{
                 e.preventDefault();
@@ -1154,33 +1220,36 @@ def gioca_vs_agente(
             if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') hKeyRight = false;
         }});
 
-        document.getElementById('vs_btn_start').addEventListener('click', startChallenge);
-        document.getElementById('vs_btn_replay').addEventListener('click', startChallenge);
+        document.getElementById('vs_btn_start_{uid}').addEventListener('click', startChallenge);
+        document.getElementById('vs_btn_replay_{uid}').addEventListener('click', startChallenge);
 
         function bindBtn(btnId, setFlag) {{
             const btn = document.getElementById(btnId);
+            if (!btn) return;
             const onDown = (e) => {{ e.preventDefault(); if (!gameRunning) startChallenge(); setFlag(true); }};
             const onUp = (e) => {{ e.preventDefault(); setFlag(false); }};
             btn.addEventListener('mousedown', onDown);
             btn.addEventListener('mouseup', onUp);
+            btn.addEventListener('mouseleave', onUp);
             btn.addEventListener('touchstart', onDown);
             btn.addEventListener('touchend', onUp);
+            btn.addEventListener('touchcancel', onUp);
         }}
-        bindBtn('vs_btn_main', (v) => hKeyMain = v);
-        bindBtn('vs_btn_left', (v) => hKeyLeft = v);
-        bindBtn('vs_btn_right', (v) => hKeyRight = v);
+        bindBtn('vs_btn_main_{uid}', (v) => hKeyMain = v);
+        bindBtn('vs_btn_left_{uid}', (v) => hKeyLeft = v);
+        bindBtn('vs_btn_right_{uid}', (v) => hKeyRight = v);
 
-        const sndBtn = document.getElementById('vs_btn_sound');
+        const sndBtn = document.getElementById('vs_btn_sound_{uid}');
         sndBtn.addEventListener('click', function() {{
             soundEnabled = !soundEnabled;
             sndBtn.innerText = soundEnabled ? '🔊 Audio: ON' : '🔇 Audio: OFF';
         }});
 
-        renderFrame();
+        loop(performance.now());
     }})();
     </script>
     """
-    _display_or_open_html(html_code, "lunar_lander_vs_agente")
+    return _display_or_open_html(html_code, "lunar_lander_vs_agente")
 
 
 def gioca(
@@ -1190,13 +1259,23 @@ def gioca(
     mission: str = "luna_standard",
     gravity: float | None = None,
     wind: bool | None = None,
-) -> None:
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """
     Punto di ingresso unificato per il simulatore interattivo.
     Supporta `modalita='single'` (oppure 'single_player') e `modalita='vs_agente'` (oppure 'sfida').
     """
     mod_clean = str(modalita).lower().strip()
     if "single" in mod_clean or "solo" in mod_clean:
-        gioca_single_player(seed=seed, mission=mission, gravity=gravity, wind=wind)
+        return gioca_single_player(
+            seed=seed, mission=mission, gravity=gravity, wind=wind, env_kwargs=env_kwargs
+        )
     else:
-        gioca_vs_agente(model_or_result=model, seed=seed, mission=mission, gravity=gravity, wind=wind)
+        return gioca_vs_agente(
+            model_or_result=model,
+            seed=seed,
+            mission=mission,
+            gravity=gravity,
+            wind=wind,
+            env_kwargs=env_kwargs,
+        )

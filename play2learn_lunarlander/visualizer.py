@@ -95,6 +95,7 @@ def mostra_mappa_ambiente() -> None:
     ax.legend(loc="upper right", fontsize=8.5, framealpha=0.9)
     plt.tight_layout()
     plt.show()
+    plt.close(fig)
 
 
 def plot_training_results(

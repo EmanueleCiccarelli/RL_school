@@ -92,11 +92,13 @@ class RewardTrackerCallback(BaseCallback):
         self.crashes: int = 0
         self.timeouts: int = 0
 
-        # Finestra scorrevole O(1)
+        # Finestra scorrevole O(1) con somme cumulate per azzerare l'overhead di calcolo
         self._window_outcomes: deque[int] = deque(maxlen=self.window_size)
         self._window_fuels: deque[float] = deque(maxlen=self.window_size)
         self._window_rewards: deque[float] = deque(maxlen=self.window_size)
         self._window_successes: int = 0
+        self._window_fuel_sum: float = 0.0
+        self._window_reward_sum: float = 0.0
 
         # Snapshot in RAM del miglior modello
         self.best_moving_success_rate: float = -1.0
@@ -181,18 +183,22 @@ class RewardTrackerCallback(BaseCallback):
                 self.final_vy_list.append(0.0)
                 self.final_angle_list.append(0.0)
 
-            # Aggiornamento O(1) della media mobile
+            # Aggiornamento O(1) puro della finestra scorrevole e delle somme
             if len(self._window_outcomes) == self.window_size:
                 self._window_successes -= self._window_outcomes[0]
+                self._window_fuel_sum -= self._window_fuels[0]
+                self._window_reward_sum -= self._window_rewards[0]
             self._window_outcomes.append(succ_flag)
-            self._window_successes += succ_flag
             self._window_fuels.append(fuel)
             self._window_rewards.append(ep_r)
+            self._window_successes += succ_flag
+            self._window_fuel_sum += fuel
+            self._window_reward_sum += ep_r
 
             # Snapshot in RAM del miglior modello (zero disk I/O!)
             if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
                 curr_rate = (self._window_successes / self.window_size) * 100.0
-                curr_fuel = sum(self._window_fuels) / self.window_size
+                curr_fuel = self._window_fuel_sum / self.window_size
                 is_better = (
                     curr_rate >= 40.0
                     and (
@@ -227,8 +233,8 @@ class RewardTrackerCallback(BaseCallback):
                 })
                 self._next_milestone_idx += 1
 
-        # Aggiornamento UI throttled (solo per tempo trascorso, non per step)
-        if self.show_progress and self.total_timesteps > 0:
+        # Aggiornamento UI throttled (controllo temporale ogni 64 step per azzerare chiamate di sistema perf_counter)
+        if self.show_progress and self.total_timesteps > 0 and (self.n_calls & 63) == 0:
             now = time.perf_counter()
             if (now - self._last_ui_update) >= self.progress_interval_sec:
                 self._last_ui_update = now
@@ -261,18 +267,18 @@ class RewardTrackerCallback(BaseCallback):
     def current_moving_reward(self) -> float:
         if not self._window_rewards:
             return 0.0
-        return sum(self._window_rewards) / len(self._window_rewards)
+        return self._window_reward_sum / len(self._window_rewards)
 
     @property
     def current_moving_fuel(self) -> float:
         if not self._window_fuels:
             return 0.0
-        return sum(self._window_fuels) / len(self._window_fuels)
+        return self._window_fuel_sum / len(self._window_fuels)
 
     def flush_best_model_to_disk(
         self,
         keep_best_loaded_if_superior: bool = True,
-        superiority_margin: float = 5.0,
+        superiority_margin: float = 10.0,
     ) -> bool:
         """
         Scrive su disco una sola volta il miglior modello catturato in RAM.

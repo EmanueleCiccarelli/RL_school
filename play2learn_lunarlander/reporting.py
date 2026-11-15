@@ -10,16 +10,56 @@ import json
 import shutil
 import base64
 import datetime
+import html
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 from play2learn_lunarlander.visualizer import plot_comparison
-from play2learn_lunarlander.storage import get_default_runs_dir
+from play2learn_lunarlander.storage import (
+    get_default_runs_dir,
+    atomic_write_text,
+    atomic_write_json,
+)
+
+
+def _serialize_eval_metrics(stats: dict[str, Any]) -> dict[str, Any]:
+    """Isola solo le metriche scalari serializzabili in JSON, eliminando istanze di Path."""
+    keys = (
+        "eval_success_rate",
+        "eval_successes",
+        "eval_crashes",
+        "eval_timeouts",
+        "total_evaluated_episodes",
+        "mean_reward",
+        "std_reward",
+        "mean_length",
+        "mean_fuel",
+        "mean_fuel_success",
+        "mean_fuel_failure",
+    )
+    return {k: stats.get(k, 0.0) for k in keys}
+
+
+def _load_reward_fn_from_source(source_code: str) -> Callable | None:
+    """Ricostruisce in modo sicuro la custom_reward con i moduli numpy e math nello scope."""
+    scope: dict[str, Any] = {"np": np, "numpy": np, "math": math}
+    try:
+        exec(source_code, scope)
+    except Exception:
+        return None
+    if callable(scope.get("custom_reward")):
+        return scope["custom_reward"]
+    for name, obj in scope.items():
+        if callable(obj) and name not in ("np", "numpy", "math") and not name.startswith("_"):
+            return obj
+    return None
 
 
 def genera_pdf_report(
@@ -372,11 +412,17 @@ def genera_report_esperimento(
         f'</div>'
     ) if gif_b64 else ''
 
+    safe_titolo = html.escape(str(titolo))
+    safe_autore = html.escape(str(autore))
+    safe_mission_title = html.escape(str(mission_title))
+    safe_code_source = html.escape(str(code_source))
+    safe_note = html.escape(str(note)).replace("\n", "<br>") if note else "<em>Nessuna nota inserita. Modifica questo report per documentare i risultati dell'esperimento.</em>"
+
     html_content = f"""<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <title>{titolo}</title>
+    <title>{safe_titolo}</title>
     <style>
         body {{
             font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
@@ -453,8 +499,8 @@ def genera_report_esperimento(
     <div class="card">
         <h1>📊 Scheda Tecnica Esperimento: Reinforcement Learning</h1>
         <div class="header-meta">
-            <div><strong>Titolo:</strong> {titolo} | <strong>Autore:</strong> {autore}</div>
-            <div><strong>Missione:</strong> {mission_title} | <strong>Data:</strong> {datetime.datetime.now().strftime("%d/%m/%Y %H:%M")}</div>
+            <div><strong>Titolo:</strong> {safe_titolo} | <strong>Autore:</strong> {safe_autore}</div>
+            <div><strong>Missione:</strong> {safe_mission_title} | <strong>Data:</strong> {datetime.datetime.now().strftime("%d/%m/%Y %H:%M")}</div>
         </div>
 
         <h2>1. Risultati della Valutazione (Successi e Fallimenti)</h2>
@@ -506,11 +552,11 @@ def genera_report_esperimento(
         {gif_html_tag}
 
         <h2>2. Codice Sorgente della Reward Function</h2>
-        <pre><code>{code_source}</code></pre>
+        <pre><code>{safe_code_source}</code></pre>
 
         <h2>3. Note di Debug e Considerazioni Sperimentali</h2>
         <div class="notes-box">
-            {note if note else "<em>Nessuna nota inserita. Modifica questo report per documentare i risultati dell'esperimento.</em>"}
+            {safe_note}
         </div>
     </div>
 </body>
@@ -520,8 +566,8 @@ def genera_report_esperimento(
     md_path = target_dir / "report_esperimento.md"
     html_path = target_dir / "report_esperimento.html"
 
-    md_path.write_text(md_content, encoding="utf-8")
-    html_path.write_text(html_content, encoding="utf-8")
+    atomic_write_text(md_path, md_content)
+    atomic_write_text(html_path, html_content)
 
     print(f"✅ Report tecnico generato in: {target_dir.name}")
     print(f"   • PDF:      {pdf_path.name}")
@@ -780,23 +826,18 @@ def genera_report_da_timestamp(
                 print(f"📦 Caricamento modello salvato da: {model_path.name}")
                 model = PPO.load(str(model_path))
 
-                # Ricostruzione della funzione custom_reward dalla run
+                # Ricostruzione della funzione custom_reward dalla run con i moduli necessari nello scope
                 reward_fn = None
                 reward_file = run_dir / "reward_function.py"
                 if reward_file.exists():
                     try:
-                        code_txt = reward_file.read_text(encoding="utf-8")
-                        scope = {}
-                        exec(code_txt, scope)
-                        reward_fn = scope.get("custom_reward")
+                        reward_fn = _load_reward_fn_from_source(reward_file.read_text(encoding="utf-8"))
                     except Exception:
                         reward_fn = None
 
                 if reward_fn is None and "reward_source_code" in meta:
                     try:
-                        scope = {}
-                        exec(meta["reward_source_code"], scope)
-                        reward_fn = scope.get("custom_reward")
+                        reward_fn = _load_reward_fn_from_source(meta["reward_source_code"])
                     except Exception:
                         reward_fn = None
 
@@ -824,9 +865,11 @@ def genera_report_da_timestamp(
                     filename_prefix="avanzato",
                 )
 
-                meta["eval_metrics_avanzata"] = adv_stats
-                meta["eval_metrics"] = adv_stats
-                meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+                # Serializza solo dati scalari privi di oggetti Path non serializzabili in JSON
+                clean_adv = _serialize_eval_metrics(adv_stats)
+                meta["eval_metrics_avanzata"] = clean_adv
+                meta["eval_metrics"] = clean_adv
+                atomic_write_json(meta_file, meta)
                 print(f"✅ Sessione avanzata completata: {adv_stats.get('eval_success_rate', 0.0):.1f}% di successo su {adv_stats.get('total_evaluated_episodes', 0)} voli!")
             except Exception as e:
                 print(f"⚠️ Impossibile completare la sessione estesa ({e}). Utilizzo dati pregressi.")
