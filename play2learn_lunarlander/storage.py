@@ -284,3 +284,223 @@ def mostra_successi() -> None:
         for e in entries:
             print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):.1f}%    | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
         print("=" * 75 + "\n")
+
+
+def find_run_by_timestamp(
+    timestamp_or_id: str | Path | None = None,
+    runs_dir: Path | str | None = None,
+) -> Path | None:
+    """
+    Individua la cartella di una run a partire dal suo timestamp (es. '20261115_210530'),
+    da una frazione di esso o dal nome della cartella (anche di più esperimenti fa).
+    Se il parametro è vuoto o 'latest', restituisce la run più recente.
+    """
+    base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
+    if not base.exists():
+        return None
+
+    # Se è già un Path valido su disco
+    if timestamp_or_id is not None:
+        p = Path(timestamp_or_id)
+        if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
+            return p.resolve()
+        if (base / p).exists() and (base / p).is_dir() and ((base / p) / "run_metadata.json").exists():
+            return (base / p).resolve()
+        if (base / "successi" / p).exists() and ((base / "successi" / p) / "run_metadata.json").exists():
+            return (base / "successi" / p).resolve()
+
+    query = str(timestamp_or_id or "").strip()
+    is_latest = query.lower() in ("", "latest", "ultima", "ultimo", "now")
+
+    # Raccoglie tutte le directory candidate da runs/, runs/successi/ e runs/favorites/
+    all_dirs: list[Path] = []
+
+    # 1. runs standard dirette
+    for sub in base.iterdir():
+        if sub.is_dir() and sub.name not in ("favorites", "successi"):
+            if (sub / "run_metadata.json").exists():
+                all_dirs.append(sub)
+
+    # 2. runs in successi/
+    succ_dir = base / "successi"
+    if succ_dir.exists():
+        for sub in succ_dir.iterdir():
+            if sub.is_dir() and (sub / "run_metadata.json").exists():
+                all_dirs.append(sub)
+
+    # 3. runs in favorites/
+    fav_dir = base / "favorites"
+    if fav_dir.exists():
+        for sub in fav_dir.iterdir():
+            if sub.is_dir() and (sub / "run_metadata.json").exists():
+                all_dirs.append(sub)
+
+    if not all_dirs:
+        return None
+
+    # Ordina per data di modifica più recente
+    all_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+
+    if is_latest:
+        return all_dirs[0]
+
+    # Pulizia query: rimozione caratteri non alfanumerici per confronto flessibile
+    clean_query = query.lower().replace("-", "").replace(":", "").replace(" ", "_")
+
+    # Ricerca esatta o parziale
+    for d in all_dirs:
+        d_name = d.name.lower()
+        if clean_query in d_name or query.lower() in d_name:
+            return d
+
+        # Controlla nei metadati se il timestamp o run_id corrispondono
+        meta_file = d / "run_metadata.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                ts_meta = meta.get("timestamp", "").lower().replace("-", "").replace(":", "")
+                run_id = meta.get("run_id", "").lower()
+                if clean_query in ts_meta or clean_query in run_id or query.lower() in run_id:
+                    return d
+            except Exception:
+                continue
+
+    return None
+
+
+def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """
+    Restituisce l'elenco cronologico di tutte le run salvate (standard, successi e preferiti),
+    estraendo per ciascuna il timestamp esatto, il nome, l'esito percentuale e il consumo.
+    """
+    import re
+    base = Path(runs_dir).resolve() if runs_dir else get_default_runs_dir()
+    if not base.exists():
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    def _process_dir(d: Path, category: str) -> None:
+        meta_file = d / "run_metadata.json"
+        if not meta_file.exists():
+            return
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        ts_match = re.search(r"(\d{8}_\d{6})", d.name)
+        if ts_match:
+            ts_str = ts_match.group(1)
+        else:
+            raw_ts = meta.get("timestamp", "")
+            ts_str = raw_ts.replace("-", "")[:8] + "_" + raw_ts.replace(":", "")[9:15] if len(raw_ts) >= 19 else d.name
+
+        metrics = meta.get("eval_metrics", {})
+        mission = meta.get("mission", {})
+        succ_rate = float(metrics.get("eval_success_rate", 0.0))
+
+        results.append({
+            "timestamp": ts_str,
+            "run_id": d.name,
+            "name": meta.get("tag") or mission.get("title") or d.name,
+            "mission": mission.get("key", ""),
+            "success_rate": succ_rate,
+            "mean_fuel": float(metrics.get("mean_fuel", 0.0)),
+            "mean_length": float(metrics.get("mean_length", 0.0)),
+            "category": category,
+            "dir_path": str(d),
+            "mtime": d.stat().st_mtime,
+            "has_model": (d / "best_model.zip").exists() or (d / "ppo_lunar_lander.zip").exists(),
+            "video_count": len(list((d / "videos").glob("*.mp4"))) if (d / "videos").exists() else 0,
+        })
+
+    # Standard runs
+    for sub in base.iterdir():
+        if sub.is_dir() and sub.name not in ("favorites", "successi"):
+            _process_dir(sub, "Standard")
+
+    # Successi
+    succ_dir = base / "successi"
+    if succ_dir.exists():
+        for sub in succ_dir.iterdir():
+            if sub.is_dir():
+                _process_dir(sub, "Successo (>=80%)")
+
+    # Preferiti
+    fav_dir = base / "favorites"
+    if fav_dir.exists():
+        for sub in fav_dir.iterdir():
+            if sub.is_dir():
+                _process_dir(sub, "Preferito")
+
+    # Ordina per mtime decrescente (le più recenti in cima)
+    results.sort(key=lambda r: r["mtime"], reverse=True)
+    return results
+
+
+def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
+    """
+    Visualizza la tabella della cronologia di tutte le run passate,
+    evidenziando chiaramente il timestamp da inserire nella cella di reportistica.
+    """
+    entries = elenca_cronologia_run(runs_dir)
+    if not entries:
+        print("\n[play2learn] Nessuna run attualmente presente nella cartella 'runs/'. Esegui prima un addestramento!\n")
+        return
+
+    try:
+        from IPython.display import HTML, display
+        rows = []
+        for e in entries:
+            succ = e['success_rate']
+            badge_color = "#2e7d32" if succ >= 80.0 else ("#f57c00" if succ >= 50.0 else "#c62828")
+            bg_badge = "#e8f5e9" if succ >= 80.0 else ("#fff3e0" if succ >= 50.0 else "#ffebee")
+            has_mod_str = "✅ Sì" if e["has_model"] else "❌ No"
+
+            rows.append(
+                f"<tr>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f5f5f5;'>{e['timestamp']}</td>"
+                f"<td style='padding:8px 12px;'><b>{e['name']}</b> <span style='font-size:11px; color:#666;'>({e['category']})</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ:.1f}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e['mean_fuel']:.1f} un.</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{e['video_count']} video</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{has_mod_str}</td>"
+                f"<td style='padding:8px 12px; font-size:11.5px; color:#666;'><code>{e['run_id']}</code></td>"
+                f"</tr>"
+            )
+
+        html = f"""
+        <div style="font-family:'Segoe UI', sans-serif; margin:16px 0;">
+            <h3 style="color:#1a237e; margin-bottom:6px;">🕒 Cronologia Esperimenti e Timestamp Disponibili</h3>
+            <p style="color:#555; margin-bottom:12px; font-size:13px;">
+                💡 <b>Come usare:</b> copia uno dei <b>Timestamp</b> della prima colonna (o scrivi <code>latest</code>) nella cella di generazione report sottostante.
+            </p>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #dcdcdc; text-align:left; font-size:13px;">
+                <thead style="background:#e8eaf6; color:#1a237e;">
+                    <tr>
+                        <th style="padding:10px 12px;">Timestamp (da copiare)</th>
+                        <th style="padding:10px 12px;">Esperimento / Categoria</th>
+                        <th style="padding:10px 12px; text-align:center;">Allunaggio</th>
+                        <th style="padding:10px 12px; text-align:center;">Carburante</th>
+                        <th style="padding:10px 12px; text-align:center;">Video</th>
+                        <th style="padding:10px 12px; text-align:center;">Modello salvato</th>
+                        <th style="padding:10px 12px;">Cartella Run</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+        display(HTML(html))
+    except Exception:
+        print("\n" + "=" * 80)
+        print("  🕒 CRONOLOGIA ESPERIMENTI PASSATI (TIMESTAMP DISPONIBILI)")
+        print("=" * 80)
+        print(f"{'TIMESTAMP':<18} | {'NOME RUN':<25} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'MODELLO':<8}")
+        print("-" * 80)
+        for e in entries:
+            mod_str = "Sì" if e["has_model"] else "No"
+            print(f"{e['timestamp']:<18} | {e['name'][:24]:<25} | {e['success_rate']:<9.1f}% | {e['mean_fuel']:<12.1f} | {mod_str:<8}")
+        print("=" * 80)
+        print("💡 Copia il Timestamp desiderato nella cella di reportistica per rigenerare la scheda tecnica!\n")

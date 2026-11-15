@@ -210,6 +210,7 @@ def display_notebook_summary(
     videos: list[Path] | None = None,
     success_videos: list[Path] | None = None,
     failure_videos: list[Path] | None = None,
+    max_videos: int = 4,
 ) -> None:
     """
     Mostra il grafico e i video di test direttamente nell'output della cella del Notebook,
@@ -218,8 +219,8 @@ def display_notebook_summary(
     try:
         from IPython.display import Image, HTML, display
 
-        p_plot = Path(plot_path)
-        if p_plot.exists():
+        p_plot = Path(plot_path) if plot_path else None
+        if p_plot and p_plot.exists():
             display(Image(filename=str(p_plot)))
 
         # Se sono passati esplicitamente success_videos e failure_videos
@@ -232,13 +233,13 @@ def display_notebook_summary(
             succ_list = [v for v in videos if "successo" in v.name.lower()]
             fail_list = [v for v in videos if "fallimento" in v.name.lower() or "crash" in v.name.lower()]
             if not succ_list and not fail_list:
-                succ_list = videos[:3]
+                succ_list = videos[:max_videos]
 
         sections = []
 
         if succ_list:
             cards = []
-            for idx, v_path in enumerate(succ_list[:3]):
+            for idx, v_path in enumerate(succ_list[:max_videos]):
                 if not v_path.exists():
                     continue
                 b64 = base64.b64encode(v_path.read_bytes()).decode("ascii")
@@ -259,7 +260,7 @@ def display_notebook_summary(
 
         if fail_list:
             cards = []
-            for idx, v_path in enumerate(fail_list[:3]):
+            for idx, v_path in enumerate(fail_list[:max_videos]):
                 if not v_path.exists():
                     continue
                 b64 = base64.b64encode(v_path.read_bytes()).decode("ascii")

@@ -109,6 +109,7 @@ def evaluate_and_record(
     seed: int = 100,
     env_kwargs: dict[str, Any] | None = None,
     create_gif: bool = True,
+    filename_prefix: str = "",
 ) -> dict[str, Any]:
     """
     Valuta l'agente in modo statisticamente imparziale (policy deterministica)
@@ -289,9 +290,10 @@ def evaluate_and_record(
                 if term or trunc:
                     break
 
+            pfx = f"{filename_prefix}_" if filename_prefix else ""
             if kind == "successo":
                 idx = len(success_videos) + 1
-                v_path = video_dir / f"successo_{idx}_step_{cand['steps']}.mp4"
+                v_path = video_dir / f"{pfx}successo_{idx}_step_{cand['steps']}.mp4"
                 _save_frames_as_mp4(frames, v_path)
                 success_videos.append(v_path)
                 if cand["fuel"] < best_success_fuel:
@@ -308,7 +310,7 @@ def evaluate_and_record(
                     causa = "timeout"
                 else:
                     causa = "fallimento"
-                v_path = video_dir / f"fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
+                v_path = video_dir / f"{pfx}fallimento_{idx}_{causa}_step_{cand['steps']}.mp4"
                 _save_frames_as_mp4(frames, v_path)
                 failure_videos.append(v_path)
 

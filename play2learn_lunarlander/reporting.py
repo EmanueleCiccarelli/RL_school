@@ -214,11 +214,18 @@ def genera_report_esperimento(
             source_dir = Path(run_or_fav["path"])
         elif "dir_path" in run_or_fav:
             source_dir = Path(run_or_fav["dir_path"])
+        elif "run_dir" in run_or_fav:
+            source_dir = Path(run_or_fav["run_dir"])
     elif isinstance(run_or_fav, (str, Path)):
-        source_dir = Path(run_or_fav)
+        p = Path(run_or_fav)
+        if p.exists() and p.is_dir():
+            source_dir = p
+        else:
+            from play2learn_lunarlander.storage import find_run_by_timestamp
+            source_dir = find_run_by_timestamp(str(run_or_fav))
 
     if not source_dir or not source_dir.exists():
-        raise ValueError(f"[Play2Learn] Directory della run non valida: {run_or_fav}")
+        raise ValueError(f"[Play2Learn] Nessuna directory di run trovata per: {run_or_fav}")
 
     meta_file = source_dir / "run_metadata.json"
     if meta_file.exists():
@@ -489,6 +496,7 @@ def genera_report_esperimento(
     return {
         "pdf_path": pdf_path,
         "markdown_path": md_path,
+        "md_path": md_path,
         "html_path": html_path,
         "export_dir": target_dir,
     }
@@ -592,3 +600,182 @@ def confronta_run(
         print("=" * 70 + "\n")
 
     return {"runs": runs_data, "comparison_plot": save_img}
+
+
+def genera_report_da_timestamp(
+    timestamp: str = "latest",
+    tipo: str = "Base",
+    autore: str = "Studente",
+    titolo: str | None = None,
+    note: str = "",
+    n_extra_episodes: int = 35,
+    target_success_videos: int = 4,
+    target_failure_videos: int = 4,
+    output_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """
+    Genera la reportistica tecnica completa (Scheda Tecnica PDF 300 DPI, HTML, Markdown)
+    a partire dal timestamp (es. '20261115_210530') o dal nome di una run passata.
+
+    Parametri:
+      - timestamp: stringa del timestamp (es. '20261115_210530') oppure 'latest' per la run più recente.
+      - tipo: 'Base' (genera il report con i dati archiviati) oppure
+              'Avanzata' (ricarica il modello, esegue nuove run di verifica e registra più video di test).
+      - autore: nome dello studente o gruppo.
+      - titolo: titolo personalizzato dell'esperimento (opzionale).
+      - note: note personali e considerazioni di debug.
+      - n_extra_episodes: numero di episodi di sweep per la valutazione avanzata (default 35).
+      - target_success_videos: video di successo da registrare in modalità avanzata (default 4).
+      - target_failure_videos: video di fallimento da registrare in modalità avanzata (default 4).
+      - output_dir: cartella di salvataggio (opzionale, default sottocartella timestampata della run).
+    """
+    from play2learn_lunarlander.storage import find_run_by_timestamp, mostra_cronologia_run
+    from play2learn_lunarlander.visualizer import display_notebook_summary
+
+    print("\n" + "=" * 78)
+    print("  🕒 GENERATORE DI REPORT DA TIMESTAMP — LUNAR LANDER")
+    print("=" * 78)
+
+    # 1. Ricerca della directory della run dal timestamp
+    run_dir = find_run_by_timestamp(timestamp)
+    if run_dir is None:
+        print(f"❌ Nessuna run trovata corrispondente a: '{timestamp}'")
+        print("💡 Ecco l'elenco delle run disponibili con i relativi timestamp da copiare:\n")
+        mostra_cronologia_run()
+        return {}
+
+    print(f"🔍 Run individuata con successo: runs/{run_dir.name}")
+
+    meta_file = run_dir / "run_metadata.json"
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    else:
+        meta = {}
+
+    mission = meta.get("mission", {})
+    mission_title = mission.get("title", "Lunar Lander")
+    env_kwargs = mission.get("env_kwargs", {})
+
+    if not titolo:
+        titolo = f"Esperimento {mission_title} — Reinforcement Learning"
+    if not note:
+        note = meta.get("notes") or meta.get("favorite_info", {}).get("notes") or ""
+
+    is_avanzata = "avanzat" in str(tipo).lower()
+
+    # 2. Se modalità Avanzata: esegui nuove run di test e registra più video
+    if is_avanzata:
+        print("\n🚀 [Modalità AVANZATA attiva] Avvio sessione di verifica estesa per registrare e salvare più video...")
+        model_path = None
+        for cand in ("best_model.zip", "ppo_lunar_lander.zip"):
+            if (run_dir / cand).exists():
+                model_path = run_dir / cand
+                break
+        if model_path is None:
+            zips = list(run_dir.glob("*.zip"))
+            if zips:
+                model_path = zips[0]
+
+        if model_path is not None:
+            try:
+                from stable_baselines3 import PPO
+                from play2learn_lunarlander.evaluator import evaluate_and_record
+                from play2learn_lunarlander.config import ENV_ID
+
+                print(f"📦 Caricamento modello salvato da: {model_path.name}")
+                model = PPO.load(str(model_path))
+
+                # Ricostruzione della funzione custom_reward dalla run
+                reward_fn = None
+                reward_file = run_dir / "reward_function.py"
+                if reward_file.exists():
+                    try:
+                        code_txt = reward_file.read_text(encoding="utf-8")
+                        scope = {}
+                        exec(code_txt, scope)
+                        reward_fn = scope.get("custom_reward")
+                    except Exception:
+                        reward_fn = None
+
+                if reward_fn is None and "reward_source_code" in meta:
+                    try:
+                        scope = {}
+                        exec(meta["reward_source_code"], scope)
+                        reward_fn = scope.get("custom_reward")
+                    except Exception:
+                        reward_fn = None
+
+                if reward_fn is None:
+                    reward_fn = lambda obs, act, s, c, t: 0.0
+
+                env_id = meta.get("env_id") or ENV_ID
+                videos_dir = run_dir / "videos"
+                videos_dir.mkdir(parents=True, exist_ok=True)
+
+                print(f"🎬 Registrazione di nuovi video di test in: runs/{run_dir.name}/videos/")
+                adv_stats = evaluate_and_record(
+                    model=model,
+                    env_id=env_id,
+                    reward_fn=reward_fn,
+                    video_dir=videos_dir,
+                    target_successes=target_success_videos,
+                    target_failures=target_failure_videos,
+                    sweep_timeout_seconds=8.0,
+                    min_eval_episodes=n_extra_episodes,
+                    max_eval_episodes=n_extra_episodes + 30,
+                    seed=int(datetime.datetime.now().timestamp()) % 10000,
+                    env_kwargs=env_kwargs,
+                    create_gif=False,
+                    filename_prefix="avanzato",
+                )
+
+                meta["eval_metrics_avanzata"] = adv_stats
+                meta["eval_metrics"] = adv_stats
+                meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+                print(f"✅ Sessione avanzata completata: {adv_stats.get('eval_success_rate', 0.0):.1f}% di successo su {adv_stats.get('total_evaluated_episodes', 0)} voli!")
+            except Exception as e:
+                print(f"⚠️ Impossibile completare la sessione estesa ({e}). Utilizzo dati pregressi.")
+        else:
+            print(f"ℹ️ File pesi del modello (.zip) non trovato in '{run_dir.name}'. Verranno utilizzati i video e i dati esistenti.")
+    else:
+        print("📄 [Modalità Base] Generazione report dai dati e video archiviati per la run.")
+
+    # 3. Generazione report (PDF 300 DPI, HTML, MD)
+    rep_files = genera_report_esperimento(
+        run_or_fav=run_dir,
+        autore=autore,
+        titolo=titolo,
+        note=note,
+        output_dir=output_dir,
+    )
+
+    # 4. Visualizzazione inline dei video e del grafico nel notebook
+    plot_path = run_dir / "reward_plot.png"
+    vids_dir = run_dir / "videos"
+    all_videos = sorted(vids_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True) if vids_dir.exists() else []
+
+    print("\n" + "=" * 78)
+    print("  📊 TELEMETRIA DI VOLO E VIDEO SALVATI:")
+    print("=" * 78)
+    display_notebook_summary(
+        plot_path=plot_path if plot_path.exists() else "",
+        videos=all_videos,
+        max_videos=6 if is_avanzata else 3,
+    )
+
+    print("\n" + "=" * 78)
+    print(f"  ✨ REPORT ({tipo.upper()}) PRONTO E SALVATO CON SUCCESSO!")
+    print(f"  • Scheda Tecnica PDF (300 DPI): {rep_files.get('pdf_path')}")
+    print(f"  • Report HTML Interattivo:     {rep_files.get('html_path')}")
+    print(f"  • Documento Markdown:          {rep_files.get('md_path')}")
+    print("=" * 78 + "\n")
+
+    return {
+        "run_dir": run_dir,
+        "meta": meta,
+        "rep_files": rep_files,
+        "videos": all_videos,
+    }

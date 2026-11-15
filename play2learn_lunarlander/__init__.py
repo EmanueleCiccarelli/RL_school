@@ -19,10 +19,18 @@ from play2learn_lunarlander.favorites import (
 )
 from play2learn_lunarlander.reporting import (
     genera_report_esperimento,
+    genera_report_da_timestamp,
     genera_report_maturita,
     confronta_run,
 )
-from play2learn_lunarlander.storage import list_all_runs, mostra_successi, elenca_successi
+from play2learn_lunarlander.storage import (
+    list_all_runs,
+    mostra_successi,
+    elenca_successi,
+    find_run_by_timestamp,
+    elenca_cronologia_run,
+    mostra_cronologia_run,
+)
 from play2learn_lunarlander.reset import reset_laboratorio
 
 __version__ = "2.0.0"
@@ -37,7 +45,11 @@ __all__ = [
     "carica_preferito",
     "mostra_successi",
     "elenca_successi",
+    "find_run_by_timestamp",
+    "elenca_cronologia_run",
+    "mostra_cronologia_run",
     "genera_report_esperimento",
+    "genera_report_da_timestamp",
     "genera_report_maturita",
     "confronta_run",
     "dimostrazione_live",
