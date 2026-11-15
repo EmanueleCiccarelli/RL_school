@@ -132,6 +132,19 @@ class LabResult(dict):
         else:
             print(f"[play2learn] Nessun video trovato all'indice {indice}.")
 
+    def mostra_evoluzione(self) -> None:
+        """Visualizza il timelapse GIF dell'evoluzione dell'agente nel corso del training."""
+        p = self.get("gif_evoluzione_path") or (Path(self.get("checkpoint_dir", "")) / "evoluzione_apprendimento.gif")
+        if p and Path(p).exists():
+            try:
+                from IPython.display import Image, display
+                print("🎞️ Evoluzione dell'Agente durante il Training (Milestone nel tempo):")
+                display(Image(filename=str(p)))
+            except Exception:
+                print(f"GIF evoluzione salvata in: {p}")
+        else:
+            print("[play2learn] Nessun timelapse di evoluzione disponibile per questa run.")
+
     def test_dal_vivo(self, n_episodi: int = 1, seed: int = 999) -> None:
         """Esegue una dimostrazione rapida dal vivo del modello."""
         dimostrazione_live(
@@ -160,6 +173,7 @@ def run_lab(
     nome_run: str | None = None,
     n_eval_episodes: int = 3,
     crea_gif: bool = True,
+    crea_gif_evoluzione: bool = True,
     display_in_notebook: bool = True,
     use_reward_norm: bool = True,
 ) -> LabResult:
@@ -236,6 +250,7 @@ def run_lab(
         total_timesteps=total_timesteps,
         show_progress=True,
         progress_interval_sec=1.5,
+        capture_milestones=crea_gif_evoluzione,
     )
 
     # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
@@ -305,6 +320,26 @@ def run_lab(
         env_kwargs=env_kwargs,
         create_gif=crea_gif,
     )
+
+    # 9b. Generazione del timelapse GIF dell'evoluzione dell'apprendimento nel tempo
+    gif_evoluzione_path = None
+    if crea_gif_evoluzione and tracker.milestone_snapshots:
+        try:
+            print("\n[play2learn] Generazione del timelapse GIF dell'evoluzione dell'apprendimento...")
+            from play2learn_lunarlander.evaluator import crea_gif_evoluzione_apprendimento
+            gif_ev_target = run_dir / "evoluzione_apprendimento.gif"
+            gif_evoluzione_path = crea_gif_evoluzione_apprendimento(
+                model=model,
+                milestones=tracker.milestone_snapshots,
+                env_id=env_id,
+                output_path=gif_ev_target,
+                env_kwargs=env_kwargs,
+                seed=seed,
+            )
+            if gif_evoluzione_path and gif_evoluzione_path.exists():
+                print(f"🎬 Timelapse evoluzione salvato: runs/{run_dir.name}/{gif_evoluzione_path.name}")
+        except Exception as e:
+            print(f"[play2learn] Avviso generazione timelapse evoluzione: {e}")
 
     # 10. Salvataggio automatico metadati e codice sorgente
     meta_path = save_run_metadata(
@@ -377,6 +412,7 @@ def run_lab(
             videos=eval_stats.get("videos"),
             success_videos=eval_stats.get("success_videos"),
             failure_videos=eval_stats.get("failure_videos"),
+            gif_path=gif_evoluzione_path or eval_stats.get("gif_path"),
         )
 
     return LabResult({
@@ -390,6 +426,7 @@ def run_lab(
         "success_videos": eval_stats.get("success_videos", []),
         "failure_videos": eval_stats.get("failure_videos", []),
         "gif_path": eval_stats.get("gif_path"),
+        "gif_evoluzione_path": gif_evoluzione_path,
         "eval_success_rate": eval_stats.get("eval_success_rate", 0.0),
         "eval_mean_length": eval_stats.get("mean_length", 0.0),
         "eval_mean_fuel": eval_stats.get("mean_fuel", 0.0),

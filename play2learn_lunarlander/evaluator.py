@@ -385,3 +385,142 @@ def _save_frames_as_gif(
     except Exception:
         pass
     return None
+
+
+def crea_gif_evoluzione_apprendimento(
+    model: PPO,
+    milestones: list[dict[str, Any]],
+    env_id: str,
+    output_path: Path | str,
+    env_kwargs: dict[str, Any] | None = None,
+    seed: int = 42,
+    max_steps_per_episode: int = 240,
+    stride: int = 2,
+    target_width: int = 400,
+    fps: int = 15,
+) -> Path | None:
+    """
+    Genera un timelapse GIF fluido e annotato che mostra visivamente come l'agente
+    è passato dall'esplorazione iniziale (schianti) all'atterraggio morbido,
+    confrontando le milestone di training nel medesimo scenario lunare.
+    """
+    if not milestones:
+        return None
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    env_kwargs = env_kwargs or {}
+
+    try:
+        from PIL import Image, ImageDraw
+        import imageio
+        import gymnasium as gym
+    except ImportError as e:
+        print(f"[play2learn] Modulo mancante per la GIF di evoluzione: {e}")
+        return None
+
+    policy = getattr(model, "policy", None)
+    if policy is None:
+        return None
+
+    # Salva stato originale dei pesi del modello per ripristinarlo intatto
+    orig_state = {
+        k: v.detach().cpu().clone()
+        for k, v in policy.state_dict().items()
+    }
+
+    try:
+        render_env = gym.make(
+            env_id,
+            render_mode="rgb_array",
+            disable_env_checker=True,
+            **env_kwargs,
+        )
+    except TypeError:
+        render_env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
+
+    all_annotated_frames: list[np.ndarray] = []
+    total_stages = len(milestones)
+
+    fasi_titoli = [
+        "Fase 1: Primi Passi (Esplorazione Casuale)",
+        "Fase 2: Accensione Motori (Tentativi Stabilizzazione)",
+        "Fase 3: Discesa Orientata (Controllo Quota)",
+        "Fase Finale: Atterraggio Controllato",
+    ]
+
+    try:
+        for idx, m in enumerate(milestones):
+            policy.load_state_dict(m["state_dict"])
+            predict_fn = _make_fast_predictor(model)
+
+            # Usa sempre lo stesso seed per visualizzare la progressione sullo stesso identico terreno
+            obs, _ = render_env.reset(seed=seed)
+            ep_frames: list[np.ndarray] = []
+            f_init = render_env.render()
+            if f_init is not None:
+                ep_frames.append(f_init)
+
+            done = False
+            step_count = 0
+            final_esito = "In volo..."
+
+            while not done and step_count < max_steps_per_episode:
+                action = predict_fn(obs, deterministic=True)
+                obs, rew, term, trunc, info = render_env.step(action)
+                step_count += 1
+                done = term or trunc
+
+                f = render_env.render()
+                if f is not None:
+                    ep_frames.append(f)
+
+                if done:
+                    if info.get("is_success", False):
+                        final_esito = "🎯 Allunaggio Riuscito!"
+                    elif info.get("is_crashed", False):
+                        final_esito = "💥 Schianto al suolo"
+                    elif info.get("is_timeout", False):
+                        final_esito = "⏳ Tempo scaduto (Hovering)"
+                    else:
+                        final_esito = "Fine volo"
+
+            stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx+1}/{total_stages}"
+            step_val = m.get("step", step_count)
+            pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
+            succ_val = m.get("success_rate", 0.0)
+
+            sampled_ep = ep_frames[::stride]
+            if not sampled_ep:
+                continue
+
+            # Congela il frame finale per 8 frame per rendere leggibile l'esito
+            if done and sampled_ep:
+                sampled_ep = sampled_ep + [sampled_ep[-1]] * 8
+
+            for f in sampled_ep:
+                h, w = f.shape[:2]
+                target_h = int(target_width * h / w)
+                img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
+                draw = ImageDraw.Draw(img)
+
+                draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
+                draw.text((10, 4), f"{stage_title} — Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
+                draw.text((10, 18), f"Esito: {final_esito} | Successo mobile: {succ_val:.0f}%", fill=(147, 197, 253))
+
+                all_annotated_frames.append(np.array(img))
+
+    finally:
+        render_env.close()
+        # Ripristina invariati i pesi del modello originale
+        policy.load_state_dict(orig_state)
+
+    if not all_annotated_frames:
+        return None
+
+    try:
+        imageio.mimsave(str(output_path), all_annotated_frames, fps=fps, loop=0)
+        return output_path
+    except Exception as e:
+        print(f"[play2learn] Errore nel salvataggio della GIF evoluzione: {e}")
+        return None

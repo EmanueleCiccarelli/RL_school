@@ -7,6 +7,7 @@ fare debug e documentare i risultati delle diverse funzioni di reward.
 from __future__ import annotations
 
 import json
+import shutil
 import base64
 import datetime
 from pathlib import Path
@@ -297,8 +298,35 @@ def genera_report_esperimento(
     fail_fuel_esito = "🔍 Analisi criticità" if fail_count > 0 else "✅ Nessun fallimento"
     fail_fuel_badge = "Criticità" if fail_count > 0 else "Ottimo (0 fall.)"
 
+    # Controllo eventuale timelapse GIF evoluzione dell'apprendimento
+    source_gif = source_dir / "evoluzione_apprendimento.gif"
+    if not source_gif.exists() and "gif_evoluzione_path" in meta:
+        source_gif = Path(meta["gif_evoluzione_path"])
+
+    target_gif_path = None
+    gif_b64 = ""
+    if source_gif.exists():
+        target_gif_path = target_dir / "evoluzione_apprendimento.gif"
+        if source_gif.resolve() != target_gif_path.resolve():
+            try:
+                shutil.copy2(source_gif, target_gif_path)
+            except Exception:
+                pass
+        try:
+            gif_b64 = base64.b64encode(target_gif_path.read_bytes()).decode("ascii")
+        except Exception:
+            gif_b64 = ""
+
     # 3. Generazione Markdown
     success_symbol = "\\ge"
+    gif_md_section = ""
+    if target_gif_path and target_gif_path.exists():
+        gif_md_section = (
+            "\n---\n\n"
+            "## 4. Evoluzione dell'Apprendimento (Timelapse Fasi di Training)\n"
+            "![Timelapse Evoluzione](evoluzione_apprendimento.gif)\n"
+        )
+
     md_content = f"""# 📊 Scheda Tecnica Esperimento — Reinforcement Learning
 **Titolo:** {titolo}  
 **Autore:** {autore}  
@@ -329,15 +357,20 @@ def genera_report_esperimento(
 ## 3. Codice Sorgente della Reward Function
 ```python
 {code_source}
-```
-
+```{gif_md_section}
 ---
 
-## 4. Note di Debug e Considerazioni Personali
+## {'5' if gif_md_section else '4'}. Note di Debug e Considerazioni Personali
 {note if note else "*(Nessuna annotazione inserita. Puoi modificare questo file per aggiungere le tue osservazioni)*"}
 """
 
     img_tag = f'<div style="text-align:center; margin:20px 0;"><img src="data:image/png;base64,{plot_img_b64}" style="max-width:100%; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.12);" alt="Dashboard Telemetrica"/></div>' if plot_img_b64 else ''
+    gif_html_tag = (
+        f'<h2>3. Evoluzione dell\'Apprendimento nel Tempo (Timelapse Fasi di Training)</h2>'
+        f'<div style="text-align:center; margin:16px 0;">'
+        f'<img src="data:image/gif;base64,{gif_b64}" style="max-width:480px; border-radius:8px; box-shadow:0 3px 10px rgba(0,0,0,0.15);" alt="Timelapse Evoluzione"/>'
+        f'</div>'
+    ) if gif_b64 else ''
 
     html_content = f"""<!DOCTYPE html>
 <html lang="it">
@@ -470,6 +503,8 @@ def genera_report_esperimento(
 
         {img_tag}
 
+        {gif_html_tag}
+
         <h2>2. Codice Sorgente della Reward Function</h2>
         <pre><code>{code_source}</code></pre>
 
@@ -492,12 +527,16 @@ def genera_report_esperimento(
     print(f"   • PDF:      {pdf_path.name}")
     print(f"   • HTML:     {html_path.name}")
     print(f"   • Markdown: {md_path.name}")
+    if target_gif_path and target_gif_path.exists():
+        print(f"   • GIF:      {target_gif_path.name}")
 
     return {
         "pdf_path": pdf_path,
         "markdown_path": md_path,
         "md_path": md_path,
         "html_path": html_path,
+        "gif_path": target_gif_path,
+        "gif_evoluzione_path": target_gif_path,
         "export_dir": target_dir,
     }
 

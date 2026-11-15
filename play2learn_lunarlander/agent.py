@@ -61,6 +61,7 @@ class RewardTrackerCallback(BaseCallback):
         show_progress: bool = True,
         progress_interval_sec: float = 1.5,
         window_size: int = 30,
+        capture_milestones: bool = True,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -69,6 +70,12 @@ class RewardTrackerCallback(BaseCallback):
         self.show_progress = show_progress
         self.progress_interval_sec = float(progress_interval_sec)
         self.window_size = int(window_size)
+        self.capture_milestones = capture_milestones
+
+        # Snapshot intermedi per timelapse di evoluzione apprendimento (RAM, overhead 0)
+        self.milestone_snapshots: list[dict[str, Any]] = []
+        self._milestone_targets: list[float] = [0.10, 0.35, 0.65]
+        self._next_milestone_idx: int = 0
 
         # Liste telemetriche pubbliche (contratto con diagnostics.py e visualizer.py)
         self.episode_rewards: list[float] = []
@@ -202,6 +209,22 @@ class RewardTrackerCallback(BaseCallback):
                         for k, v in self.model.policy.state_dict().items()
                     }
 
+        # Snapshot intermedi per timelapse evoluzione (RAM, eseguito 3 volte durante tutto il training)
+        if self.capture_milestones and self.total_timesteps > 0 and self._next_milestone_idx < len(self._milestone_targets):
+            target_step = int(self._milestone_targets[self._next_milestone_idx] * self.total_timesteps)
+            if self.num_timesteps >= target_step:
+                pct = int(self._milestone_targets[self._next_milestone_idx] * 100)
+                self.milestone_snapshots.append({
+                    "step": self.num_timesteps,
+                    "percent": pct,
+                    "success_rate": self.current_moving_success_rate,
+                    "state_dict": {
+                        k: v.detach().cpu().clone()
+                        for k, v in self.model.policy.state_dict().items()
+                    },
+                })
+                self._next_milestone_idx += 1
+
         # Aggiornamento UI throttled (solo per tempo trascorso, non per step)
         if self.show_progress and self.total_timesteps > 0:
             now = time.perf_counter()
@@ -212,6 +235,17 @@ class RewardTrackerCallback(BaseCallback):
         return True
 
     def _on_training_end(self) -> None:
+        if self.capture_milestones and hasattr(self, "model") and hasattr(self.model, "policy"):
+            self.milestone_snapshots.append({
+                "step": max(1, self.num_timesteps),
+                "percent": 100,
+                "success_rate": self.current_moving_success_rate,
+                "state_dict": {
+                    k: v.detach().cpu().clone()
+                    for k, v in self.model.policy.state_dict().items()
+                },
+            })
+
         if self.show_progress and self.total_timesteps > 0:
             self._update_progress_ui(time.perf_counter(), finished=True)
 

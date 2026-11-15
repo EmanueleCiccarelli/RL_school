@@ -211,10 +211,12 @@ def display_notebook_summary(
     success_videos: list[Path] | None = None,
     failure_videos: list[Path] | None = None,
     max_videos: int = 4,
+    gif_path: Path | str | None = None,
 ) -> None:
     """
     Mostra il grafico e i video di test direttamente nell'output della cella del Notebook,
-    separando chiaramente i voli di successo dai fallimenti per un'analisi didattica mirata.
+    separando chiaramente i voli di successo dai fallimenti per un'analisi didattica mirata,
+    e includendo l'eventuale timelapse GIF dell'evoluzione dell'agente.
     """
     try:
         from IPython.display import Image, HTML, display
@@ -236,6 +238,19 @@ def display_notebook_summary(
                 succ_list = videos[:max_videos]
 
         sections = []
+
+        # Card timelapse GIF dell'evoluzione dell'apprendimento
+        if gif_path:
+            p_gif = Path(gif_path)
+            if p_gif.exists():
+                b64_gif = base64.b64encode(p_gif.read_bytes()).decode("ascii")
+                sections.append(
+                    f'<div style="margin-top: 18px; text-align: center; background: #f3e5f5; padding: 12px; border-radius: 8px; border: 1.5px solid #ab47bc;">'
+                    f'<h4 style="color:#6a1b9a; margin-top:2px; margin-bottom:6px;">🎞️ Evoluzione dell\'Apprendimento nel Tempo (Timelapse delle Fasi di Training)</h4>'
+                    f'<p style="color:#4a148c; font-size:12px; margin-bottom:10px;">Confronto della traiettoria sullo stesso terreno attraverso le diverse fasi di addestramento:</p>'
+                    f'<img src="data:image/gif;base64,{b64_gif}" style="max-width: 460px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);" />'
+                    f'</div>'
+                )
 
         if succ_list:
             cards = []
