@@ -12,6 +12,7 @@ from play2learn_lunarlander.visualizer import mostra_mappa_ambiente, plot_compar
 from play2learn_lunarlander.lab import run_lab, dimostrazione_live, LabResult
 from play2learn_lunarlander.favorites import (
     salva_nei_preferiti,
+    salva_video_preferito,
     mostra_preferiti,
     elenca_preferiti,
     carica_preferito,
@@ -21,7 +22,7 @@ from play2learn_lunarlander.reporting import (
     genera_report_maturita,
     confronta_run,
 )
-from play2learn_lunarlander.storage import list_all_runs
+from play2learn_lunarlander.storage import list_all_runs, mostra_successi, elenca_successi
 from play2learn_lunarlander.reset import reset_laboratorio
 
 __version__ = "2.0.0"
@@ -30,9 +31,12 @@ __all__ = [
     "run_lab",
     "mostra_mappa_ambiente",
     "salva_nei_preferiti",
+    "salva_video_preferito",
     "mostra_preferiti",
     "elenca_preferiti",
     "carica_preferito",
+    "mostra_successi",
+    "elenca_successi",
     "genera_report_esperimento",
     "genera_report_maturita",
     "confronta_run",

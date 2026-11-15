@@ -46,8 +46,11 @@ RL_school/
 │   └── reset.py                            # 🧹 Script di reset per pulire l'ambiente
 │
 └── runs/                                   # 📁 Cartella di archiviazione automatica delle run
-    └── favorites/                          # Archivio delle run migliori salvate
-        └── index.json                      # Indice persistente dei modelli preferiti
+    ├── successi/                           # 🎯 Archivio automatico esperimenti di successo (>= 80%) con PDF
+    │   └── index.json                      # Indice degli esperimenti riusciti
+    └── favorites/                          # ⭐ Galleria dei PREFERITI personali salvati dall'utente
+        ├── index.json                      # Indice persistente dei modelli preferiti
+        └── videos/                         # Cartella dei video preferiti salvati
 ```
 
 ---
@@ -231,10 +234,12 @@ env.bak/
 venv.bak/
 
 # File e cartelle generate dal training e test
-# Preserva la cartella runs e l'indice dei preferiti, ignorando modelli pesanti .zip e video .mp4
+# Preserva la cartella runs e gli indici di preferiti e successi, ignorando modelli pesanti .zip e video .mp4
 runs/*
 !runs/favorites/
 !runs/favorites/index.json
+!runs/successi/
+!runs/successi/index.json
 
 # File temporanei di sistema e IDE
 .DS_Store
@@ -268,6 +273,7 @@ from play2learn_lunarlander.visualizer import mostra_mappa_ambiente, plot_compar
 from play2learn_lunarlander.lab import run_lab, dimostrazione_live, LabResult
 from play2learn_lunarlander.favorites import (
     salva_nei_preferiti,
+    salva_video_preferito,
     mostra_preferiti,
     elenca_preferiti,
     carica_preferito,
@@ -277,7 +283,7 @@ from play2learn_lunarlander.reporting import (
     genera_report_maturita,
     confronta_run,
 )
-from play2learn_lunarlander.storage import list_all_runs
+from play2learn_lunarlander.storage import list_all_runs, mostra_successi, elenca_successi
 from play2learn_lunarlander.reset import reset_laboratorio
 
 __version__ = "2.0.0"
@@ -286,9 +292,12 @@ __all__ = [
     "run_lab",
     "mostra_mappa_ambiente",
     "salva_nei_preferiti",
+    "salva_video_preferito",
     "mostra_preferiti",
     "elenca_preferiti",
     "carica_preferito",
+    "mostra_successi",
+    "elenca_successi",
     "genera_report_esperimento",
     "genera_report_maturita",
     "confronta_run",
@@ -2063,7 +2072,18 @@ def get_default_runs_dir() -> Path:
     runs_dir = Path("runs").resolve()
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / "favorites").mkdir(parents=True, exist_ok=True)
+    (runs_dir / "successi").mkdir(parents=True, exist_ok=True)
     return runs_dir
+
+
+def get_default_success_dir() -> Path:
+    """Restituisce il percorso della cartella 'runs/successi/' per le run con esito >= 80%."""
+    succ_dir = get_default_runs_dir() / "successi"
+    succ_dir.mkdir(parents=True, exist_ok=True)
+    idx_file = succ_dir / "index.json"
+    if not idx_file.exists():
+        idx_file.write_text("[]\n", encoding="utf-8")
+    return succ_dir
 
 
 def create_run_directory(
@@ -2181,7 +2201,7 @@ def list_all_runs(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
 
     runs = []
     for sub in sorted(base.iterdir(), reverse=True):
-        if not sub.is_dir() or sub.name == "favorites":
+        if not sub.is_dir() or sub.name in ("favorites", "successi"):
             continue
         meta_file = sub / "run_metadata.json"
         if meta_file.exists():
@@ -2192,6 +2212,132 @@ def list_all_runs(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
             except Exception:
                 continue
     return runs
+
+
+def archivia_esperimento_successo(
+    run_dir: Path | str,
+    nome_run: str = "successo",
+    succ_rate: float = 80.0,
+    eval_stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Archivia automaticamente un esperimento con tasso di successo >= 80%
+    nella cartella dedicata 'runs/successi/', separata dai preferiti dell'utente.
+    Copia checkpoint, video, grafici, codice sorgente e genera la Scheda Tecnica PDF.
+    """
+    import shutil
+    run_dir = Path(run_dir)
+    eval_stats = eval_stats or {}
+    succ_base = get_default_success_dir()
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in nome_run)
+    dest_name = f"successo_{clean_name}_{timestamp}"
+    dest_dir = succ_base / dest_name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copia i file generati dalla run
+    for item in run_dir.iterdir():
+        if item.is_file():
+            shutil.copy2(item, dest_dir / item.name)
+        elif item.is_dir() and item.name == "videos":
+            shutil.copytree(item, dest_dir / "videos", dirs_exist_ok=True)
+
+    # Genera la Scheda Tecnica nella cartella di destinazione
+    from play2learn_lunarlander.reporting import genera_report_esperimento
+    rep_files = genera_report_esperimento(
+        run_or_fav=dest_dir,
+        output_dir=dest_dir,
+    )
+
+    # Aggiorna l'indice dei successi
+    idx_file = succ_base / "index.json"
+    index_data = []
+    if idx_file.exists():
+        try:
+            index_data = json.loads(idx_file.read_text(encoding="utf-8"))
+        except Exception:
+            index_data = []
+
+    entry = {
+        "id": dest_name,
+        "name": nome_run,
+        "success_rate": round(succ_rate, 1),
+        "mean_fuel": round(float(eval_stats.get("mean_fuel", 0.0)), 1),
+        "mean_length": round(float(eval_stats.get("mean_length", 0.0)), 1),
+        "archived_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "dir_path": str(dest_dir),
+        "pdf_report": str(rep_files.get("pdf_path", "")),
+        "video_count": len(list((dest_dir / "videos").glob("*.mp4"))) if (dest_dir / "videos").exists() else 0,
+    }
+    index_data.insert(0, entry)
+    idx_file.write_text(json.dumps(index_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return {
+        "dest_dir": dest_dir,
+        "rep_files": rep_files,
+        "entry": entry,
+    }
+
+
+def elenca_successi() -> list[dict[str, Any]]:
+    """Restituisce l'elenco di tutti gli esperimenti con successo >= 80% archiviati in 'runs/successi/'."""
+    idx_file = get_default_success_dir() / "index.json"
+    if idx_file.exists():
+        try:
+            return json.loads(idx_file.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def mostra_successi() -> None:
+    """Visualizza la tabella riassuntiva di tutti gli esperimenti con successo >= 80% archiviati."""
+    entries = elenca_successi()
+    if not entries:
+        print("\n[play2learn] Nessun esperimento >= 80% attualmente archiviato in 'runs/successi/'.\n")
+        return
+
+    try:
+        from IPython.display import HTML, display
+        rows = []
+        for e in entries:
+            rows.append(
+                f"<tr>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
+                f"<td style='padding:8px 12px; font-weight:bold; color:#2e7d32;'>{e.get('success_rate', 0):.1f}%</td>"
+                f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px;'>{e.get('archived_at', '')}</td>"
+                f"<td style='padding:8px 12px;'><code>runs/successi/{e.get('id')}</code></td>"
+                f"</tr>"
+            )
+        html = f"""
+        <div style="font-family:sans-serif; margin:16px 0;">
+            <h3 style="color:#1b5e20; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (&ge; 80%)</h3>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
+                <thead style="background:#e8f5e9; color:#1b5e20;">
+                    <tr>
+                        <th style="padding:10px 12px;">Nome Esperimento</th>
+                        <th style="padding:10px 12px;">Successo</th>
+                        <th style="padding:10px 12px;">Carburante Medio</th>
+                        <th style="padding:10px 12px;">Data</th>
+                        <th style="padding:10px 12px;">Percorso</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+        display(HTML(html))
+    except Exception:
+        print("\n" + "=" * 75)
+        print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (>= 80%)")
+        print("=" * 75)
+        print(f"{'NOME':<25} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DATA':<15}")
+        print("-" * 75)
+        for e in entries:
+            print(f"{e.get('name', ''):<25} | {e.get('success_rate', 0):.1f}%    | {e.get('mean_fuel', 0):<12.1f} | {e.get('archived_at', ''):<15}")
+        print("=" * 75 + "\n")
 
 
 
@@ -2248,18 +2394,22 @@ def salva_nei_preferiti(
     run_or_result: Any,
     nome_personalizzato: str | None = None,
     note: str = "",
-    tag: str = "Top Run",
+    tag: str = "Mio Preferito",
 ) -> dict[str, Any]:
     """
-    Salva una run nell'archivio dei modelli preferiti per confrontarla e riutilizzarla.
+    Salva una run o un video nell'archivio dei Preferiti Personali dello studente.
     Copia in modo sicuro modello, grafici, video e codice in 'runs/favorites/'.
 
     Parametri:
-    - run_or_result: Risultato restituito da `run_lab(...)` o percorso cartella.
+    - run_or_result: Risultato restituito da `run_lab(...)`, percorso cartella run, o percorso a un file .mp4.
     - nome_personalizzato: Nome descrittivo (es. "Allunaggio_Stabile_v2").
     - note: Breve commento sulle scelte matematiche effettuate.
-    - tag: Categoria (default: "Top Run").
+    - tag: Categoria (default: "Mio Preferito").
     """
+    # Se è un file video .mp4, delega a salva_video_preferito
+    if isinstance(run_or_result, (str, Path)) and str(run_or_result).lower().endswith(".mp4"):
+        return salva_video_preferito(run_or_result, nome=nome_personalizzato, note=note, tag=tag)
+
     fav_dir = _get_favorites_dir()
 
     # 1. Risoluzione della cartella sorgente della run
@@ -2269,6 +2419,8 @@ def salva_nei_preferiti(
             source_dir = Path(run_or_result["checkpoint_dir"])
         elif "path" in run_or_result:
             source_dir = Path(run_or_result["path"])
+        elif "run_dir" in run_or_result:
+            source_dir = Path(run_or_result["run_dir"])
     elif isinstance(run_or_result, (str, Path)):
         source_dir = Path(run_or_result)
 
@@ -2318,6 +2470,7 @@ def salva_nei_preferiti(
     index_data = _load_favorites_index()
     entry = {
         "id": dest_name,
+        "type": "run",
         "name": nome_personalizzato or dest_name,
         "tag": tag,
         "notes": note,
@@ -2332,12 +2485,78 @@ def salva_nei_preferiti(
     _save_favorites_index(index_data)
 
     print("\n" + "=" * 70)
-    print(f"  ⭐ MODELLO SALVATO NEI PREFERITI!")
+    print(f"  ⭐ MODELLO SALVATO NEI PREFERITI PERSONALI!")
     print(f"  🏷️  Nome: {entry['name']}")
     print(f"  🏆 Allunaggi Riusciti: {entry['success_rate']:.0f}% | Carburante Medio: {entry['mean_fuel']:.1f}")
     if note:
         print(f"  📝 Note: {note}")
-    print(f"  📁 Cartella: {dest_dir.name}")
+    print(f"  📁 Cartella: runs/favorites/{dest_dir.name}")
+    print("=" * 70 + "\n")
+
+    return entry
+
+
+def salva_video_preferito(
+    video_ref: Any,
+    nome: str | None = None,
+    note: str = "",
+    tag: str = "Video Preferito",
+) -> dict[str, Any]:
+    """
+    Salva un singolo video tra i preferiti personali dell'utente.
+
+    Parametri:
+    - video_ref: percorso a un file .mp4, oppure oggetto LabResult (prende il primo video di successo).
+    - nome: titolo descrittivo per il video (es. 'Mio Allunaggio Spettacolare').
+    - note: annotazione didattica dello studente.
+    - tag: categoria/etichetta (default: 'Video Preferito').
+    """
+    fav_dir = _get_favorites_dir()
+    video_store = fav_dir / "videos"
+    video_store.mkdir(parents=True, exist_ok=True)
+
+    v_path: Path | None = None
+    if isinstance(video_ref, (str, Path)):
+        p = Path(video_ref)
+        if p.exists() and p.suffix.lower() == ".mp4":
+            v_path = p
+    elif isinstance(video_ref, dict):
+        succ_vids = video_ref.get("success_videos", []) or video_ref.get("recorded_videos", [])
+        if succ_vids and Path(succ_vids[0]).exists():
+            v_path = Path(succ_vids[0])
+
+    if not v_path or not v_path.exists():
+        raise ValueError(f"[Play2Learn] Video non trovato o non valido: {video_ref}")
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_name = nome or v_path.stem
+    clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in clean_name)
+    dest_video_name = f"fav_vid_{clean_name}_{timestamp}.mp4"
+    dest_video_path = video_store / dest_video_name
+    shutil.copy2(v_path, dest_video_path)
+
+    # Aggiorna l'indice globale dei preferiti
+    index_data = _load_favorites_index()
+    entry = {
+        "id": dest_video_name,
+        "type": "video",
+        "name": nome or clean_name,
+        "tag": tag,
+        "notes": note,
+        "saved_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "mission_title": "Video Allunaggio",
+        "video_path": str(dest_video_path),
+        "dir_path": str(video_store),
+    }
+    index_data.insert(0, entry)
+    _save_favorites_index(index_data)
+
+    print("\n" + "=" * 70)
+    print(f"  🎬 VIDEO SALVATO NEI PREFERITI PERSONALI!")
+    print(f"  🏷️  Nome: {entry['name']}")
+    if note:
+        print(f"  📝 Note: {note}")
+    print(f"  📁 Salvato in: runs/favorites/videos/{dest_video_name}")
     print("=" * 70 + "\n")
 
     return entry
@@ -2350,27 +2569,36 @@ def elenca_preferiti() -> list[dict[str, Any]]:
 
 def mostra_preferiti() -> None:
     """
-    Visualizza la 'Hall of Fame' dei modelli preferiti in una tabella formattata
-    elegante adatta per l'output di Jupyter Notebook / Google Colab.
+    Visualizza la galleria dei Preferiti personali dell'utente (modelli e video salvati esplicitamente).
     """
     entries = _load_favorites_index()
     if not entries:
-        print("\n[play2learn] Nessun modello salvato nei preferiti. Usa 'risultati.salva_preferito()' per aggiungerne uno!\n")
+        print("\n[play2learn] Nessun elemento salvato nei preferiti personali.")
+        print("💡 Usa 'risultati.salva_preferito(\"Mio Nome\")' oppure 'salva_video_preferito(\"video.mp4\")' per aggiungerne uno!\n")
         return
 
     try:
         from IPython.display import HTML, display
         rows = []
         for e in entries:
-            succ = f"{e.get('success_rate', 0):.0f}%"
-            badge_color = "#2e7d32" if e.get("success_rate", 0) >= 80 else "#ef6c00"
+            is_vid = e.get("type") == "video"
+            icon = "🎬" if is_vid else "🏆"
+            if is_vid:
+                succ = "<span style='color:#0d47a1;'>🎬 Video</span>"
+                fuel_str = "-"
+            else:
+                s_val = e.get("success_rate", 0)
+                badge_color = "#2e7d32" if s_val >= 80 else "#ef6c00"
+                succ = f"<span style='font-weight:bold; color:{badge_color};'>{s_val:.0f}%</span>"
+                fuel_str = f"{e.get('mean_fuel', 0):.1f} un."
+
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
-                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Top Run')}</span></td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{icon} {e.get('name')}</td>"
+                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Preferito')}</span></td>"
                 f"<td style='padding:8px 12px;'>{e.get('mission_title', '')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold; color:{badge_color};'>{succ}</td>"
-                f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px;'>{succ}</td>"
+                f"<td style='padding:8px 12px;'>{fuel_str}</td>"
                 f"<td style='padding:8px 12px;'>{e.get('saved_at', '')}</td>"
                 f"<td style='padding:8px 12px; font-style:italic; color:#555;'>{e.get('notes', '')}</td>"
                 f"</tr>"
@@ -2378,14 +2606,14 @@ def mostra_preferiti() -> None:
 
         html = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
-            <h3 style="color:#1b5e20; margin-bottom:8px;">🏆 Modelli Selezionati / Archivio Run Migliori</h3>
+            <h3 style="color:#1b5e20; margin-bottom:8px;">⭐ I Tuoi Preferiti (Modelli e Video Salvati dall'Utente)</h3>
             <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
-                <thead style="background:#f0f4c3; color:#33691e;">
+                <thead style="background:#fff9c4; color:#5d4037;">
                     <tr>
-                        <th style="padding:10px 12px;">Nome Modello</th>
-                        <th style="padding:10px 12px;">Tag</th>
+                        <th style="padding:10px 12px;">Nome Preferito</th>
+                        <th style="padding:10px 12px;">Tipo / Tag</th>
                         <th style="padding:10px 12px;">Missione</th>
-                        <th style="padding:10px 12px;">Successo</th>
+                        <th style="padding:10px 12px;">Esito / Tipo</th>
                         <th style="padding:10px 12px;">Carburante</th>
                         <th style="padding:10px 12px;">Data</th>
                         <th style="padding:10px 12px;">Note</th>
@@ -2401,13 +2629,15 @@ def mostra_preferiti() -> None:
     except Exception:
         # Fallback a testo console formattato
         print("\n" + "=" * 80)
-        print("  🏆 MODELLI SELEZIONATI / ARCHIVIO RUN MIGLIORI")
+        print("  ⭐ I TUOI PREFERITI (MODELLI E VIDEO SALVATI DALL'UTENTE)")
         print("=" * 80)
-        print(f"{'NOME':<25} | {'MISSIONE':<20} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DATA':<15}")
+        print(f"{'NOME':<25} | {'MISSIONE':<20} | {'TIPO/ESITO':<12} | {'CARBURANTE':<12} | {'DATA':<15}")
         print("-" * 80)
         for e in entries:
-            succ = f"{e.get('success_rate', 0):.0f}%"
-            print(f"{e.get('name', ''):<25} | {e.get('mission_title', ''):<20} | {succ:<10} | {e.get('mean_fuel', 0):<12.1f} | {e.get('saved_at', ''):<15}")
+            is_vid = e.get("type") == "video"
+            succ = "Video" if is_vid else f"{e.get('success_rate', 0):.0f}%"
+            fuel = "-" if is_vid else f"{e.get('mean_fuel', 0):.1f}"
+            print(f"{e.get('name', ''):<25} | {e.get('mission_title', ''):<20} | {succ:<12} | {fuel:<12} | {e.get('saved_at', ''):<15}")
         print("=" * 80 + "\n")
 
 
@@ -2435,6 +2665,12 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
 
     if not selected_entry:
         raise ValueError(f"Nessun preferito trovato con identificativo: {identifier}")
+
+    if selected_entry.get("type") == "video":
+        raise ValueError(
+            f"[Play2Learn] L'elemento '{selected_entry['name']}' è un video salvato nei preferiti, non una rete neurale.\n"
+            f"File video: {selected_entry.get('video_path')}"
+        )
 
     dest_dir = Path(selected_entry["dir_path"])
     # Cerca il file modello
@@ -3071,8 +3307,9 @@ from play2learn_lunarlander.evaluator import evaluate_and_record
 from play2learn_lunarlander.storage import (
     create_run_directory,
     save_run_metadata,
+    archivia_esperimento_successo,
 )
-from play2learn_lunarlander.favorites import salva_nei_preferiti
+from play2learn_lunarlander.favorites import salva_nei_preferiti, salva_video_preferito
 from play2learn_lunarlander.reporting import genera_report_esperimento, genera_report_maturita
 
 
@@ -3112,14 +3349,34 @@ class LabResult(dict):
         self,
         nome_personalizzato: str | None = None,
         note: str = "",
-        tag: str = "Top Run",
+        tag: str = "Mio Preferito",
     ) -> dict[str, Any]:
-        """Salva questo modello nell'archivio dei modelli preferiti."""
+        """Salva questo modello nell'archivio dei preferiti personali dell'utente."""
         return salva_nei_preferiti(
             self,
             nome_personalizzato=nome_personalizzato,
             note=note,
             tag=tag,
+        )
+
+    def salva_video_preferito(
+        self,
+        video: int | str | Path = 0,
+        nome: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Salva un video specifico nei preferiti personali dell'utente."""
+        target_video = video
+        if isinstance(video, int):
+            v_list = self.get("success_videos", []) or self.get("recorded_videos", [])
+            if v_list and 0 <= video < len(v_list):
+                target_video = v_list[video]
+            else:
+                target_video = self
+        return salva_video_preferito(
+            video_ref=target_video,
+            nome=nome,
+            note=note,
         )
 
     def genera_report(
@@ -3358,35 +3615,29 @@ def run_lab(
     print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
     print("=" * 76 + "\n")
 
-    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Reportistica estesa
+    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Archiviazione in 'runs/successi/'
     report_bundle = None
     if succ_rate >= 80.0:
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
-        print("  Generazione automatica della Scheda Tecnica e archiviazione nei Preferiti...")
+        print("  Archiviazione automatica in 'runs/successi/' e generazione Scheda Tecnica...")
         print("=" * 76)
 
-        fav_entry = salva_nei_preferiti(
-            run_or_result=run_dir,
-            nome_personalizzato=f"Allunaggio_{mission}",
-            note=(
-                f"Tasso di successo {succ_rate:.1f}% con "
-                f"{eval_stats.get('mean_fuel_success', 0):.1f} propellente medio"
-            ),
-            tag="Top Run",
+        succ_info = archivia_esperimento_successo(
+            run_dir=run_dir,
+            nome_run=nome_run or mission,
+            succ_rate=succ_rate,
+            eval_stats=eval_stats,
         )
-        fav_dir = Path(fav_entry["dir_path"])
-        rep_files = genera_report_esperimento(
-            run_or_fav=fav_dir,
-            output_dir=fav_dir,
-        )
+        succ_dir = succ_info["dest_dir"]
+        rep_files = succ_info["rep_files"]
         report_bundle = {
-            "fav_entry": fav_entry,
+            "succ_entry": succ_info["entry"],
             "rep_files": rep_files,
-            "dir_path": fav_dir,
+            "dir_path": succ_dir,
         }
 
-        _display_success_popup(fav_entry, rep_files)
+        _display_success_popup(succ_info["entry"], rep_files)
 
     # 13. Mostra dashboard e video nel Notebook
     if display_in_notebook:
@@ -3425,12 +3676,12 @@ def run_lab(
     })
 
 
-def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]) -> None:
+def _display_success_popup(succ_entry: dict[str, Any], rep_files: dict[str, Path]) -> None:
     """Mostra un box notifica interattivo nel Notebook per il report e i file generati."""
     try:
         from IPython.display import HTML, display
         pdf_name = rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name
-        fav_dir = Path(fav_entry.get("dir_path", "")).name
+        succ_dir_name = Path(succ_entry.get("dir_path", "")).name
 
         box_html = f"""
         <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
@@ -3443,18 +3694,20 @@ def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]
                         OBIETTIVO ALLUNAGGIO RAGGIUNTO (&ge; 80%)!
                     </h3>
                     <p style="color:#2e7d32; margin:2px 0 0 0; font-size:13.5px;">
-                        Modello archiviato nei Preferiti e Scheda Tecnica generata per l'analisi e il debug.
+                        Esperimento archiviato con successo in <code>runs/successi/</code> e Scheda Tecnica generata.
                     </p>
                 </div>
             </div>
             <div style="background:#ffffff; border-radius:8px; padding:12px 16px; margin-top:10px; font-size:13px; color:#333;">
-                <div>📁 <strong>Cartella Riservata:</strong> <code>runs/favorites/{fav_dir}</code></div>
+                <div>📁 <strong>Cartella Esperimento di Successo:</strong> <code>runs/successi/{succ_dir_name}</code></div>
                 <div style="margin-top:5px;">📄 <strong>Scheda Tecnica PDF:</strong> <code>{pdf_name}</code> (con reward usata, metriche e grafici)</div>
-                <div style="margin-top:5px;">🎬 <strong>Video di Valutazione:</strong> Mix di atterraggi riusciti e fallimenti archiviati</div>
+                <div style="margin-top:5px;">🎬 <strong>Video di Valutazione:</strong> archiviati in <code>runs/successi/{succ_dir_name}/videos/</code></div>
             </div>
-            <p style="margin:10px 0 0 0; font-size:12.5px; color:#1b5e20; font-style:italic;">
-                💡 Puoi consultare e modificare il file Markdown o HTML generato per aggiungere le tue annotazioni personali.
-            </p>
+            <div style="margin-top:12px; padding:10px 14px; background:#fff9c4; border-radius:8px; border-left:4px solid #fbc02d; font-size:12.8px; color:#5d4037;">
+                ⭐ <strong>I Tuoi Preferiti (Favorites):</strong> La sezione Preferiti è ora riservata esclusivamente ai modelli e video che salvi tu manualmente!<br>
+                Se desideri aggiungere questo allunaggio tra i tuoi preferiti, esegui:
+                <code>risultati.salva_preferito("Mio Nome", note="Note sul volo")</code>
+            </div>
         </div>
         """
         display(HTML(box_html))
@@ -3604,6 +3857,11 @@ def pulisci_runs(runs_dir: Path) -> None:
     fav_dir = runs_dir / "favorites"
     fav_dir.mkdir(parents=True, exist_ok=True)
     (fav_dir / "index.json").write_text("[]\n", encoding="utf-8")
+    (fav_dir / "videos").mkdir(parents=True, exist_ok=True)
+
+    succ_dir = runs_dir / "successi"
+    succ_dir.mkdir(parents=True, exist_ok=True)
+    (succ_dir / "index.json").write_text("[]\n", encoding="utf-8")
     print(f"✅ Cartella runs/ ripristinata allo stato iniziale (svuotata e pronta per nuove run)")
 
 

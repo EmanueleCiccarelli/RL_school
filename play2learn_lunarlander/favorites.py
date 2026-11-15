@@ -46,18 +46,22 @@ def salva_nei_preferiti(
     run_or_result: Any,
     nome_personalizzato: str | None = None,
     note: str = "",
-    tag: str = "Top Run",
+    tag: str = "Mio Preferito",
 ) -> dict[str, Any]:
     """
-    Salva una run nell'archivio dei modelli preferiti per confrontarla e riutilizzarla.
+    Salva una run o un video nell'archivio dei Preferiti Personali dello studente.
     Copia in modo sicuro modello, grafici, video e codice in 'runs/favorites/'.
 
     Parametri:
-    - run_or_result: Risultato restituito da `run_lab(...)` o percorso cartella.
+    - run_or_result: Risultato restituito da `run_lab(...)`, percorso cartella run, o percorso a un file .mp4.
     - nome_personalizzato: Nome descrittivo (es. "Allunaggio_Stabile_v2").
     - note: Breve commento sulle scelte matematiche effettuate.
-    - tag: Categoria (default: "Top Run").
+    - tag: Categoria (default: "Mio Preferito").
     """
+    # Se è un file video .mp4, delega a salva_video_preferito
+    if isinstance(run_or_result, (str, Path)) and str(run_or_result).lower().endswith(".mp4"):
+        return salva_video_preferito(run_or_result, nome=nome_personalizzato, note=note, tag=tag)
+
     fav_dir = _get_favorites_dir()
 
     # 1. Risoluzione della cartella sorgente della run
@@ -67,6 +71,8 @@ def salva_nei_preferiti(
             source_dir = Path(run_or_result["checkpoint_dir"])
         elif "path" in run_or_result:
             source_dir = Path(run_or_result["path"])
+        elif "run_dir" in run_or_result:
+            source_dir = Path(run_or_result["run_dir"])
     elif isinstance(run_or_result, (str, Path)):
         source_dir = Path(run_or_result)
 
@@ -116,6 +122,7 @@ def salva_nei_preferiti(
     index_data = _load_favorites_index()
     entry = {
         "id": dest_name,
+        "type": "run",
         "name": nome_personalizzato or dest_name,
         "tag": tag,
         "notes": note,
@@ -130,12 +137,78 @@ def salva_nei_preferiti(
     _save_favorites_index(index_data)
 
     print("\n" + "=" * 70)
-    print(f"  ⭐ MODELLO SALVATO NEI PREFERITI!")
+    print(f"  ⭐ MODELLO SALVATO NEI PREFERITI PERSONALI!")
     print(f"  🏷️  Nome: {entry['name']}")
     print(f"  🏆 Allunaggi Riusciti: {entry['success_rate']:.0f}% | Carburante Medio: {entry['mean_fuel']:.1f}")
     if note:
         print(f"  📝 Note: {note}")
-    print(f"  📁 Cartella: {dest_dir.name}")
+    print(f"  📁 Cartella: runs/favorites/{dest_dir.name}")
+    print("=" * 70 + "\n")
+
+    return entry
+
+
+def salva_video_preferito(
+    video_ref: Any,
+    nome: str | None = None,
+    note: str = "",
+    tag: str = "Video Preferito",
+) -> dict[str, Any]:
+    """
+    Salva un singolo video tra i preferiti personali dell'utente.
+
+    Parametri:
+    - video_ref: percorso a un file .mp4, oppure oggetto LabResult (prende il primo video di successo).
+    - nome: titolo descrittivo per il video (es. 'Mio Allunaggio Spettacolare').
+    - note: annotazione didattica dello studente.
+    - tag: categoria/etichetta (default: 'Video Preferito').
+    """
+    fav_dir = _get_favorites_dir()
+    video_store = fav_dir / "videos"
+    video_store.mkdir(parents=True, exist_ok=True)
+
+    v_path: Path | None = None
+    if isinstance(video_ref, (str, Path)):
+        p = Path(video_ref)
+        if p.exists() and p.suffix.lower() == ".mp4":
+            v_path = p
+    elif isinstance(video_ref, dict):
+        succ_vids = video_ref.get("success_videos", []) or video_ref.get("recorded_videos", [])
+        if succ_vids and Path(succ_vids[0]).exists():
+            v_path = Path(succ_vids[0])
+
+    if not v_path or not v_path.exists():
+        raise ValueError(f"[Play2Learn] Video non trovato o non valido: {video_ref}")
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_name = nome or v_path.stem
+    clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in clean_name)
+    dest_video_name = f"fav_vid_{clean_name}_{timestamp}.mp4"
+    dest_video_path = video_store / dest_video_name
+    shutil.copy2(v_path, dest_video_path)
+
+    # Aggiorna l'indice globale dei preferiti
+    index_data = _load_favorites_index()
+    entry = {
+        "id": dest_video_name,
+        "type": "video",
+        "name": nome or clean_name,
+        "tag": tag,
+        "notes": note,
+        "saved_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "mission_title": "Video Allunaggio",
+        "video_path": str(dest_video_path),
+        "dir_path": str(video_store),
+    }
+    index_data.insert(0, entry)
+    _save_favorites_index(index_data)
+
+    print("\n" + "=" * 70)
+    print(f"  🎬 VIDEO SALVATO NEI PREFERITI PERSONALI!")
+    print(f"  🏷️  Nome: {entry['name']}")
+    if note:
+        print(f"  📝 Note: {note}")
+    print(f"  📁 Salvato in: runs/favorites/videos/{dest_video_name}")
     print("=" * 70 + "\n")
 
     return entry
@@ -148,27 +221,36 @@ def elenca_preferiti() -> list[dict[str, Any]]:
 
 def mostra_preferiti() -> None:
     """
-    Visualizza la 'Hall of Fame' dei modelli preferiti in una tabella formattata
-    elegante adatta per l'output di Jupyter Notebook / Google Colab.
+    Visualizza la galleria dei Preferiti personali dell'utente (modelli e video salvati esplicitamente).
     """
     entries = _load_favorites_index()
     if not entries:
-        print("\n[play2learn] Nessun modello salvato nei preferiti. Usa 'risultati.salva_preferito()' per aggiungerne uno!\n")
+        print("\n[play2learn] Nessun elemento salvato nei preferiti personali.")
+        print("💡 Usa 'risultati.salva_preferito(\"Mio Nome\")' oppure 'salva_video_preferito(\"video.mp4\")' per aggiungerne uno!\n")
         return
 
     try:
         from IPython.display import HTML, display
         rows = []
         for e in entries:
-            succ = f"{e.get('success_rate', 0):.0f}%"
-            badge_color = "#2e7d32" if e.get("success_rate", 0) >= 80 else "#ef6c00"
+            is_vid = e.get("type") == "video"
+            icon = "🎬" if is_vid else "🏆"
+            if is_vid:
+                succ = "<span style='color:#0d47a1;'>🎬 Video</span>"
+                fuel_str = "-"
+            else:
+                s_val = e.get("success_rate", 0)
+                badge_color = "#2e7d32" if s_val >= 80 else "#ef6c00"
+                succ = f"<span style='font-weight:bold; color:{badge_color};'>{s_val:.0f}%</span>"
+                fuel_str = f"{e.get('mean_fuel', 0):.1f} un."
+
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
-                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Top Run')}</span></td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{icon} {e.get('name')}</td>"
+                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Preferito')}</span></td>"
                 f"<td style='padding:8px 12px;'>{e.get('mission_title', '')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold; color:{badge_color};'>{succ}</td>"
-                f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px;'>{succ}</td>"
+                f"<td style='padding:8px 12px;'>{fuel_str}</td>"
                 f"<td style='padding:8px 12px;'>{e.get('saved_at', '')}</td>"
                 f"<td style='padding:8px 12px; font-style:italic; color:#555;'>{e.get('notes', '')}</td>"
                 f"</tr>"
@@ -176,14 +258,14 @@ def mostra_preferiti() -> None:
 
         html = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
-            <h3 style="color:#1b5e20; margin-bottom:8px;">🏆 Modelli Selezionati / Archivio Run Migliori</h3>
+            <h3 style="color:#1b5e20; margin-bottom:8px;">⭐ I Tuoi Preferiti (Modelli e Video Salvati dall'Utente)</h3>
             <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
-                <thead style="background:#f0f4c3; color:#33691e;">
+                <thead style="background:#fff9c4; color:#5d4037;">
                     <tr>
-                        <th style="padding:10px 12px;">Nome Modello</th>
-                        <th style="padding:10px 12px;">Tag</th>
+                        <th style="padding:10px 12px;">Nome Preferito</th>
+                        <th style="padding:10px 12px;">Tipo / Tag</th>
                         <th style="padding:10px 12px;">Missione</th>
-                        <th style="padding:10px 12px;">Successo</th>
+                        <th style="padding:10px 12px;">Esito / Tipo</th>
                         <th style="padding:10px 12px;">Carburante</th>
                         <th style="padding:10px 12px;">Data</th>
                         <th style="padding:10px 12px;">Note</th>
@@ -199,13 +281,15 @@ def mostra_preferiti() -> None:
     except Exception:
         # Fallback a testo console formattato
         print("\n" + "=" * 80)
-        print("  🏆 MODELLI SELEZIONATI / ARCHIVIO RUN MIGLIORI")
+        print("  ⭐ I TUOI PREFERITI (MODELLI E VIDEO SALVATI DALL'UTENTE)")
         print("=" * 80)
-        print(f"{'NOME':<25} | {'MISSIONE':<20} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DATA':<15}")
+        print(f"{'NOME':<25} | {'MISSIONE':<20} | {'TIPO/ESITO':<12} | {'CARBURANTE':<12} | {'DATA':<15}")
         print("-" * 80)
         for e in entries:
-            succ = f"{e.get('success_rate', 0):.0f}%"
-            print(f"{e.get('name', ''):<25} | {e.get('mission_title', ''):<20} | {succ:<10} | {e.get('mean_fuel', 0):<12.1f} | {e.get('saved_at', ''):<15}")
+            is_vid = e.get("type") == "video"
+            succ = "Video" if is_vid else f"{e.get('success_rate', 0):.0f}%"
+            fuel = "-" if is_vid else f"{e.get('mean_fuel', 0):.1f}"
+            print(f"{e.get('name', ''):<25} | {e.get('mission_title', ''):<20} | {succ:<12} | {fuel:<12} | {e.get('saved_at', ''):<15}")
         print("=" * 80 + "\n")
 
 
@@ -233,6 +317,12 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
 
     if not selected_entry:
         raise ValueError(f"Nessun preferito trovato con identificativo: {identifier}")
+
+    if selected_entry.get("type") == "video":
+        raise ValueError(
+            f"[Play2Learn] L'elemento '{selected_entry['name']}' è un video salvato nei preferiti, non una rete neurale.\n"
+            f"File video: {selected_entry.get('video_path')}"
+        )
 
     dest_dir = Path(selected_entry["dir_path"])
     # Cerca il file modello

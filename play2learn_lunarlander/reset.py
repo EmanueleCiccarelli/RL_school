@@ -71,6 +71,11 @@ def pulisci_runs(runs_dir: Path) -> None:
     fav_dir = runs_dir / "favorites"
     fav_dir.mkdir(parents=True, exist_ok=True)
     (fav_dir / "index.json").write_text("[]\n", encoding="utf-8")
+    (fav_dir / "videos").mkdir(parents=True, exist_ok=True)
+
+    succ_dir = runs_dir / "successi"
+    succ_dir.mkdir(parents=True, exist_ok=True)
+    (succ_dir / "index.json").write_text("[]\n", encoding="utf-8")
     print(f"✅ Cartella runs/ ripristinata allo stato iniziale (svuotata e pronta per nuove run)")
 
 

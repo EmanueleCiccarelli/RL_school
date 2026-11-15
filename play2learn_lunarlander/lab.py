@@ -38,8 +38,9 @@ from play2learn_lunarlander.evaluator import evaluate_and_record
 from play2learn_lunarlander.storage import (
     create_run_directory,
     save_run_metadata,
+    archivia_esperimento_successo,
 )
-from play2learn_lunarlander.favorites import salva_nei_preferiti
+from play2learn_lunarlander.favorites import salva_nei_preferiti, salva_video_preferito
 from play2learn_lunarlander.reporting import genera_report_esperimento, genera_report_maturita
 
 
@@ -79,14 +80,34 @@ class LabResult(dict):
         self,
         nome_personalizzato: str | None = None,
         note: str = "",
-        tag: str = "Top Run",
+        tag: str = "Mio Preferito",
     ) -> dict[str, Any]:
-        """Salva questo modello nell'archivio dei modelli preferiti."""
+        """Salva questo modello nell'archivio dei preferiti personali dell'utente."""
         return salva_nei_preferiti(
             self,
             nome_personalizzato=nome_personalizzato,
             note=note,
             tag=tag,
+        )
+
+    def salva_video_preferito(
+        self,
+        video: int | str | Path = 0,
+        nome: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Salva un video specifico nei preferiti personali dell'utente."""
+        target_video = video
+        if isinstance(video, int):
+            v_list = self.get("success_videos", []) or self.get("recorded_videos", [])
+            if v_list and 0 <= video < len(v_list):
+                target_video = v_list[video]
+            else:
+                target_video = self
+        return salva_video_preferito(
+            video_ref=target_video,
+            nome=nome,
+            note=note,
         )
 
     def genera_report(
@@ -325,35 +346,29 @@ def run_lab(
     print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
     print("=" * 76 + "\n")
 
-    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Reportistica estesa
+    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Archiviazione in 'runs/successi/'
     report_bundle = None
     if succ_rate >= 80.0:
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
-        print("  Generazione automatica della Scheda Tecnica e archiviazione nei Preferiti...")
+        print("  Archiviazione automatica in 'runs/successi/' e generazione Scheda Tecnica...")
         print("=" * 76)
 
-        fav_entry = salva_nei_preferiti(
-            run_or_result=run_dir,
-            nome_personalizzato=f"Allunaggio_{mission}",
-            note=(
-                f"Tasso di successo {succ_rate:.1f}% con "
-                f"{eval_stats.get('mean_fuel_success', 0):.1f} propellente medio"
-            ),
-            tag="Top Run",
+        succ_info = archivia_esperimento_successo(
+            run_dir=run_dir,
+            nome_run=nome_run or mission,
+            succ_rate=succ_rate,
+            eval_stats=eval_stats,
         )
-        fav_dir = Path(fav_entry["dir_path"])
-        rep_files = genera_report_esperimento(
-            run_or_fav=fav_dir,
-            output_dir=fav_dir,
-        )
+        succ_dir = succ_info["dest_dir"]
+        rep_files = succ_info["rep_files"]
         report_bundle = {
-            "fav_entry": fav_entry,
+            "succ_entry": succ_info["entry"],
             "rep_files": rep_files,
-            "dir_path": fav_dir,
+            "dir_path": succ_dir,
         }
 
-        _display_success_popup(fav_entry, rep_files)
+        _display_success_popup(succ_info["entry"], rep_files)
 
     # 13. Mostra dashboard e video nel Notebook
     if display_in_notebook:
@@ -392,12 +407,12 @@ def run_lab(
     })
 
 
-def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]) -> None:
+def _display_success_popup(succ_entry: dict[str, Any], rep_files: dict[str, Path]) -> None:
     """Mostra un box notifica interattivo nel Notebook per il report e i file generati."""
     try:
         from IPython.display import HTML, display
         pdf_name = rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name
-        fav_dir = Path(fav_entry.get("dir_path", "")).name
+        succ_dir_name = Path(succ_entry.get("dir_path", "")).name
 
         box_html = f"""
         <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
@@ -410,18 +425,20 @@ def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]
                         OBIETTIVO ALLUNAGGIO RAGGIUNTO (&ge; 80%)!
                     </h3>
                     <p style="color:#2e7d32; margin:2px 0 0 0; font-size:13.5px;">
-                        Modello archiviato nei Preferiti e Scheda Tecnica generata per l'analisi e il debug.
+                        Esperimento archiviato con successo in <code>runs/successi/</code> e Scheda Tecnica generata.
                     </p>
                 </div>
             </div>
             <div style="background:#ffffff; border-radius:8px; padding:12px 16px; margin-top:10px; font-size:13px; color:#333;">
-                <div>📁 <strong>Cartella Riservata:</strong> <code>runs/favorites/{fav_dir}</code></div>
+                <div>📁 <strong>Cartella Esperimento di Successo:</strong> <code>runs/successi/{succ_dir_name}</code></div>
                 <div style="margin-top:5px;">📄 <strong>Scheda Tecnica PDF:</strong> <code>{pdf_name}</code> (con reward usata, metriche e grafici)</div>
-                <div style="margin-top:5px;">🎬 <strong>Video di Valutazione:</strong> Mix di atterraggi riusciti e fallimenti archiviati</div>
+                <div style="margin-top:5px;">🎬 <strong>Video di Valutazione:</strong> archiviati in <code>runs/successi/{succ_dir_name}/videos/</code></div>
             </div>
-            <p style="margin:10px 0 0 0; font-size:12.5px; color:#1b5e20; font-style:italic;">
-                💡 Puoi consultare e modificare il file Markdown o HTML generato per aggiungere le tue annotazioni personali.
-            </p>
+            <div style="margin-top:12px; padding:10px 14px; background:#fff9c4; border-radius:8px; border-left:4px solid #fbc02d; font-size:12.8px; color:#5d4037;">
+                ⭐ <strong>I Tuoi Preferiti (Favorites):</strong> La sezione Preferiti è ora riservata esclusivamente ai modelli e video che salvi tu manualmente!<br>
+                Se desideri aggiungere questo allunaggio tra i tuoi preferiti, esegui:
+                <code>risultati.salva_preferito("Mio Nome", note="Note sul volo")</code>
+            </div>
         </div>
         """
         display(HTML(box_html))

@@ -20,10 +20,12 @@ env.bak/
 venv.bak/
 
 # File e cartelle generate dal training e test
-# Preserva la cartella runs e l'indice dei preferiti, ignorando modelli pesanti .zip e video .mp4
+# Preserva la cartella runs e gli indici di preferiti e successi, ignorando modelli pesanti .zip e video .mp4
 runs/*
 !runs/favorites/
 !runs/favorites/index.json
+!runs/successi/
+!runs/successi/index.json
 
 # File temporanei di sistema e IDE
 .DS_Store

@@ -36,8 +36,11 @@ RL_school/
 │   └── reset.py                            # 🧹 Script di reset per pulire l'ambiente
 │
 └── runs/                                   # 📁 Cartella di archiviazione automatica delle run
-    └── favorites/                          # Archivio delle run migliori salvate
-        └── index.json                      # Indice persistente dei modelli preferiti
+    ├── successi/                           # 🎯 Archivio automatico esperimenti di successo (>= 80%) con PDF
+    │   └── index.json                      # Indice degli esperimenti riusciti
+    └── favorites/                          # ⭐ Galleria dei PREFERITI personali salvati dall'utente
+        ├── index.json                      # Indice persistente dei modelli preferiti
+        └── videos/                         # Cartella dei video preferiti salvati
 ```
 
 ---
