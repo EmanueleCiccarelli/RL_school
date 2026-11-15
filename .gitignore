@@ -32,3 +32,6 @@ Thumbs.db
 .idea/
 *.log
 *.tmp
+
+# Cartella locale di lavoro legacy
+Lunar Lander/
