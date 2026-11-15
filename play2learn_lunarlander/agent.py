@@ -59,7 +59,7 @@ class RewardTrackerCallback(BaseCallback):
         best_model_save_dir: Path | str | None = None,
         total_timesteps: int = 0,
         show_progress: bool = True,
-        progress_interval_sec: float = 1.5,
+        progress_interval_sec: float = 1.0,
         window_size: int = 30,
         capture_milestones: bool = True,
         verbose: int = 0,
@@ -95,6 +95,7 @@ class RewardTrackerCallback(BaseCallback):
         # Finestra scorrevole O(1)
         self._window_outcomes: deque[int] = deque(maxlen=self.window_size)
         self._window_fuels: deque[float] = deque(maxlen=self.window_size)
+        self._window_rewards: deque[float] = deque(maxlen=self.window_size)
         self._window_successes: int = 0
 
         # Snapshot in RAM del miglior modello
@@ -186,6 +187,7 @@ class RewardTrackerCallback(BaseCallback):
             self._window_outcomes.append(succ_flag)
             self._window_successes += succ_flag
             self._window_fuels.append(fuel)
+            self._window_rewards.append(ep_r)
 
             # Snapshot in RAM del miglior modello (zero disk I/O!)
             if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
@@ -255,6 +257,18 @@ class RewardTrackerCallback(BaseCallback):
             return 0.0
         return (self._window_successes / len(self._window_outcomes)) * 100.0
 
+    @property
+    def current_moving_reward(self) -> float:
+        if not self._window_rewards:
+            return 0.0
+        return sum(self._window_rewards) / len(self._window_rewards)
+
+    @property
+    def current_moving_fuel(self) -> float:
+        if not self._window_fuels:
+            return 0.0
+        return sum(self._window_fuels) / len(self._window_fuels)
+
     def flush_best_model_to_disk(
         self,
         keep_best_loaded_if_superior: bool = True,
@@ -305,13 +319,11 @@ class RewardTrackerCallback(BaseCallback):
     ) -> str:
         pct = min(100.0, (steps / max(1, self.total_timesteps)) * 100.0)
         succ_rate = self.current_moving_success_rate
-        mean_fuel = (
-            sum(self._window_fuels) / len(self._window_fuels)
-            if self._window_fuels
-            else 0.0
-        )
+        mean_reward = self.current_moving_reward
+        mean_fuel = self.current_moving_fuel
         bar_color = "#2e7d32" if finished or succ_rate >= 80.0 else "#1976d2"
         status_txt = "Completato" if finished else f"ETA: {eta_sec:.0f}s"
+        n_fails = self.crashes + self.timeouts
 
         return (
             f'<div style="font-family:sans-serif; background:#f8f9fa; border:1px solid #dee2e6; '
@@ -324,10 +336,15 @@ class RewardTrackerCallback(BaseCallback):
             f'<div style="width:{pct:.1f}%; background:{bar_color}; height:100%; transition:width 0.25s;"></div>'
             f'</div>'
             f'<div style="display:flex; justify-content:space-between; font-size:12px; color:#495057; margin-top:6px;">'
-            f'<span>Episodi: {len(self.outcomes)} | Successo recente: <strong>{succ_rate:.1f}%</strong> '
+            f'<span>Episodi: <strong>{len(self.outcomes)}</strong> (<strong>{self.successes}</strong> 🟢 | <strong>{n_fails}</strong> 🔴)</span>'
+            f'<span>Successo recente ({self.window_size} ep): <strong style="color:{bar_color}; font-size:13px;">{succ_rate:.1f}%</strong> '
             f'(Picco: {max(0.0, self.best_moving_success_rate):.1f}%)</span>'
-            f'<span>Carburante recente: {mean_fuel:.1f} un.</span>'
-            f'</div></div>'
+            f'</div>'
+            f'<div style="display:flex; justify-content:space-between; font-size:12px; color:#495057; margin-top:4px;">'
+            f'<span>Current Reward ({self.window_size} ep): <strong style="color:#1565c0; font-size:13px;">{mean_reward:+.1f}</strong></span>'
+            f'<span>Carburante recente ({self.window_size} ep): <strong>{mean_fuel:.1f}</strong> un.</span>'
+            f'</div>'
+            f'</div>'
         )
 
     def _update_progress_ui(self, now: float, finished: bool = False) -> None:
@@ -345,11 +362,14 @@ class RewardTrackerCallback(BaseCallback):
         else:
             pct = min(100.0, (steps / max(1, self.total_timesteps)) * 100.0)
             succ_rate = self.current_moving_success_rate
+            mean_reward = self.current_moving_reward
+            mean_fuel = self.current_moving_fuel
             end_char = "\n" if finished else ""
             print(
                 f"\r[play2learn] {pct:5.1f}% | {steps:,}/{self.total_timesteps:,} step | "
-                f"{fps:,.0f} step/s | Successo({self.window_size}ep): {succ_rate:5.1f}% | "
-                f"ETA: {eta_sec:4.0f}s   ",
+                f"{fps:,.0f} st/s | Reward: {mean_reward:+7.1f} | "
+                f"Succ: {succ_rate:5.1f}% ({self.successes} succ) | "
+                f"Carb: {mean_fuel:5.1f} | ETA: {eta_sec:4.0f}s   ",
                 end=end_char,
                 flush=True,
             )

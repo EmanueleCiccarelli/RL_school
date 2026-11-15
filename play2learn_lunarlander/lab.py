@@ -249,7 +249,7 @@ def run_lab(
         best_model_save_dir=run_dir,
         total_timesteps=total_timesteps,
         show_progress=True,
-        progress_interval_sec=1.5,
+        progress_interval_sec=1.0,
         capture_milestones=crea_gif_evoluzione,
     )
 
