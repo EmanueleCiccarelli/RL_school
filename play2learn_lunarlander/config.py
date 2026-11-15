@@ -1,7 +1,8 @@
 """
 Modulo di configurazione per Play2Learn - Lunar Lander.
 Definisce le missioni disponibili, le costanti fisiche dell'ambiente
-e gli iperparametri ottimizzati per Google Colab.
+e gli iperparametri PPO ottimizzati per convergenza rapida (150k-200k step)
+su Google Colab (2 vCPU) e PC locali Windows.
 """
 
 from __future__ import annotations
@@ -109,19 +110,45 @@ MISSIONS: dict[str, dict[str, Any]] = {
 
 
 # =============================================================================
-# 3. IPERPARAMETRI PPO OTTIMIZZATI PER GOOGLE COLAB (2 vCPU)
+# 3. IPERPARAMETRI PPO OTTIMIZZATI PER SAMPLE-EFFICIENCY E CPU
 # =============================================================================
+
+# Dimensione target complessiva del rollout buffer (n_envs * n_steps = 2048)
+# Mantiene invariante la dinamica di PPO al variare di n_envs.
+TARGET_ROLLOUT_SIZE: int = 2048
+
+# Schedule lineare del learning rate (evita oscillazioni tardive e fissa la policy)
+DEFAULT_LR_START: float = 5e-4
+DEFAULT_LR_END: float = 5e-5
 
 DEFAULT_PPO_PARAMS: dict[str, Any] = {
     "policy": "MlpPolicy",
-    "n_steps": 512,            # Orizzonte per ambiente prima dell'aggiornamento
-    "batch_size": 256,         # Dimensione minibatch
-    "n_epochs": 4,             # Epoche di ottimizzazione SGD per iterazione
-    "gamma": 0.99,             # Fattore di sconto ricompense future
-    "gae_lambda": 0.95,        # Stima GAE per varianza e bias
-    "ent_coef": 0.01,          # Coefficiente di entropia per esplorazione
-    "learning_rate": 8e-4,     # Passo di apprendimento Adam
+    "n_steps": 512,            # Con n_envs=4 -> 2048 step per rollout
+    "batch_size": 64,          # 32 minibatch/epoca -> alto rapporto gradienti/campioni
+    "n_epochs": 8,             # Fino a 256 update SGD per rollout (protetto da target_kl)
+    "gamma": 0.995,            # Orizzonte ~200 step: propaga +100/-100 senza esplosione di varianza
+    "gae_lambda": 0.98,        # Riduce bias su ricompense terminali sparse
+    "clip_range": 0.2,         # Trust region PPO standard
+    "ent_coef": 0.008,         # Esplorazione sufficiente senza impedire lo spegnimento a terra
+    "vf_coef": 0.5,            # Peso della Value Function loss
+    "max_grad_norm": 0.5,      # Gradient clipping di sicurezza su reward studentesche rumorose
+    "target_kl": 0.03,         # Early-stopping delle epoche SGD in caso di spike della reward
+    "learning_rate": DEFAULT_LR_START,
+    "policy_kwargs": {
+        # Rete leggera e disaccoppiata: 2-3x più veloce su CPU e meno overfitting
+        "net_arch": {"pi": [64, 64], "vf": [64, 64]},
+        "ortho_init": True,
+    },
 }
 
-DEFAULT_N_ENVS: int = 8
-DEFAULT_TIMESTEPS: int = 500_000
+# Normalizzazione solo delle reward (scale-invariant per formule studentesche).
+# norm_obs=False garantisce piena compatibilità a inferenza con obs grezze di Gym.
+VECNORM_PARAMS: dict[str, Any] = {
+    "norm_obs": False,
+    "norm_reward": True,
+    "clip_reward": 10.0,
+    "gamma": DEFAULT_PPO_PARAMS["gamma"],
+}
+
+DEFAULT_N_ENVS: int = 4
+DEFAULT_TIMESTEPS: int = 200_000

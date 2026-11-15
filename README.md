@@ -116,9 +116,9 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
 
     # Eventi terminali
     if is_success:
-        reward += 120.0
+        reward += 100.0
     if is_crashed:
-        reward -= 200.0
+        reward -= 100.0
 
     return float(reward)
 ```

@@ -1,11 +1,11 @@
 """
 Modulo orchestratore di Play2Learn: coordina addestramento, salvataggio, telemetria,
 diagnostica e valutazione finale.
+Interfaccia pubblica 100% retrocompatibile con i notebook degli studenti.
 """
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Callable, Any
@@ -24,10 +24,14 @@ except ImportError:
 from play2learn_lunarlander.config import (
     ENV_ID,
     MISSIONS,
-    DEFAULT_N_ENVS,
     DEFAULT_TIMESTEPS,
+    DEFAULT_PPO_PARAMS,
 )
-from play2learn_lunarlander.environment import make_parallel_envs, CustomRewardWrapper
+from play2learn_lunarlander.environment import (
+    make_parallel_envs,
+    wrap_vec_normalize,
+    CustomRewardWrapper,
+)
 from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
 from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
 from play2learn_lunarlander.evaluator import evaluate_and_record
@@ -39,21 +43,51 @@ from play2learn_lunarlander.favorites import salva_nei_preferiti
 from play2learn_lunarlander.reporting import genera_report_esperimento, genera_report_maturita
 
 
+def _configure_cpu_threads() -> None:
+    """
+    Su MLP piccoli (64x64) in CPU, 1 thread PyTorch evita l'overhead di
+    sincronizzazione OpenMP/futex e accelera forward+backward di 2-4x rispetto a 8-16 thread.
+    """
+    try:
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
+
 class LabResult(dict):
     """
     Oggetto risultato restituito da `run_lab`.
-    Si comporta come un normale dizionario Python, ma include comodi metodi
-    ausiliari per la reportistica, il debug e il confronto dei modelli.
+    Si comporta come un normale dizionario Python con supporto aggiuntivo all'accesso
+    tramite attributi (es. res.run_dir o res["run_dir"]) e include metodi ausiliari
+    per la reportistica, il debug e il confronto dei modelli.
     """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'LabResult' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
 
     def salva_preferito(
         self,
         nome_personalizzato: str | None = None,
         note: str = "",
-        tag: str = "Top Run"
+        tag: str = "Top Run",
     ) -> dict[str, Any]:
         """Salva questo modello nell'archivio dei modelli preferiti."""
-        return salva_nei_preferiti(self, nome_personalizzato=nome_personalizzato, note=note, tag=tag)
+        return salva_nei_preferiti(
+            self,
+            nome_personalizzato=nome_personalizzato,
+            note=note,
+            tag=tag,
+        )
 
     def genera_report(
         self,
@@ -93,7 +127,7 @@ def run_lab(
     reward_fn: Callable,
     mission: str = "luna_standard",
     total_timesteps: int = DEFAULT_TIMESTEPS,
-    n_envs: int = DEFAULT_N_ENVS,
+    n_envs: int | None = None,
     seed: int = 42,
     device: str = "cpu",
     env_id: str = ENV_ID,
@@ -106,6 +140,7 @@ def run_lab(
     n_eval_episodes: int = 3,
     crea_gif: bool = True,
     display_in_notebook: bool = True,
+    use_reward_norm: bool = True,
 ) -> LabResult:
     """
     Avvia l'addestramento PPO con la funzione di reward personalizzata,
@@ -120,8 +155,7 @@ def run_lab(
             "!pip install -q 'gymnasium[box2d]' stable-baselines3 imageio imageio-ffmpeg tqdm rich"
         )
 
-    # Ottimizzazione PyTorch thread per l'architettura di Colab
-    torch.set_num_threads(os.cpu_count() or 2)
+    _configure_cpu_threads()
 
     # 1. Configurazione fisica della missione
     mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
@@ -139,88 +173,125 @@ def run_lab(
     run_dir = create_run_directory(
         mission=mission,
         base_dir=output_dir,
-        custom_name=nome_run
+        custom_name=nome_run,
     )
     video_dir = run_dir / "videos"
 
-    print("=" * 76)
-    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
-    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
-    print(f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
-          f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})")
-    print(f"  ⚡ AMBIENTI: {n_envs} paralleli | STEP TOTALI: {total_timesteps:,}")
-    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
-    print("=" * 76)
-
-    # 3. Creazione degli ambienti paralleli ottimizzati
-    vec_env = make_parallel_envs(
+    # 3. Creazione degli ambienti paralleli ottimizzati + VecNormalize solo reward
+    raw_vec_env = make_parallel_envs(
         env_id=env_id,
         reward_fn=reward_fn,
         n_envs=n_envs,
         seed=seed,
-        env_kwargs=env_kwargs
+        env_kwargs=env_kwargs,
+        total_timesteps=total_timesteps,
+    )
+    actual_n_envs = raw_vec_env.num_envs
+    vec_backend = raw_vec_env.__class__.__name__
+
+    vec_env = (
+        wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
+        if use_reward_norm
+        else raw_vec_env
     )
 
-    # 4. Callback con checkpoint del miglior modello in corsa
-    tracker = RewardTrackerCallback(best_model_save_dir=run_dir)
+    print("=" * 76)
+    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
+    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
+    print(
+        f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
+        f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
+    )
+    print(
+        f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
+        f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
+    )
+    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+    print("=" * 76)
 
-    # 5. Creazione modello PPO
+    # 4. Callback con checkpoint in RAM e progress bar leggera throttled
+    tracker = RewardTrackerCallback(
+        best_model_save_dir=run_dir,
+        total_timesteps=total_timesteps,
+        show_progress=True,
+        progress_interval_sec=1.5,
+    )
+
+    # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
     model = create_ppo_agent(
         env=vec_env,
         seed=seed,
         device=device,
-        verbose=1,
+        verbose=0,
     )
 
-    # 6. Addestramento con barra di avanzamento
+    # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
     print("\n[play2learn] Inizio addestramento dell'agente...")
-    t_start = time.time()
+    t_start = time.perf_counter()
     try:
-        model.learn(total_timesteps=total_timesteps, callback=tracker, progress_bar=True)
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=tracker,
+            progress_bar=False,
+        )
     except KeyboardInterrupt:
         print("\n[play2learn] Addestramento interrotto manualmente dall'utente.")
     finally:
         vec_env.close()
 
-    elapsed_time = time.time() - t_start
-    fps_avg = int(total_timesteps / max(1.0, elapsed_time))
-    print(f"[play2learn] Addestramento concluso in {elapsed_time:.1f} secondi ({fps_avg:,} step/sec)!")
+    elapsed_time = time.perf_counter() - t_start
+    completed_steps = max(1, model.num_timesteps)
+    fps_avg = int(completed_steps / max(0.1, elapsed_time))
+    print(
+        f"[play2learn] Addestramento concluso in {elapsed_time:.1f} secondi "
+        f"({fps_avg:,} step/sec)!"
+    )
 
-    # 7. Salvataggio checkpoint modello finale
+    # 7. Salvataggio modello finale + flush su disco del miglior snapshot in RAM
     final_model_path = run_dir / "ppo_lunar_lander.zip"
     model.save(str(final_model_path))
+
+    used_best_weights = tracker.flush_best_model_to_disk(
+        keep_best_loaded_if_superior=True,
+        superiority_margin=5.0,
+    )
+    if used_best_weights:
+        print(
+            f"[play2learn] Ripristinato per la valutazione il miglior checkpoint in corsa "
+            f"(picco successo mobile: {tracker.best_moving_success_rate:.1f}%)."
+        )
 
     # 8. Generazione grafico telemetria e diagnosi Flight Coach
     plot_path = run_dir / "reward_plot.png"
     diag_dict = plot_training_results(
         tracker=tracker,
         mission_title=mission_cfg["title"],
-        save_path=plot_path
+        save_path=plot_path,
     )
 
-    # 9. Valutazione e registrazione video con sweep rapido e timer
+    # 9. Valutazione imparziale e registrazione video in 2 fasi
     eval_stats = evaluate_and_record(
         model=model,
         env_id=env_id,
         reward_fn=reward_fn,
         video_dir=video_dir,
-        target_successes=3,
-        target_failures=3,
+        target_successes=max(1, n_eval_episodes),
+        target_failures=max(1, n_eval_episodes),
         sweep_timeout_seconds=6.0,
-        min_eval_episodes=15,
-        max_eval_episodes=100,
+        min_eval_episodes=20,
+        max_eval_episodes=80,
         seed=seed + 1000,
         env_kwargs=env_kwargs,
         create_gif=crea_gif,
     )
 
-    # 10. Salvataggio automatico metadati e codice sorgente nella cartella della run
+    # 10. Salvataggio automatico metadati e codice sorgente
     meta_path = save_run_metadata(
         run_dir=run_dir,
         mission=mission,
         mission_cfg=mission_cfg,
         env_kwargs=env_kwargs,
-        total_timesteps=total_timesteps,
+        total_timesteps=completed_steps,
         elapsed_seconds=elapsed_time,
         reward_fn=reward_fn,
         eval_stats=eval_stats,
@@ -233,12 +304,24 @@ def run_lab(
     n_fail = len(eval_stats.get("failure_videos", []))
 
     print("\n" + "=" * 76)
-    print("  📊 RISULTATI DEI VOLI DI VERIFICA (MIX SUCCESSI E FALLIMENTI):")
-    print(f"  • Tasso di Allunaggio Riuscito: {succ_rate:.1f}% ({eval_stats.get('eval_successes', 0)} su {eval_stats.get('total_evaluated_episodes', 0)} prove)")
+    print("  📊 RISULTATI DEI VOLI DI VERIFICA (VALUTAZIONE DETERMINISTICA):")
+    print(
+        f"  • Tasso di Allunaggio Riuscito: {succ_rate:.1f}% "
+        f"({eval_stats.get('eval_successes', 0)} su {eval_stats.get('total_evaluated_episodes', 0)} prove)"
+    )
     print(f"  • Video registrati:            {n_succ} allunaggi riusciti 🟢 | {n_fail} fallimenti 🔴")
-    print(f"  • Durata Media Volo:           {eval_stats['mean_length']:.0f} step ({eval_stats['mean_length']/50:.1f} s)")
-    print(f"  • Carburante Medio Speso:      {eval_stats['mean_fuel']:.1f} unità (Riusciti: {eval_stats.get('mean_fuel_success', 0):.1f} un.)")
-    print(f"  • Custom Reward Media:         {eval_stats['mean_reward']:.1f} ± {eval_stats['std_reward']:.1f}")
+    print(
+        f"  • Durata Media Volo:           {eval_stats['mean_length']:.0f} step "
+        f"({eval_stats['mean_length'] / 50:.1f} s)"
+    )
+    print(
+        f"  • Carburante Medio Speso:      {eval_stats['mean_fuel']:.1f} unità "
+        f"(Riusciti: {eval_stats.get('mean_fuel_success', 0):.1f} un.)"
+    )
+    print(
+        f"  • Custom Reward Media:         {eval_stats['mean_reward']:.1f} ± "
+        f"{eval_stats['std_reward']:.1f}"
+    )
     print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
     print("=" * 76 + "\n")
 
@@ -248,20 +331,21 @@ def run_lab(
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
         print("  Generazione automatica della Scheda Tecnica e archiviazione nei Preferiti...")
-        print("  (PDF vettoriale + mix video successi/fallimenti + scheda di debug)")
         print("=" * 76)
 
-        # Salva nei preferiti in una cartella univoca e genera PDF e report esteso
         fav_entry = salva_nei_preferiti(
             run_or_result=run_dir,
             nome_personalizzato=f"Allunaggio_{mission}",
-            note=f"Tasso di successo {succ_rate:.1f}% con {eval_stats.get('mean_fuel_success', 0):.1f} propellente medio",
-            tag="Top Run"
+            note=(
+                f"Tasso di successo {succ_rate:.1f}% con "
+                f"{eval_stats.get('mean_fuel_success', 0):.1f} propellente medio"
+            ),
+            tag="Top Run",
         )
         fav_dir = Path(fav_entry["dir_path"])
         rep_files = genera_report_esperimento(
             run_or_fav=fav_dir,
-            output_dir=fav_dir
+            output_dir=fav_dir,
         )
         report_bundle = {
             "fav_entry": fav_entry,
@@ -269,7 +353,6 @@ def run_lab(
             "dir_path": fav_dir,
         }
 
-        # Mostra card grafica di notifica nel notebook
         _display_success_popup(fav_entry, rep_files)
 
     # 13. Mostra dashboard e video nel Notebook
@@ -283,17 +366,22 @@ def run_lab(
 
     return LabResult({
         "run_id": run_dir.name,
+        "run_dir": run_dir,
         "checkpoint_dir": run_dir,
         "model_path": final_model_path,
         "best_model_path": tracker.best_model_path or final_model_path,
         "plot_path": plot_path,
         "recorded_videos": eval_stats.get("videos", []),
+        "success_videos": eval_stats.get("success_videos", []),
+        "failure_videos": eval_stats.get("failure_videos", []),
         "gif_path": eval_stats.get("gif_path"),
         "eval_success_rate": eval_stats.get("eval_success_rate", 0.0),
         "eval_mean_length": eval_stats.get("mean_length", 0.0),
         "eval_mean_fuel": eval_stats.get("mean_fuel", 0.0),
+        "eval_stats": eval_stats,
         "diagnosis": diag_dict.get("formatted_text", ""),
         "elapsed_seconds": elapsed_time,
+        "total_timesteps": total_timesteps,
         "metadata_path": meta_path,
         "model": model,
         "reward_fn": reward_fn,
@@ -309,7 +397,6 @@ def _display_success_popup(fav_entry: dict[str, Any], rep_files: dict[str, Path]
     try:
         from IPython.display import HTML, display
         pdf_name = rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name
-        html_name = rep_files.get("html_path", Path("report_esperimento.html")).name
         fav_dir = Path(fav_entry.get("dir_path", "")).name
 
         box_html = f"""
@@ -389,15 +476,17 @@ def dimostrazione_live(
             elif act_int in (1, 3):
                 tot_fuel += 0.3
 
-            # Stampa periodica per mostrare la dinamica
             if step % 35 == 0 or done:
                 x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
-                print(f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}")
+                print(
+                    f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
+                    f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
+                )
 
         is_succ = info.get("is_success", False) if isinstance(info, dict) else False
         esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
-        print(f"\n  ESITO VOLO #{ep+1}: {esito_str}")
-        print(f"  Durata: {step} step ({step/50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
+        print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
+        print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
         print("-" * 65)
 
     env.close()

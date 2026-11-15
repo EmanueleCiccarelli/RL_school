@@ -104,10 +104,16 @@ def save_run_metadata(
         },
         "eval_metrics": {
             "eval_success_rate": eval_stats.get("eval_success_rate", 0.0),
+            "eval_successes": eval_stats.get("eval_successes", 0),
+            "eval_crashes": eval_stats.get("eval_crashes", 0),
+            "eval_timeouts": eval_stats.get("eval_timeouts", 0),
+            "total_evaluated_episodes": eval_stats.get("total_evaluated_episodes", 0),
             "mean_reward": eval_stats.get("mean_reward", 0.0),
             "std_reward": eval_stats.get("std_reward", 0.0),
             "mean_length": eval_stats.get("mean_length", 0.0),
             "mean_fuel": eval_stats.get("mean_fuel", 0.0),
+            "mean_fuel_success": eval_stats.get("mean_fuel_success", 0.0),
+            "mean_fuel_failure": eval_stats.get("mean_fuel_failure", 0.0),
         },
         "diagnostics": {
             "status": diagnostics.get("status", "unknown"),

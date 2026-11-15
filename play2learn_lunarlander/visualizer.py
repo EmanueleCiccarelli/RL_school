@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.pyplot as plt
 
 from play2learn_lunarlander.agent import RewardTrackerCallback
@@ -122,12 +124,14 @@ def plot_training_results(
     episodes = np.arange(1, n_episodes + 1)
     window = min(40, max(5, n_episodes // 12))
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8.8))
+    fig = Figure(figsize=(14, 8.8), dpi=120)
+    FigureCanvasAgg(fig)
     fig.suptitle(f"Telemetria di Addestramento RL — {mission_title}", fontsize=14, fontweight="bold")
+    axes = fig.subplots(2, 2)
     (ax1, ax2), (ax3, ax4) = axes
 
     # 1. Custom Reward
-    ax1.plot(episodes, tracker.episode_rewards, color="#90caf9", alpha=0.45, label="Reward Episodio")
+    ax1.plot(episodes, tracker.episode_rewards, color="#90caf9", alpha=0.45, label="Reward Episodio", rasterized=True)
     if n_episodes >= window:
         mov_rew = np.convolve(tracker.episode_rewards, np.ones(window) / window, mode="valid")
         ax1.plot(range(window, n_episodes + 1), mov_rew, color="#0d47a1", lw=2.2, label=f"Media Mobile ({window} ep)")
@@ -155,7 +159,7 @@ def plot_training_results(
     ax2.legend(loc="center left", fontsize=8.5)
 
     # 3. Durata del Volo
-    ax3.plot(episodes, tracker.episode_lengths, color="#a5d6a7", alpha=0.45, label="Step per Episodio")
+    ax3.plot(episodes, tracker.episode_lengths, color="#a5d6a7", alpha=0.45, label="Step per Episodio", rasterized=True)
     if n_episodes >= window:
         mov_len = np.convolve(tracker.episode_lengths, np.ones(window) / window, mode="valid")
         ax3.plot(range(window, n_episodes + 1), mov_len, color="#1b5e20", lw=2.0, label=f"Media Mobile ({window} ep)")
@@ -168,7 +172,7 @@ def plot_training_results(
     ax3.legend(loc="upper left", fontsize=8.5)
 
     # 4. Consumo di Carburante
-    ax4.plot(episodes, tracker.fuel_used_list, color="#ffcc80", alpha=0.45, label="Carburante Speso")
+    ax4.plot(episodes, tracker.fuel_used_list, color="#ffcc80", alpha=0.45, label="Carburante Speso", rasterized=True)
     if n_episodes >= window:
         mov_fuel = np.convolve(tracker.fuel_used_list, np.ones(window) / window, mode="valid")
         ax4.plot(range(window, n_episodes + 1), mov_fuel, color="#e65100", lw=2.0, label=f"Media Mobile ({window} ep)")
@@ -178,16 +182,26 @@ def plot_training_results(
     ax4.grid(True, linestyle="--", alpha=0.5)
     ax4.legend(loc="upper left", fontsize=8.5)
 
-    plt.tight_layout(rect=[0, 0.15, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.15, 1, 0.95])
 
     # Box Diagnosi Flight Coach posizionato in calce
+    # Sostituisce eventuali emoji non presenti nei font standard per evitare warning grafici
+    clean_diag = (
+        diag_text.replace("🏎️", "")
+        .replace("📍", "")
+        .replace("📐", "")
+        .replace("⚙️", "")
+        .replace("💡", "-> ")
+        .replace("💥", "*")
+        .replace("🎯", "[OK]")
+    )
     fig.text(
-        0.5, 0.015, diag_text, ha="center", va="bottom", fontsize=9.2, family="monospace",
+        0.5, 0.015, clean_diag, ha="center", va="bottom", fontsize=9.2, family="sans-serif",
         bbox=dict(boxstyle="round,pad=0.55", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.6)
     )
 
-    plt.savefig(str(save_path), dpi=140)
-    plt.close(fig)
+    fig.savefig(str(save_path), dpi=120)
+    fig.clear()
     return diag
 
 
@@ -297,8 +311,10 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     x = np.arange(n_runs)
     width = 0.28
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), dpi=120)
+    fig = Figure(figsize=(13, 5), dpi=120)
+    FigureCanvasAgg(fig)
     fig.suptitle("Confronto Esperimenti di Reinforcement Learning — Report Tecnico", fontsize=13, fontweight="bold")
+    (ax1, ax2) = fig.subplots(1, 2)
 
     # Grafico 1: Tasso di Successo
     bars1 = ax1.bar(x, success_rates, width, color="#2e7d32", alpha=0.85, edgecolor="black")
@@ -322,6 +338,6 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
     ax2.legend(loc="upper right")
 
-    plt.tight_layout()
-    plt.savefig(str(save_path), dpi=130)
-    plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(str(save_path), dpi=120)
+    fig.clear()

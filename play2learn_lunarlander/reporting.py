@@ -12,6 +12,8 @@ import datetime
 from pathlib import Path
 from typing import Any
 
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -52,7 +54,8 @@ def genera_pdf_report(
 
     with PdfPages(str(pdf_path)) as pdf:
         # PAGINA 1: Intestazione, Tabella Telemetrica Successi/Fallimenti e Grafico di Apprendimento
-        fig1 = plt.figure(figsize=(8.27, 11.69), dpi=150)
+        fig1 = Figure(figsize=(8.27, 11.69), dpi=120)
+        FigureCanvasAgg(fig1)
 
         # Header
         fig1.text(0.5, 0.95, "SCHEDA TECNICA ESPERIMENTO — REINFORCEMENT LEARNING",
@@ -104,10 +107,11 @@ def genera_pdf_report(
             ax_img.axis("off")
 
         pdf.savefig(fig1)
-        plt.close(fig1)
+        fig1.clear()
 
         # PAGINA 2: Codice Sorgente Reward Function e Note di Debug dello Studente
-        fig2 = plt.figure(figsize=(8.27, 11.69), dpi=150)
+        fig2 = Figure(figsize=(8.27, 11.69), dpi=120)
+        FigureCanvasAgg(fig2)
 
         fig2.text(0.5, 0.95, "FORMULAZIONE MATEMATICA E NOTE DI DEBUG",
                   ha="center", va="top", fontsize=13.5, fontweight="bold", color="#1a237e")
@@ -148,7 +152,7 @@ def genera_pdf_report(
         )
 
         pdf.savefig(fig2)
-        plt.close(fig2)
+        fig2.clear()
 
     return pdf_path
 
