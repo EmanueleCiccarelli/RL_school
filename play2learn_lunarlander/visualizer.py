@@ -304,7 +304,14 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
         return
 
     n_runs = len(runs_data)
-    labels = [r.get("name", f"Run {i+1}") for i, r in enumerate(runs_data)]
+    labels = []
+    for i, r in enumerate(runs_data):
+        base_name = r.get("name", f"Run {i+1}")
+        ts = r.get("timestamp")
+        if ts and ts not in base_name:
+            labels.append(f"{base_name}\n({ts})")
+        else:
+            labels.append(base_name)
     success_rates = [float(r.get("eval_success_rate", 0.0)) for r in runs_data]
     fuel_means = [float(r.get("eval_mean_fuel", 0.0)) for r in runs_data]
     lengths = [float(r.get("eval_mean_length", 0.0)) for r in runs_data]

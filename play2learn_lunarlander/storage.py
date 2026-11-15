@@ -311,6 +311,7 @@ def find_run_by_timestamp(
 
     query = str(timestamp_or_id or "").strip()
     is_latest = query.lower() in ("", "latest", "ultima", "ultimo", "now")
+    is_previous = query.lower() in ("previous", "penultima", "penultimo", "second_latest", "seconda_ultima", "prev")
 
     # Raccoglie tutte le directory candidate da runs/, runs/successi/ e runs/favorites/
     all_dirs: list[Path] = []
@@ -343,6 +344,8 @@ def find_run_by_timestamp(
 
     if is_latest:
         return all_dirs[0]
+    if is_previous:
+        return all_dirs[1] if len(all_dirs) > 1 else all_dirs[0]
 
     # Pulizia query: rimozione caratteri non alfanumerici per confronto flessibile
     clean_query = query.lower().replace("-", "").replace(":", "").replace(" ", "_")

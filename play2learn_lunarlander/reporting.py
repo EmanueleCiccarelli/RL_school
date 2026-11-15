@@ -507,20 +507,36 @@ genera_report_maturita = genera_report_esperimento
 
 
 def confronta_run(
-    runs_or_favs: list[Any],
+    runs_or_favs: list[Any] | tuple[Any, ...] | str,
     output_image_path: Path | str | None = None
 ) -> dict[str, Any]:
     """
-    Confronta 2 o più run generando un grafico comparativo e una tabella
-    di sintesi a colonne. Strumento di debug per verificare se le modifiche alla reward
-    hanno migliorato il successo o ridotto i consumi.
+    Confronta 2 o più run generando un grafico comparativo e una tabella di sintesi a colonne.
+    Funziona con:
+      - Oggetti LabResult restituite da run_lab(...)
+      - Stringhe o liste di timestamp (es. '20261115_210530, 20261115_212000')
+      - Parole chiave come 'latest, previous' per confrontare al volo le ultime due run
+      - Percorsi a cartelle di run
     """
+    from play2learn_lunarlander.storage import find_run_by_timestamp, mostra_cronologia_run
+
     if not runs_or_favs:
         print("[play2learn] Nessuna run fornita per il confronto.")
+        print("💡 Suggerimento: inserisci due timestamp separati da virgola (es. 'latest, previous').")
         return {}
 
+    # Se passata come stringa separata da virgola o punto e virgola
+    if isinstance(runs_or_favs, str):
+        raw_items = [x.strip() for x in runs_or_favs.replace(";", ",").split(",") if x.strip()]
+    elif isinstance(runs_or_favs, (list, tuple)):
+        raw_items = list(runs_or_favs)
+    else:
+        raw_items = [runs_or_favs]
+
     runs_data = []
-    for item in runs_or_favs:
+    unresolved = []
+
+    for item in raw_items:
         source_dir = None
         if isinstance(item, dict):
             if "checkpoint_dir" in item:
@@ -529,57 +545,92 @@ def confronta_run(
                 source_dir = Path(item["dir_path"])
             elif "path" in item:
                 source_dir = Path(item["path"])
+            elif "run_dir" in item:
+                source_dir = Path(item["run_dir"])
             else:
                 runs_data.append(item)
                 continue
         elif isinstance(item, (str, Path)):
-            source_dir = Path(item)
+            p = Path(item)
+            if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
+                source_dir = p
+            else:
+                # Risoluzione automatica da timestamp o alias (es. "latest", "previous")
+                resolved = find_run_by_timestamp(str(item))
+                if resolved and resolved.exists():
+                    source_dir = resolved
+                else:
+                    unresolved.append(str(item))
 
         if source_dir and source_dir.exists():
             meta_path = source_dir / "run_metadata.json"
             if meta_path.exists():
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                runs_data.append({
-                    "name": meta.get("favorite_info", {}).get("display_name") or meta.get("run_id", source_dir.name),
-                    "eval_success_rate": meta.get("eval_metrics", {}).get("eval_success_rate", 0.0),
-                    "eval_mean_fuel": meta.get("eval_metrics", {}).get("mean_fuel", 0.0),
-                    "eval_mean_length": meta.get("eval_metrics", {}).get("mean_length", 0.0),
-                    "mission": meta.get("mission", {}).get("title", ""),
-                })
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    metrics = meta.get("eval_metrics", {})
+                    mission = meta.get("mission", {})
+
+                    import re
+                    ts_m = re.search(r"(\d{8}_\d{6})", source_dir.name)
+                    ts_display = ts_m.group(1) if ts_m else source_dir.name
+                    run_name = meta.get("favorite_info", {}).get("display_name") or meta.get("tag") or mission.get("title") or source_dir.name
+
+                    runs_data.append({
+                        "name": run_name,
+                        "timestamp": ts_display,
+                        "display_label": f"{run_name}\n({ts_display})",
+                        "eval_success_rate": float(metrics.get("eval_success_rate", 0.0)),
+                        "eval_mean_fuel": float(metrics.get("mean_fuel", 0.0)),
+                        "eval_mean_length": float(metrics.get("mean_length", 0.0)),
+                        "mission": mission.get("title", ""),
+                        "dir_name": source_dir.name,
+                    })
+                except Exception:
+                    continue
+
+    if unresolved:
+        print(f"⚠️ Attenzione: impossibile trovare le seguenti run dal timestamp inserito: {', '.join(unresolved)}")
+        print("💡 Ecco l'elenco delle run disponibili con i relativi timestamp da copiare:")
+        mostra_cronologia_run()
 
     if not runs_data:
-        print("[play2learn] Impossibile estrarre i dati per il confronto.")
+        print("[play2learn] Impossibile estrarre i dati per il confronto. Verifica i timestamp forniti.")
         return {}
 
     save_img = Path(output_image_path) if output_image_path else get_default_runs_dir() / "confronto_run.png"
     plot_comparison(runs_data, save_img)
 
-    # Visualizzazione tabella
+    # Visualizzazione tabella comparativa arricchita con colonna Timestamp
     try:
         from IPython.display import HTML, Image, display
         rows = []
         for r in runs_data:
+            succ = r.get("eval_success_rate", 0.0)
+            badge_color = "#2e7d32" if succ >= 80.0 else ("#f57c00" if succ >= 50.0 else "#c62828")
+            bg_badge = "#e8f5e9" if succ >= 80.0 else ("#fff3e0" if succ >= 50.0 else "#ffebee")
             rows.append(
                 f"<tr>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f8f9fa;'>{r.get('timestamp', '')}</td>"
                 f"<td style='padding:8px 12px; font-weight:bold;'>{r.get('name')}</td>"
                 f"<td style='padding:8px 12px;'>{r.get('mission', '')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold; color:#2e7d32;'>{r.get('eval_success_rate', 0):.0f}%</td>"
-                f"<td style='padding:8px 12px;'>{r.get('eval_mean_fuel', 0):.1f} un.</td>"
-                f"<td style='padding:8px 12px;'>{r.get('eval_mean_length', 0):.0f} step</td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ:.1f}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{r.get('eval_mean_fuel', 0):.1f} un.</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{r.get('eval_mean_length', 0):.0f} step</td>"
                 f"</tr>"
             )
 
         html = f"""
-        <div style="font-family:sans-serif; margin:16px 0;">
-            <h3 style="color:#0d47a1; margin-bottom:8px;">📊 Confronto Esperimenti di Apprendimento</h3>
+        <div style="font-family:'Segoe UI', sans-serif; margin:16px 0;">
+            <h3 style="color:#0d47a1; margin-bottom:8px;">📊 Confronto Esperimenti di Apprendimento (Analisi Comparativa)</h3>
             <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
                 <thead style="background:#e3f2fd; color:#0d47a1;">
                     <tr>
+                        <th style="padding:10px 12px;">Timestamp</th>
                         <th style="padding:10px 12px;">Esperimento / Versione</th>
                         <th style="padding:10px 12px;">Missione</th>
-                        <th style="padding:10px 12px;">% Successo</th>
-                        <th style="padding:10px 12px;">Carburante Medio</th>
-                        <th style="padding:10px 12px;">Durata Media</th>
+                        <th style="padding:10px 12px; text-align:center;">% Allunaggio</th>
+                        <th style="padding:10px 12px; text-align:center;">Carburante Medio</th>
+                        <th style="padding:10px 12px; text-align:center;">Durata Media</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -592,12 +643,14 @@ def confronta_run(
         if save_img.exists():
             display(Image(filename=str(save_img)))
     except Exception:
-        print("\n" + "=" * 70)
-        print("  📊 CONFRONTO ESPERIMENTI")
-        print("=" * 70)
+        print("\n" + "=" * 78)
+        print("  📊 CONFRONTO ESPERIMENTI (TABELLA COMPARATIVA)")
+        print("=" * 78)
+        print(f"{'TIMESTAMP':<18} | {'NOME RUN':<24} | {'SUCCESSO':<10} | {'CARBURANTE':<12} | {'DURATA':<10}")
+        print("-" * 78)
         for r in runs_data:
-            print(f"{r.get('name', ''):<25} | {r.get('eval_success_rate', 0):.0f}% succ | {r.get('eval_mean_fuel', 0):.1f} fuel | {r.get('eval_mean_length', 0):.0f} step")
-        print("=" * 70 + "\n")
+            print(f"{r.get('timestamp', ''):<18} | {r.get('name', '')[:23]:<24} | {r.get('eval_success_rate', 0):<9.1f}% | {r.get('eval_mean_fuel', 0):<12.1f} | {r.get('eval_mean_length', 0):<10.0f}")
+        print("=" * 78 + "\n")
 
     return {"runs": runs_data, "comparison_plot": save_img}
 
