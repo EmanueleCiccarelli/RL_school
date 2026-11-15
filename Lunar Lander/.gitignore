@@ -1,0 +1,34 @@
+# =============================================================================
+# Gitignore per RL_school - Laboratorio di Reinforcement Learning
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Ambienti virtuali
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# File e cartelle generate dal training e test
+# Preserva la cartella runs e l'indice dei preferiti, ignorando modelli pesanti .zip e video .mp4
+runs/*
+!runs/favorites/
+!runs/favorites/index.json
+
+# File temporanei di sistema e IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+*.tmp

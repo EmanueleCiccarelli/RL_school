@@ -102,8 +102,9 @@ def reset_laboratorio(chiedi_conferma: bool = False) -> None:
     # 1. Pulizia cartella runs
     pulisci_runs(root_dir / "runs")
 
-    # 2. Pulizia notebook
+    # 2. Pulizia notebook (sia versione Colab che versione Locale)
     pulisci_notebook(root_dir / "laboratorio_lunar_lander.ipynb")
+    pulisci_notebook(root_dir / "play2learn_lunarlander" / "laboratorio_lunar_lander_locale.ipynb")
 
     # 3. Pulizia cache Python
     pulisci_cache(root_dir)
