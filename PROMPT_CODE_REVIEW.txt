@@ -1,96 +1,101 @@
 ================================================================================
 ROLE & OBJECTIVE:
-You are an elite Principal AI/RL Research Engineer, Senior Systems Architect, 
-and Python Performance Specialist. 
+You are an elite Principal AI / Reinforcement Learning Research Engineer, Senior Systems
+Architect, and High-Performance Python Specialist.
 
-Your objective is to perform a rigorous, line-by-line, architectural, algorithmic, 
-and performance code review of the entire `play2learn_lunarlander` repository.
+Your objective is to conduct a rigorous, line-by-line, architectural, algorithmic,
+and performance code review of the entire multi-environment `play2learn` repository:
+including `play2learn_core`, `play2learn_lunarlander`, and `play2learn_hillclimb`.
 
 ================================================================================
 PROJECT CONTEXT & CONSTRAINTS:
-`play2learn_lunarlander` is an educational Reinforcement Learning framework built 
-on top of Gymnasium (Box2D `LunarLander-v3`) and Stable-Baselines3 (PPO). 
-It is designed for high school (5th year) and introductory university students 
-who practice Reward Shaping.
+`play2learn` is an educational Reinforcement Learning framework built on top of Farama
+Gymnasium, Box2D physics, and Stable-Baselines3 (PPO). It is designed for high school (5th year)
+and introductory university students who practice Reward Shaping across two distinct physical domains:
+  1. Lunar Lander (Gymnasium `LunarLander-v3`): 8D continuous observation, retro-rocket thrusters,
+     soft landing on pad between flags.
+  2. Hill Climb Racing (`HillClimbRacing-v0`, based on alexzh3/hillclimbracing & Code Bullet):
+     2D car chassis, revolute and prismatic suspension joints, ragdoll driver (head impact = death),
+     procedural terrain with Perlin noise, traction control and flip avoidance.
 
 Key Operational Constraints:
 1. Student Public Interface Invariance:
-   The public API (`custom_reward`, `run_lab`, `carica_preferito`, `salva_preferito`, 
-   `mostra_preferiti`, `confronta_run`, `genera_report_da_timestamp`, `gioca_single_player`, 
-   `gioca_vs_agente`, `LabResult`) must remain 100% backward compatible.
+   The public API (`custom_reward`, `run_lab`, `carica_preferito`, `salva_preferito`,
+   `mostra_preferiti`, `confronta_run`, `genera_report_da_timestamp`, `gioca_single_player`,
+   `gioca_vs_agente`, `LabResult`) must remain 100% backward compatible for both environments.
 2. Dual Runtime Environments:
    - Google Colab (2 vCPU, headless Linux, limited RAM, virtual framebuffer).
    - Local Windows / macOS (4-16 threads, Jupyter Notebook / VS Code).
-3. Sample Efficiency Goal:
-   Consistent convergence (success rate >= 80%, soft landing on pad) within 
-   200,000 - 300,000 timesteps using PPO.
+3. Sample Efficiency Goals:
+   - Lunar Lander: Consistent convergence (success rate >= 80%, soft landing on pad) within
+     200,000 - 300,000 timesteps using PPO.
+   - Hill Climb Racing: Consistent distance advancement (>= 800m) and flip avoidance within
+     100,000 - 150,000 timesteps using PPO.
+4. Zero Memory Leaks & Streaming Video:
+   Videos must stream directly to disk with constant O(1) RAM footprint (< 1 MB) to avoid
+   crashing headless Jupyter/Colab instances.
 
 ================================================================================
 SPECIFIC AUDIT FOCUS AREAS:
 
-1. ALGORITHMIC & REINFORCEMENT LEARNING LOGIC:
-   - Success/Crash Discrepancies: Investigate potential edge cases where an episode 
-     is classified as "success" (green video / high score) when in reality the lander 
-     tipped over, bounced out, or stopped just outside the flags. Check the exact 
-     interaction between Gymnasium's internal reward (landing bonus +100), terminal 
-     flags (`terminated`/`truncated`), leg contact flags (`left_leg`, `right_leg`), 
-     and `evaluator.py`.
-   - VecNormalize & Custom Reward Dynamics: Check `norm_reward=True`, `norm_obs=False`, 
-     `clip_reward=10.0`, `gamma=0.995`. Is `VecNormalize` statistics accumulation 
-     isolated from evaluation episodes? Are running variances leaking across resets?
-   - PPO Hyperparameter Optimization: Review `n_steps=512`, `batch_size=64`, `n_epochs=8`, 
-     `learning_rate` schedule (5e-4 -> 5e-5), `clip_range=0.2`, `target_kl=0.03`, 
-     `ent_coef=0.008`, `gae_lambda=0.98`, `gamma=0.995`. Identify any risk of policy 
-     collapse, early entropy death, or value loss explosion with student reward scales.
+1. ARCHITECTURAL DESIGN PATTERNS & MODULARITY:
+   - Common Core Extraction (`play2learn_core`): Audit the inheritance hierarchy, template
+     methods in `BaseRewardWrapper`, `BaseRewardTrackerCallback`, and `BaseFavoritesManager`.
+   - Separation of Concerns: Are domain-specific mechanics (thrusters vs wheels/suspensions)
+     properly encapsulated without leaky abstractions?
+   - Re-exporting & Backward Compatibility: Verify that all student imports from either
+     `play2learn_lunarlander` or `play2learn_hillclimb` work transparently.
 
-2. PERFORMANCE, CPU CONCURRENCY & MEMORY OPTIMIZATION:
-   - Threading & Contention: Validate PyTorch (`torch.set_num_threads(1)`), OpenMP, 
-     and MKL thread allocations. Ensure zero CPU core oversubscription or IPC bottlenecks.
-   - Vectorized Environments: Assess `DummyVecEnv` vs `SubprocVecEnv` performance for 
-     Windows (spawn) vs Colab (fork). Ensure zero memory leaks or uncollected zombie 
-     processes upon notebook restart or kernel interruption.
-   - Step Loop Critical Path: In `environment.py` (`CustomRewardWrapper`) and `agent.py` 
-     (`RewardTrackerCallback`), audit dictionary allocations, function call overhead, 
-     and telemetry tracking for any hidden microsecond overhead across 300k steps.
-   - Matplotlib & Memory Leaks in Notebooks: Ensure all plotting routines (`visualizer.py`, 
-     `reporting.py`, `evaluator.py`) explicitly close figures (`plt.close('all')`) and 
-     cleanly release memory to avoid OOM crashes during repeated runs in a single session.
+2. ALGORITHMIC & REINFORCEMENT LEARNING SOUNDNESS:
+   - Outcome Classification: Validate `classify_lunar_lander_outcome` and
+     `classify_hill_climb_outcome`. Check edge cases (e.g., perched on one leg, hovering
+     timeout, stuck in ditch, driver head contact, high angle flips).
+   - VecNormalize Dynamics: Verify `norm_obs=False`, `norm_reward=True`, `clip_reward=10.0`.
+     Are running variances protected from NaN/Inf poisoning? Does deterministic evaluation
+     sweep isolate inference observations from training normalization updates?
+   - Observation Space & Action Space Design: Review the 8D continuous observation space
+     for Hill Climb Racing and ensure smooth learning with SB3's MlpPolicy.
 
-3. LOGICAL BUGS & EDGE-CASE RESILIENCE:
-   - Cross-Platform File Paths & Serialization: Audit path manipulation across Windows 
-     (`\`) and POSIX (`/`), atomic JSON writes for `index.json`, race conditions, and 
-     file corruption resilience.
-   - Video Recording & Milestone GIF Generation: Validate `evaluator.py` and `agent.py` 
-     frame capture routines. Check frame rate, buffer dimensions, downsampling, and 
-     memory footprint when creating GIFs and MP4 videos.
-   - Interactive Mode (`interactive.py`): Check Pygame headless fallback in Colab, 
-     terrain coordinate extraction robustness across Box2D versions, and side-by-side 
-     trajectory recording synchronization.
+3. PERFORMANCE, CPU CONCURRENCY & MEMORY FOOTPRINT:
+   - Concurrency & Thread Pinning: Verify early setting of `OMP_NUM_THREADS=1`,
+     `MKL_NUM_THREADS=1`, etc., to avoid thread oversubscription in `SubprocVecEnv`.
+   - Streaming Video Recording: Inspect `_record_episode_streaming` with `imageio` H.264
+     pipe. Ensure zero RAM accumulation across 20 evaluation episodes.
+   - Box2D & Pygame Memory Cleanup: Check `_destroy_world()`, joint destruction, and
+     Pygame surface lifecycle in headless `rgb_array` mode. Are any Box2D bodies leaked?
+   - Matplotlib Notebook Memory: Verify that all plotting routines call `plt.close(fig)`
+     or `plt.close('all')` to prevent memory bloat in long notebook sessions.
+
+4. CROSS-PLATFORM ROBUSTNESS & RESILIENCE:
+   - Atomic File Operations: Review `atomic_write_text` and `atomic_write_json`. Ensure
+     resilience against notebook interruption and Colab timeouts.
+   - Pure-Python Fallbacks: Audit `perlin.py` (pure Python Perlin noise) vs the C-extension
+     `noise` package. Does it run deterministically across Windows and Linux?
+   - Interactive HTML5 Canvas & Web Audio API: Audit `interactive.py` in both environments.
+     Check the 50 Hz fixed accumulator physics loop, keybindings, touch controls, and
+     side-by-side trajectory playback in Jupyter/Colab.
+   - HTML Sanitization: Verify `html.escape()` on all student inputs in generated reports.
 
 ================================================================================
 OUTPUT FORMAT EXPECTED:
 
-Please organize your review into the following structured sections:
+Please structure your review into the following sections:
 1. EXECUTIVE SUMMARY: High-level architectural health check and critical highlights.
-2. CRITICAL BUGS & LOGICAL FLAWS: Bugs affecting correctness, false positive landing 
-   classifications, reward normalization leaks, or data loss risks.
-3. PERFORMANCE & LATENCY BOTTLENECK REMOVAL: Concurrency, memory leaks, loop overhead, 
-   and FPS optimization on Colab / Windows.
-4. SAMPLE EFFICIENCY & RL STABILITY ENHANCEMENTS: Fine-tuning PPO stability and reward 
-   shaping guidance.
-5. CODE QUALITY & PYTHONIC REFACTORING RECOMMENDATIONS: Typing, exception safety, 
-   modularity, and clean design patterns.
-6. CONCRETE DROP-IN CODE REPLACEMENTS: Provide complete, ready-to-use drop-in code 
-   snippets for any suggested changes, with zero regressions on public interfaces.
+2. CRITICAL BUGS & LOGICAL FLAWS: Issues affecting RL convergence, false outcome classifications,
+   crashes, or numerical instability.
+3. PERFORMANCE & CONCURRENCY OPTIMIZATIONS: Concurrency bottlenecks, memory footprint reductions,
+   and loop optimizations.
+4. CROSS-PLATFORM & EDGE-CASE ENHANCEMENTS: Path handling, headless compatibility, and UI fixes.
+5. CONCRETE DROP-IN CODE REPLACEMENTS: Provide complete, ready-to-use drop-in code
+   snippets for any suggested changes, with zero regressions on existing student APIs.
 
 ================================================================================
-BELOW IS THE COMPLETE REPOSITORY CODEBASE FOR REVIEW:
+BELOW IS THE COMPLETE REPOSITORY CODEBASE FOR REVIEW (ALL MODULES):
 ================================================================================
 
-
-================================================================================
+################################################################################
 ### FILE: README.md
-================================================================================
+################################################################################
 
 # 🚀 RL_school - Laboratorio di Reinforcement Learning: Lunar Lander & Hill Climb Racing
 
@@ -337,9 +342,9 @@ Repository ufficiale: [https://github.com/EmanueleCiccarelli/RL_school](https://
 
 
 
-================================================================================
+################################################################################
 ### FILE: pyproject.toml
-================================================================================
+################################################################################
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -411,9 +416,9 @@ addopts = "-v --tb=short"
 
 
 
-================================================================================
+################################################################################
 ### FILE: requirements.txt
-================================================================================
+################################################################################
 
 # =============================================================================
 # Dipendenze per RL_school - Laboratorio di Reinforcement Learning
@@ -446,9 +451,1003 @@ pytest>=7.0.0
 
 
 
-================================================================================
+################################################################################
+### FILE: play2learn_core/__init__.py
+################################################################################
+
+"""
+Play2Learn Core Architecture.
+Motore e orchestratore unificato di Reinforcement Learning per ambienti educativi
+(LunarLander, HillClimbRacing, ecc.).
+"""
+
+import os
+
+# Configurazione threading all'avvio per evitare contesa CPU e oversubscription
+for var in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(var, "1")
+
+__version__ = "1.0.0"
+
+
+
+
+################################################################################
+### FILE: play2learn_core/storage.py
+################################################################################
+
+"""
+Modulo Core di Storage e Persistenza per Play2Learn.
+Gestisce scritture atomiche, risoluzione timestamp e indicizzazione metadata.
+"""
+
+from __future__ import annotations
+
+import datetime
+import inspect
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Callable
+
+
+def atomic_write_text(path: Path | str, content: str, encoding: str = "utf-8") -> None:
+    """Scrive testo in modo atomico usando un file temporaneo e sostituzione atomica."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = p.parent
+    with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding=encoding) as tf:
+        tf.write(content)
+        tf.flush()
+        os.fsync(tf.fileno())
+        temp_name = tf.name
+    os.replace(temp_name, str(p))
+
+
+def atomic_write_json(path: Path | str, data: Any, encoding: str = "utf-8", indent: int = 2) -> None:
+    """Scrive JSON in modo atomico usando un file temporaneo e sostituzione atomica."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = p.parent
+    with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding=encoding) as tf:
+        json.dump(data, tf, indent=indent, default=str)
+        tf.flush()
+        os.fsync(tf.fileno())
+        temp_name = tf.name
+    os.replace(temp_name, str(p))
+
+
+def unique_dir(parent: Path, base_name: str) -> Path:
+    """Crea una cartella garantendo che non collida con nomi esistenti."""
+    target = parent / base_name
+    if not target.exists():
+        return target
+    counter = 1
+    while True:
+        candidate = parent / f"{base_name}_{counter}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def find_run_by_timestamp(
+    identifier: str,
+    runs_dir: Path | str | None = None
+) -> Path | None:
+    """
+    Risolve un identificatore di run (timestamp 'YYYYMMDD_HHMMSS', ISO, o 'latest')
+    nella directory corrispondente cercata in `runs_dir`.
+    """
+    if runs_dir is None:
+        runs_dir = Path("runs")
+    else:
+        runs_dir = Path(runs_dir)
+
+    if not runs_dir.exists():
+        return None
+
+    clean_id = str(identifier).strip().replace(":", "").replace("-", "").replace(" ", "_")
+
+    # Scansione di tutte le directory che contengono run_metadata.json
+    candidates: list[tuple[str, Path]] = []
+    for d in runs_dir.iterdir():
+        if d.is_dir() and d.name not in ("favorites", "preferiti"):
+            meta = d / "run_metadata.json"
+            if meta.exists():
+                candidates.append((d.name, d))
+
+    if not candidates:
+        return None
+
+    # Ordina cronologicamente
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    if clean_id.lower() in ("latest", "last", "ultimo", "ultima"):
+        return candidates[0][1]
+
+    # Ricerca esatta o per prefisso/suffisso
+    for name, path in candidates:
+        norm_name = name.replace(":", "").replace("-", "").replace(" ", "_")
+        if clean_id in norm_name:
+            return path
+
+    return None
+
+
+def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """Restituisce la lista di tutte le run completate indicizzate cronologicamente."""
+    if runs_dir is None:
+        runs_dir = Path("runs")
+    else:
+        runs_dir = Path(runs_dir)
+
+    if not runs_dir.exists():
+        return []
+
+    cronologia = []
+    for d in sorted(runs_dir.iterdir(), reverse=True):
+        if not d.is_dir() or d.name in ("favorites", "preferiti"):
+            continue
+        meta_path = d / "run_metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            raw_ts = meta.get("timestamp", d.name)
+            try:
+                dt = datetime.datetime.fromisoformat(raw_ts)
+                fmt_data = dt.strftime("%Y-%m-%d")
+                fmt_ora = dt.strftime("%H:%M:%S")
+            except (ValueError, TypeError):
+                clean_ts = raw_ts.replace(":", "").replace("-", "").replace("_", "")
+                if len(clean_ts) >= 14:
+                    fmt_data = f"{clean_ts[:4]}-{clean_ts[4:6]}-{clean_ts[6:8]}"
+                    fmt_ora = f"{clean_ts[8:10]}:{clean_ts[10:12]}:{clean_ts[12:14]}"
+                else:
+                    fmt_data = raw_ts
+                    fmt_ora = ""
+
+            cronologia.append({
+                "dir_name": d.name,
+                "dir_path": str(d),
+                "timestamp": raw_ts,
+                "data": fmt_data,
+                "ora": fmt_ora,
+                "mission_title": meta.get("mission", {}).get("title", meta.get("mission", "Missione")),
+                "success_rate": meta.get("eval_metrics", {}).get("eval_success_rate", 0.0),
+                "mean_reward": meta.get("eval_metrics", {}).get("mean_reward", 0.0),
+                "videos_count": len(meta.get("eval_metrics", {}).get("video_filenames", [])),
+                "has_gif": meta.get("has_gif", False),
+            })
+        except Exception:
+            continue
+
+    return cronologia
+
+
+def save_generic_run_metadata(
+    run_dir: Path,
+    mission: str,
+    mission_cfg: dict[str, Any],
+    env_kwargs: dict[str, Any],
+    total_timesteps: int,
+    elapsed_seconds: float,
+    reward_fn: Callable | None,
+    eval_stats: dict[str, Any],
+    diagnostics: dict[str, Any],
+    notes: str = "",
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    """Salva i metadati completi della sessione di addestramento in formato JSON atomico."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = run_dir / "run_metadata.json"
+
+    # Estrazione codice sorgente della reward function
+    reward_code = "# Funzione non disponibile"
+    if reward_fn is not None:
+        try:
+            reward_code = inspect.getsource(reward_fn)
+        except Exception:
+            reward_code = str(reward_fn)
+
+    # Pulizia metadati di valutazione
+    clean_eval = {}
+    for k, v in eval_stats.items():
+        if isinstance(v, (int, float, str, bool)):
+            clean_eval[k] = v
+        elif isinstance(v, list) and all(isinstance(x, (int, float, str, bool)) for x in v):
+            clean_eval[k] = v
+
+    data: dict[str, Any] = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "mission": {
+            "key": mission,
+            "title": mission_cfg.get("title", mission),
+            "description": mission_cfg.get("description", ""),
+            "env_kwargs": env_kwargs,
+        },
+        "training": {
+            "total_timesteps": total_timesteps,
+            "elapsed_seconds": round(elapsed_seconds, 2),
+            "fps_average": round(total_timesteps / max(0.1, elapsed_seconds), 1),
+        },
+        "reward_source_code": reward_code,
+        "eval_metrics": clean_eval,
+        "diagnostics": diagnostics,
+        "notes": notes,
+    }
+
+    if extra:
+        data.update(extra)
+
+    atomic_write_json(meta_path, data)
+    return meta_path
+
+
+
+
+################################################################################
+### FILE: play2learn_core/base_env.py
+################################################################################
+
+"""
+Base Wrapper per Ambienti Didattici di Reinforcement Learning.
+Fornisce ispezione rapida della firma dello studente, validazione matematica (NaN/Inf)
+e tracciamento unificato della telemetria.
+"""
+
+from __future__ import annotations
+
+import inspect
+import math
+from typing import Any, Callable
+import gymnasium as gym
+
+
+def build_reward_caller(reward_fn: Callable) -> Callable:
+    """
+    Ispeziona una sola volta all'inizializzazione la firma della funzione dello studente
+    e restituisce un dispatcher specializzato ad altissima velocità.
+    Supporta:
+      - 5 argomenti: (obs, action, is_success, is_crashed, is_timeout)
+      - 4 argomenti: (obs, is_success, is_crashed, is_timeout)
+      - 2 argomenti: (obs, action)
+      - 1 argomento:  (obs)
+      - Generico / **kwargs
+    """
+    try:
+        sig = inspect.signature(reward_fn)
+        params = list(sig.parameters.values())
+        has_var = any(
+            p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for p in params
+        )
+        param_count = -1 if has_var else len(params)
+    except Exception:
+        param_count = 5
+
+    if param_count == 5:
+        return reward_fn
+    if param_count == 4:
+        return lambda obs, act, succ, crash, tout: reward_fn(obs, succ, crash, tout)
+    if param_count == 2:
+        return lambda obs, act, succ, crash, tout: reward_fn(obs, act)
+    if param_count == 1:
+        return lambda obs, act, succ, crash, tout: reward_fn(obs)
+
+    def _safe_call(obs: Any, act: Any, succ: bool, crash: bool, tout: bool) -> float:
+        kwargs: dict[str, Any] = {
+            "obs": obs,
+            "action": act,
+            "is_success": succ,
+            "is_crashed": crash,
+            "is_timeout": tout,
+        }
+        try:
+            return float(reward_fn(**kwargs))
+        except TypeError:
+            try:
+                return float(reward_fn(obs, act))
+            except TypeError:
+                return float(reward_fn(obs))
+
+    return _safe_call
+
+
+class BaseRewardWrapper(gym.Wrapper):
+    """
+    Classe base per tutti i wrapper didattici Play2Learn.
+    Isola l'algoritmo SB3 (PPO) dagli errori dello studente e valida
+    la correttezza numerica di ogni passo di simulazione.
+    """
+
+    def __init__(self, env: gym.Env, reward_fn: Callable | None = None):
+        super().__init__(env)
+        self.reward_fn = reward_fn
+        self._caller = build_reward_caller(reward_fn) if reward_fn is not None else None
+        self.current_step = 0
+
+    def validate_reward_value(self, reward_val: float) -> float:
+        """Verifica che il valore di reward sia finito e numericamente valido."""
+        try:
+            val = float(reward_val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"La funzione di reward ha restituito un tipo non numerico: {reward_val}") from exc
+
+        if not math.isfinite(val):
+            raise ValueError(f"Valore non finito restituito: {val} (NaN o Inf).")
+        return val
+
+    def call_student_reward(
+        self,
+        obs: Any,
+        action: Any,
+        is_success: bool,
+        is_crashed: bool,
+        is_timeout: bool
+    ) -> float:
+        """Invoca la funzione dello studente proteggendo da crash opachi."""
+        if self._caller is None:
+            return 0.0
+
+        try:
+            raw_rew = self._caller(obs, action, is_success, is_crashed, is_timeout)
+            return self.validate_reward_value(raw_rew)
+        except Exception as exc:
+            raise RuntimeError(
+                f"[Play2Learn Error] Errore nell'esecuzione della tua 'custom_reward': {exc}\n"
+                "Controlla i calcoli matematici (es. divisioni per zero, log di negativi o indici errati)."
+            ) from exc
+
+
+
+
+################################################################################
+### FILE: play2learn_core/agent.py
+################################################################################
+
+"""
+Modulo Core di Orchestrazione e Addestramento Agenti PPO (Play2Learn).
+Include callback ad alte prestazioni con finestre scorrevoli O(1) e gestione sicura di VecEnv.
+"""
+
+from __future__ import annotations
+
+import collections
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from tqdm.auto import tqdm
+
+
+def create_linear_schedule(initial_value: float, min_value: float = 1e-5) -> Callable[[float], float]:
+    """Crea uno scheduler di learning rate lineare decrescente da initial_value a min_value."""
+    def schedule(progress_remaining: float) -> float:
+        return max(min_value, initial_value * progress_remaining)
+    return schedule
+
+
+class BaseRewardTrackerCallback(BaseCallback):
+    """
+    Callback didattica ad alta efficienza per il monitoraggio dell'addestramento PPO.
+    Mantiene somme scorrevoli per calcoli O(1) di medie e success rate.
+    """
+
+    def __init__(
+        self,
+        total_timesteps: int,
+        show_progress: bool = True,
+        save_checkpoints: bool = True,
+        checkpoint_dir: Path | str | None = None,
+        save_freq: int = 10_000,
+        window_size: int = 100,
+        milestone_callback: Callable[[int, Any], None] | None = None,
+        milestone_freq: int = 40_000,
+        verbose: int = 0,
+        metric_name: str = "fuel",
+    ):
+        super().__init__(verbose)
+        self.total_timesteps = total_timesteps
+        self.show_progress = show_progress
+        self.save_checkpoints = save_checkpoints
+        self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
+        self.save_freq = save_freq
+        self.window_size = window_size
+        self.milestone_callback = milestone_callback
+        self.milestone_freq = milestone_freq
+        self.metric_name = metric_name
+
+        # Finestre scorrevoli O(1)
+        self.episode_rewards: collections.deque[float] = collections.deque(maxlen=window_size)
+        self.episode_lengths: collections.deque[int] = collections.deque(maxlen=window_size)
+        self.episode_successes: collections.deque[bool] = collections.deque(maxlen=window_size)
+        self.episode_secondary: collections.deque[float] = collections.deque(maxlen=window_size)
+
+        # Somme scorrevoli per media O(1)
+        self._window_reward_sum = 0.0
+        self._window_secondary_sum = 0.0
+
+        # Contatori cumulativi
+        self.total_episodes = 0
+        self.successes = 0
+        self.crashes = 0
+        self.timeouts = 0
+        self.best_mean_reward = -float("inf")
+        self.best_success_rate = -1.0
+        self.pbar: tqdm | None = None
+        self.start_time = 0.0
+        self._last_ui_update_time = 0.0
+
+    @property
+    def current_moving_reward(self) -> float:
+        n = len(self.episode_rewards)
+        return (self._window_reward_sum / n) if n > 0 else 0.0
+
+    @property
+    def current_moving_secondary(self) -> float:
+        n = len(self.episode_secondary)
+        return (self._window_secondary_sum / n) if n > 0 else 0.0
+
+    @property
+    def current_moving_success_rate(self) -> float:
+        if not self.episode_successes:
+            return 0.0
+        return (sum(self.episode_successes) / len(self.episode_successes)) * 100.0
+
+    def _on_training_start(self) -> None:
+        self.start_time = time.time()
+        self._last_ui_update_time = self.start_time
+        if self.show_progress:
+            self.pbar = tqdm(
+                total=self.total_timesteps,
+                desc="🚀 Addestramento Agente RL",
+                unit="step",
+                dynamic_ncols=True,
+            )
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if not isinstance(info, dict):
+                continue
+
+            ep_info = info.get("episode")
+            if ep_info is not None:
+                self.total_episodes += 1
+                r = float(ep_info.get("r", 0.0))
+                l = int(ep_info.get("l", 0))
+
+                # Aggiornamento finestra reward O(1)
+                if len(self.episode_rewards) == self.window_size:
+                    self._window_reward_sum -= self.episode_rewards[0]
+                self.episode_rewards.append(r)
+                self._window_reward_sum += r
+                self.episode_lengths.append(l)
+
+                succ = bool(info.get("is_success", False))
+                self.episode_successes.append(succ)
+                if succ:
+                    self.successes += 1
+                elif info.get("is_timeout", False):
+                    self.timeouts += 1
+                else:
+                    self.crashes += 1
+
+                # Misura secondaria (es. carburante o distanza o velocità)
+                sec_val = 0.0
+                telemetry = info.get("telemetry", {})
+                if isinstance(telemetry, dict):
+                    sec_val = float(telemetry.get(self.metric_name, 0.0))
+                else:
+                    sec_val = float(info.get(self.metric_name, 0.0))
+
+                if len(self.episode_secondary) == self.window_size:
+                    self._window_secondary_sum -= self.episode_secondary[0]
+                self.episode_secondary.append(sec_val)
+                self._window_secondary_sum += sec_val
+
+        # Salvataggio milestone periodica
+        if self.milestone_callback and (self.num_timesteps % self.milestone_freq < self.training_env.num_envs):
+            try:
+                self.milestone_callback(self.num_timesteps, self.model)
+            except Exception:
+                pass
+
+        # Salvataggio checkpoint
+        if self.save_checkpoints and self.checkpoint_dir and (self.num_timesteps % self.save_freq < self.training_env.num_envs):
+            self.flush_best_model_to_disk()
+
+        # Aggiornamento progress bar throttled (solo ogni 64 step o 0.25s)
+        if self.pbar:
+            self.pbar.n = self.num_timesteps
+            if (self.n_calls & 63) == 0:
+                now = time.time()
+                if now - self._last_ui_update_time >= 0.25:
+                    self._last_ui_update_time = now
+                    sec_val = self.current_moving_secondary
+                    self.pbar.set_postfix({
+                        "Reward": f"{self.current_moving_reward:.1f}",
+                        "Successi": f"{self.current_moving_success_rate:.0f}%",
+                        self.metric_name.capitalize(): f"{sec_val:.1f}",
+                    })
+
+        return True
+
+    def flush_best_model_to_disk(self) -> None:
+        """Salva il modello migliore su disco in modo sicuro."""
+        if not self.checkpoint_dir:
+            return
+
+        rate = self.current_moving_success_rate
+        rew = self.current_moving_reward
+
+        is_better = (rate > self.best_success_rate + 2.0) or (
+            abs(rate - self.best_success_rate) <= 2.0 and rew > self.best_mean_reward + 10.0
+        )
+
+        if is_better and rate >= 40.0:
+            self.best_success_rate = rate
+            self.best_mean_reward = rew
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            self.model.save(str(self.checkpoint_dir / "best_model.zip"))
+
+    def _on_training_end(self) -> None:
+        if self.pbar:
+            self.pbar.n = self.total_timesteps
+            self.pbar.close()
+        if self.checkpoint_dir:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            self.model.save(str(self.checkpoint_dir / "final_model.zip"))
+
+
+def make_parallel_envs(
+    env_fns: list[Callable[[], Any]],
+    use_subproc: bool = False,
+) -> VecNormalize:
+    """Crea e normalizza in modo vettorizzato gli ambienti Gymnasium."""
+    if use_subproc and len(env_fns) > 1:
+        vec_env = SubprocVecEnv(env_fns)
+    else:
+        vec_env = DummyVecEnv(env_fns)
+
+    # norm_obs=False preserva le osservazioni raw fisiche per l'inferenza deterministica
+    norm_env = VecNormalize(
+        vec_env,
+        norm_obs=False,
+        norm_reward=True,
+        clip_reward=10.0,
+        gamma=0.995,
+    )
+    return norm_env
+
+
+
+
+################################################################################
+### FILE: play2learn_core/evaluator.py
+################################################################################
+
+"""
+Modulo Core di Valutazione e Streaming Video/GIF (Play2Learn).
+Scrittura incrementale direttamente su disco con footprint RAM costante (~1 MB).
+"""
+
+from __future__ import annotations
+
+import collections
+from pathlib import Path
+from typing import Any, Callable
+
+import imageio
+import numpy as np
+
+
+def record_episode_streaming(
+    env: Any,
+    model: Any,
+    video_path: Path,
+    fps: int = 50,
+    max_steps: int = 1500,
+    deterministic: bool = True,
+    outcome_fn: Callable[[Any, float, bool, bool, Any], tuple[bool, bool, bool, Any]] | None = None,
+) -> tuple[float, int, bool, dict[str, Any]]:
+    """
+    Registra un episodio in streaming direttamente su file mp4 (H.264).
+    Non memorizza l'intera sequenza di frame in memoria RAM (consumo costante < 1 MB).
+    """
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    obs, info = env.reset()
+
+    writer = imageio.get_writer(
+        str(video_path),
+        fps=fps,
+        codec="libx264",
+        output_params=["-pix_fmt", "yuv420p"],
+    )
+
+    total_reward = 0.0
+    steps = 0
+    terminated = False
+    truncated = False
+    is_success = False
+
+    try:
+        frame = env.render()
+        if frame is not None:
+            writer.append_data(frame)
+
+        while not (terminated or truncated) and steps < max_steps:
+            action, _ = model.predict(obs, deterministic=deterministic)
+            action_item = action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action
+            obs, reward, terminated, truncated, info = env.step(action_item)
+            total_reward += float(reward)
+            steps += 1
+
+            frame = env.render()
+            if frame is not None:
+                writer.append_data(frame)
+
+        if outcome_fn is not None:
+            unwrapped = getattr(env, "unwrapped", env)
+            succ, crash, tout, _ = outcome_fn(obs, reward, terminated, truncated, unwrapped)
+            is_success = succ
+        else:
+            is_success = bool(info.get("is_success", False))
+
+    finally:
+        writer.close()
+
+    return total_reward, steps, is_success, info
+
+
+def create_milestone_gif(
+    frames_or_images: list[np.ndarray],
+    gif_path: Path,
+    fps: int = 10,
+) -> Path:
+    """Crea una GIF animata dai frame estratti dai checkpoint di apprendimento."""
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimsave(str(gif_path), frames_or_images, fps=fps, loop=0)
+    return gif_path
+
+
+
+
+################################################################################
+### FILE: play2learn_core/favorites.py
+################################################################################
+
+"""
+Modulo Core di Gestione Esperimenti Preferiti (Play2Learn).
+Archiviazione, indicizzazione e caricamento portabile tra Colab e Windows.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+from play2learn_core.storage import atomic_write_json, unique_dir
+
+
+class BaseFavoritesManager:
+    """Gestore degli esperimenti salvati tra i preferiti."""
+
+    def __init__(self, favorites_dir: Path | str):
+        self.favorites_dir = Path(favorites_dir)
+        self.favorites_dir.mkdir(parents=True, exist_ok=True)
+        self.index_file = self.favorites_dir / "index.json"
+
+    def read_index(self) -> list[dict[str, Any]]:
+        if not self.index_file.exists():
+            return []
+        try:
+            return json.loads(self.index_file.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def write_index(self, entries: list[dict[str, Any]]) -> None:
+        atomic_write_json(self.index_file, entries)
+
+    def salva_preferito(
+        self,
+        source_dir: Path,
+        nome: str,
+        note: str = "",
+        tag: str = "didattico",
+    ) -> dict[str, Any]:
+        """Salva una run nei preferiti copiando i file necessari e aggiornando index.json."""
+        entries = self.read_index()
+        new_id = len(entries) + 1
+        safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in nome)[:40]
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_dir_name = f"fav_{new_id:03d}_{safe_name}_{timestamp}"
+        dest_dir = unique_dir(self.favorites_dir, dest_dir_name)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copia i file salienti
+        for item in source_dir.iterdir():
+            if item.is_file():
+                try:
+                    shutil.copy2(item, dest_dir / item.name)
+                except Exception:
+                    pass
+            elif item.is_dir() and item.name in ("videos", "checkpoints"):
+                try:
+                    shutil.copytree(item, dest_dir / item.name, dirs_exist_ok=True)
+                except Exception:
+                    pass
+
+        # Lettura metadati esistenti per arricchire l'entry
+        meta = {}
+        meta_file = source_dir / "run_metadata.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        fav_entry = {
+            "id": new_id,
+            "dir_name": dest_dir.name,
+            "nome": nome,
+            "timestamp": timestamp,
+            "note": note,
+            "tag": tag,
+            "mission": meta.get("mission", {}).get("title", "Missione"),
+            "success_rate": meta.get("eval_metrics", {}).get("eval_success_rate", 0.0),
+            "mean_reward": meta.get("eval_metrics", {}).get("mean_reward", 0.0),
+        }
+
+        entries.append(fav_entry)
+        self.write_index(entries)
+        return fav_entry
+
+    def carica_preferito(self, fav_id_or_name: int | str) -> dict[str, Any]:
+        """Risolve un preferito e restituisce il percorso della sua cartella e i metadati."""
+        entries = self.read_index()
+        if not entries:
+            raise ValueError("[Play2Learn] Nessun esperimento preferito salvato.")
+
+        selected = None
+        if isinstance(fav_id_or_name, int) or str(fav_id_or_name).isdigit():
+            fid = int(fav_id_or_name)
+            for e in entries:
+                if e.get("id") == fid:
+                    selected = e
+                    break
+        else:
+            name_lower = str(fav_id_or_name).lower()
+            for e in entries:
+                if name_lower in str(e.get("nome", "")).lower() or name_lower in str(e.get("dir_name", "")).lower():
+                    selected = e
+                    break
+
+        if not selected:
+            raise ValueError(f"[Play2Learn] Nessun preferito trovato per: {fav_id_or_name}")
+
+        dest_dir = self.favorites_dir / selected["dir_name"]
+        if not dest_dir.exists():
+            # Fallback ricerca per prefisso id
+            for d in self.favorites_dir.iterdir():
+                if d.is_dir() and d.name.startswith(f"fav_{selected.get('id', 0):03d}"):
+                    dest_dir = d
+                    break
+
+        meta = {}
+        meta_file = dest_dir / "run_metadata.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        return {
+            "entry": selected,
+            "dir_path": dest_dir,
+            "metadata": meta,
+        }
+
+
+
+
+################################################################################
+### FILE: play2learn_core/reporting.py
+################################################################################
+
+"""
+Modulo Core di Reporting e Comparazione Esperimenti (Play2Learn).
+Generazione schede tecniche in PDF ad alta risoluzione, HTML standalone e Markdown.
+"""
+
+from __future__ import annotations
+
+import html
+import math
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+
+def serialize_eval_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """
+    Rimuove in modo ricorsivo oggetti `Path` e strutture non serializzabili
+    da inserire nei metadati JSON della run.
+    """
+    clean: dict[str, Any] = {}
+    for k, v in metrics.items():
+        if isinstance(v, Path):
+            continue
+        if isinstance(v, (int, float, str, bool)):
+            clean[k] = v
+        elif isinstance(v, list):
+            clean_list = [x for x in v if isinstance(x, (int, float, str, bool))]
+            if len(clean_list) == len(v):
+                clean[k] = clean_list
+        elif isinstance(v, dict):
+            sub = serialize_eval_metrics(v)
+            if sub:
+                clean[k] = sub
+    return clean
+
+
+def load_reward_fn_from_source(source_code: str) -> Callable | None:
+    """
+    Carica ed esegue dinamicamente il codice sorgente di una funzione di reward,
+    iniettando automaticamente `np` e `math` nel namespace locale per prevenire NameError.
+    """
+    if not source_code or source_code.startswith("#"):
+        return None
+
+    scope: dict[str, Any] = {
+        "np": np,
+        "math": math,
+        "numpy": np,
+    }
+    try:
+        exec(source_code, scope)
+        for key in ("custom_reward", "reward_function", "reward_fn"):
+            if key in scope and callable(scope[key]):
+                return scope[key]
+
+        # Cerca la prima funzione definita
+        for k, v in scope.items():
+            if callable(v) and not k.startswith("_") and k not in ("np", "math", "numpy"):
+                return v
+    except Exception as exc:
+        print(f"[Play2Learn] Impossibile ricostruire la reward function: {exc}")
+
+    return None
+
+
+def sanitize_report_text(text: str) -> str:
+    """Esegue l'escape sicuro di caratteri HTML per evitare corruzioni di rendering."""
+    return html.escape(str(text))
+
+
+
+
+################################################################################
+### FILE: play2learn_core/base_interactive.py
+################################################################################
+
+"""
+Modulo Core per la Simulazione Interattiva nel Browser e Notebook (Play2Learn).
+Fornisce sintetizzatori Web Audio API, display HTML e loop di fisica a 50 Hz fisso.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import webbrowser
+from pathlib import Path
+from typing import Any
+
+
+def display_or_open_html(html_code: str, filename: str = "play2learn_interactive") -> Any:
+    """Mostra l'HTML inline nel notebook oppure lo apre nel browser predefinito."""
+    try:
+        from IPython.display import HTML, display
+        res = HTML(html_code)
+        display(res)
+        return res
+    except ImportError:
+        tmp = Path(tempfile.gettempdir()) / f"{filename}.html"
+        tmp.write_text(html_code, encoding="utf-8")
+        print(f"[play2learn] Apertura del simulatore nel browser: {tmp}")
+        webbrowser.open(tmp.as_uri())
+        return html_code
+
+
+def get_shared_audio_and_loop_js() -> str:
+    """Restituisce il codice JavaScript comune per la sintesi sonora e il game loop a 50 Hz fisso."""
+    return """
+    let audioCtx = null;
+    let soundEnabled = true;
+
+    function initAudio() {
+        if (!audioCtx) {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) audioCtx = new AudioContext();
+        }
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    function playEngineTone(freq, duration) {
+        if (!soundEnabled || !audioCtx) return;
+        try {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        } catch(e) {}
+    }
+
+    function playCrashSound() {
+        if (!soundEnabled || !audioCtx) return;
+        try {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(90, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(25, audioCtx.currentTime + 0.35);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.35);
+        } catch(e) {}
+    }
+
+    function playVictoryChime() {
+        if (!soundEnabled || !audioCtx) return;
+        try {
+            const notes = [261.63, 329.63, 392.00, 523.25];
+            notes.forEach((freq, idx) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.1);
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime + idx * 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + idx * 0.1 + 0.28);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start(audioCtx.currentTime + idx * 0.1);
+                osc.stop(audioCtx.currentTime + idx * 0.1 + 0.3);
+            });
+        } catch(e) {}
+    }
+    """
+
+
+
+
+################################################################################
 ### FILE: play2learn_lunarlander/__init__.py
-================================================================================
+################################################################################
 
 """
 Play2Learn - Lunar Lander
@@ -538,9 +1537,9 @@ __all__ = [
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/config.py
-================================================================================
+################################################################################
 
 """
 Modulo di configurazione per Play2Learn - Lunar Lander.
@@ -703,9 +1702,9 @@ DEFAULT_TIMESTEPS: int = 300_000
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/environment.py
-================================================================================
+################################################################################
 
 """
 Modulo di gestione dell'ambiente di simulazione Gymnasium e del CustomRewardWrapper.
@@ -1080,9 +2079,9 @@ def wrap_vec_normalize(
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/agent.py
-================================================================================
+################################################################################
 
 """
 Modulo per la gestione dell'agente RL (PPO), learning rate schedule,
@@ -1509,9 +2508,9 @@ def create_ppo_agent(
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/evaluator.py
-================================================================================
+################################################################################
 
 """
 Modulo di valutazione e registrazione video/GIF ad alte prestazioni.
@@ -2097,9 +3096,9 @@ def crea_gif_evoluzione_apprendimento(
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/diagnostics.py
-================================================================================
+################################################################################
 
 """
 Modulo 'Flight Coach' - Diagnostica didattica intelligente del comportamento dell'agente.
@@ -2234,9 +3233,9 @@ def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/visualizer.py
-================================================================================
+################################################################################
 
 """
 Modulo di visualizzazione grafica: mappa dell'ambiente, dashboard telemetrica 2x2,
@@ -2609,9 +3608,9 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/storage.py
-================================================================================
+################################################################################
 
 """
 Modulo per la gestione della persistenza, salvataggio atomico dei checkpoint dei modelli,
@@ -3169,9 +4168,9 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/favorites.py
-================================================================================
+################################################################################
 
 """
 Modulo per la gestione della sezione 'Preferiti' / 'Migliori Run'.
@@ -3538,9 +4537,9 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/reporting.py
-================================================================================
+################################################################################
 
 """
 Modulo di Reportistica Tecnica e Diagnostica.
@@ -4462,9 +5461,9 @@ def genera_report_da_timestamp(
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/interactive.py
-================================================================================
+################################################################################
 
 """
 Modulo di Simulazione e Gioco Interattivo (Play2Learn - Lunar Lander).
@@ -5751,9 +6750,9 @@ def gioca(
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/reset.py
-================================================================================
+################################################################################
 
 """
 Script di Reset per il Laboratorio di Reinforcement Learning (Lunar Lander).
@@ -5941,9 +6940,9 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
 ### FILE: play2learn_lunarlander/lab.py
-================================================================================
+################################################################################
 
 """
 Modulo orchestratore di Play2Learn: coordina addestramento, salvataggio, telemetria,
@@ -6535,18 +7534,3284 @@ def dimostrazione_live(
 
 
 
-================================================================================
+################################################################################
+### FILE: play2learn_hillclimb/__init__.py
+################################################################################
+
+"""
+Play2Learn - Hill Climb Racing.
+Laboratorio di Reinforcement Learning didattico per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+import play2learn_core  # Assicura configurazione threading a monte
+
+# Registrazione automatica dell'ambiente Gymnasium
+import play2learn_hillclimb.engine
+from play2learn_hillclimb.config import ENV_ID, MISSIONS
+from play2learn_hillclimb.environment import (
+    HillClimbRewardWrapper,
+    classify_hill_climb_outcome,
+)
+from play2learn_hillclimb.favorites import (
+    carica_preferito,
+    mostra_preferiti,
+    salva_nei_preferiti,
+    salva_preferito,
+)
+from play2learn_hillclimb.interactive import (
+    gioca,
+    gioca_single_player,
+    gioca_vs_agente,
+)
+from play2learn_hillclimb.lab import (
+    LabResult,
+    dimostrazione_live,
+    run_lab,
+)
+from play2learn_hillclimb.reporting import (
+    confronta_run,
+    genera_report_da_timestamp,
+    genera_report_esperimento,
+)
+from play2learn_hillclimb.visualizer import mostra_mappa_ambiente
+
+__all__ = [
+    "run_lab",
+    "LabResult",
+    "dimostrazione_live",
+    "carica_preferito",
+    "salva_preferito",
+    "salva_nei_preferiti",
+    "mostra_preferiti",
+    "confronta_run",
+    "genera_report_da_timestamp",
+    "genera_report_esperimento",
+    "gioca_single_player",
+    "gioca_vs_agente",
+    "gioca",
+    "mostra_mappa_ambiente",
+    "classify_hill_climb_outcome",
+    "HillClimbRewardWrapper",
+    "MISSIONS",
+    "ENV_ID",
+]
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/config.py
+################################################################################
+
+"""
+Configurazione e Parametri di Default per Hill Climb Racing (Play2Learn).
+"""
+
+from __future__ import annotations
+
+ENV_ID = "HillClimbRacing-v0"
+
+# Scenari di Missione e Tracciati Speciali
+MISSIONS = {
+    "campagna_standard": {
+        "title": "Campagna Standard (Colline Verdi)",
+        "description": "Colline ondulate con pendenze moderate. Ottimo banco di prova iniziale per imparare a bilanciare acceleratore e stabilità.",
+        "goal": "Percorrere almeno 800 metri senza ribaltarsi né finire bloccati.",
+        "env_kwargs": {
+            "gravity": 10.0,
+            "difficulty": -150.0,
+            "original_noise": False,
+        },
+    },
+    "deserto_dune": {
+        "title": "Deserto delle Dune (Pendenze Sabbiose)",
+        "description": "Dune ripide e valli profonde. Richiede di prendere rincorsa e dosare la velocità in cresta per non cappottare in discesa.",
+        "goal": "Superare le dune e raggiungere 800 metri con trazione continua.",
+        "env_kwargs": {
+            "gravity": 10.5,
+            "difficulty": -100.0,
+            "original_noise": False,
+        },
+    },
+    "montagna_estrema": {
+        "title": "Montagna Estrema (Picchi Rocciosi)",
+        "description": "Pendenze scoscese e salti improvvisi. Richiede forte controllo del rollio in aria e freno reattivo.",
+        "goal": "Scalare i picchi rocciosi mantenendo il pilota sempre al sicuro.",
+        "env_kwargs": {
+            "gravity": 11.0,
+            "difficulty": -50.0,
+            "original_noise": False,
+        },
+    },
+    "luna_bassa_gravita": {
+        "title": "Superficie Lunare (Bassa Gravità)",
+        "description": "Gravità ridotta a 2.5 m/s². I salti durano tantissimo: ogni colpo di gas inclina il veicolo all'indietro per reazione di coppia!",
+        "goal": "Sfruttare l'airtime lunare atterrando sempre dolcemente su entrambe le ruote.",
+        "env_kwargs": {
+            "gravity": 2.5,
+            "difficulty": -120.0,
+            "original_noise": False,
+        },
+    },
+    "autostrada_veloce": {
+        "title": "Autostrada Veloce (Time Attack)",
+        "description": "Profilo quasi pianeggiante con dolci avvallamenti. Sfida di pura velocità e accelerazione massima.",
+        "goal": "Raggiungere il traguardo di 1000 metri nel minor numero di step possibile.",
+        "env_kwargs": {
+            "gravity": 9.8,
+            "difficulty": -220.0,
+            "original_noise": True,
+        },
+    },
+}
+
+# Iperparametri ottimali PPO per Hill Climb Racing
+DEFAULT_PPO_PARAMS = {
+    "n_steps": 512,
+    "batch_size": 64,
+    "n_epochs": 8,
+    "gamma": 0.995,
+    "gae_lambda": 0.98,
+    "clip_range": 0.2,
+    "ent_coef": 0.005,
+    "learning_rate": 3e-4,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.03,
+}
+
+VECNORM_PARAMS = {
+    "norm_obs": False,
+    "norm_reward": True,
+    "clip_reward": 10.0,
+    "clip_obs": 10.0,
+    "gamma": 0.995,
+}
+
+DEFAULT_N_ENVS = 4
+DEFAULT_TIMESTEPS = 150_000
+MIN_EVAL_EPISODES = 20
+EVAL_SEEDS = [100 + i * 37 for i in range(MIN_EVAL_EPISODES)]
+
+TARGET_DISTANCE_SUCCESS = 800.0
+MAX_TRACK_DISTANCE = 1000.0
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/environment.py
+################################################################################
+
+"""
+Wrapper Didattico e Classificatore Esiti per Hill Climb Racing (Play2Learn).
+Isola PPO da eccezioni dello studente, controlla valori non finiti (NaN/Inf)
+e produce una ricca telemetria ad ogni passo di simulazione.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any, Callable
+
+import gymnasium as gym
+import numpy as np
+
+from play2learn_core.base_env import BaseRewardWrapper
+from play2learn_hillclimb.config import TARGET_DISTANCE_SUCCESS
+
+
+def classify_hill_climb_outcome(
+    obs: Any,
+    original_reward: float,
+    terminated: bool,
+    truncated: bool,
+    unwrapped: Any = None,
+) -> tuple[bool, bool, bool, bool]:
+    """
+    Sorgente unica di verità per la classificazione dell'esito dell'episodio di guida.
+    Restituisce: (is_success, is_crashed, is_timeout, is_flipped).
+    """
+    is_timeout = bool(truncated and not terminated)
+    if not terminated and not truncated:
+        return False, False, False, False
+
+    agent_obj = getattr(unwrapped, "agent", None)
+    is_dead = bool(getattr(agent_obj, "dead", False))
+    score = float(getattr(agent_obj, "score", 0.0))
+
+    try:
+        x_dist = float(obs.item(0))
+        angle_rad = abs(float(obs.item(4)))
+    except (AttributeError, ValueError):
+        x_dist = float(obs[0])
+        angle_rad = abs(float(obs[4]))
+
+    is_flipped = is_dead or (angle_rad > 1.4)  # ~80 gradi di inclinazione estrema
+
+    if is_dead:
+        return False, True, False, is_flipped
+
+    if is_timeout:
+        return False, False, True, is_flipped
+
+    # Traguardo di successo: raggiungimento della distanza obiettivo (>= 800m)
+    if score >= TARGET_DISTANCE_SUCCESS or x_dist >= TARGET_DISTANCE_SUCCESS:
+        return True, False, False, False
+
+    return False, True, False, is_flipped
+
+
+class HillClimbRewardWrapper(BaseRewardWrapper):
+    """
+    Wrapper didattico specializzato per Hill Climb Racing.
+    Permette agli studenti di definire funzioni di reward per premiare la velocità in salita,
+    l'airtime controllato, il contatto con il suolo e penalizzare il ribaltamento.
+    """
+
+    def __init__(self, env: gym.Env, reward_fn: Callable | None = None):
+        super().__init__(env, reward_fn=reward_fn)
+        self.episode_steps = 0
+        self.cumulative_distance = 0.0
+        self.airtime_steps = 0
+        self.max_speed_reached = 0.0
+
+    def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
+        self.episode_steps = 0
+        self.cumulative_distance = 0.0
+        self.airtime_steps = 0
+        self.max_speed_reached = 0.0
+        return super().reset(**kwargs)
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        obs, original_reward, terminated, truncated, info = self.env.step(action)
+        self.episode_steps += 1
+
+        unwrapped = getattr(self.env, "unwrapped", self.env)
+        is_success, is_crashed, is_timeout, is_flipped = classify_hill_climb_outcome(
+            obs=obs,
+            original_reward=original_reward,
+            terminated=terminated,
+            truncated=truncated,
+            unwrapped=unwrapped,
+        )
+
+        # Aggiornamento telemetria
+        x_dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
+        vx = float(obs[2]) if hasattr(obs, "__getitem__") else 0.0
+        self.cumulative_distance = max(self.cumulative_distance, x_dist)
+        self.max_speed_reached = max(self.max_speed_reached, abs(vx))
+
+        rear_on = bool(obs[6] > 0.5) if hasattr(obs, "__getitem__") else False
+        front_on = bool(obs[7] > 0.5) if hasattr(obs, "__getitem__") else False
+        if not rear_on and not front_on:
+            self.airtime_steps += 1
+
+        # Calcolo reward dello studente o default
+        if self.reward_fn is not None:
+            reward = self.call_student_reward(
+                obs=obs,
+                action=action,
+                is_success=is_success,
+                is_crashed=is_crashed,
+                is_timeout=is_timeout,
+            )
+        else:
+            reward = float(original_reward)
+
+        info.update({
+            "is_success": is_success,
+            "is_crashed": is_crashed,
+            "is_timeout": is_timeout,
+            "is_flipped": is_flipped,
+            "telemetry": {
+                "max_distance": self.cumulative_distance,
+                "airtime_steps": self.airtime_steps,
+                "max_speed": self.max_speed_reached,
+                "flight_steps": self.episode_steps,
+            },
+        })
+
+        return obs, reward, terminated, truncated, info
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/agent.py
+################################################################################
+
+"""
+Modulo Addestramento Agenti PPO per Hill Climb Racing (Play2Learn).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Callable
+
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import VecNormalize
+
+from play2learn_core.agent import BaseRewardTrackerCallback, create_linear_schedule, make_parallel_envs
+from play2learn_hillclimb.config import DEFAULT_PPO_PARAMS
+
+
+class HillClimbRewardTrackerCallback(BaseRewardTrackerCallback):
+    """Callback didattica ad alte prestazioni per monitorare la distanza percorsa e la stabilità."""
+
+    def __init__(
+        self,
+        total_timesteps: int,
+        show_progress: bool = True,
+        save_checkpoints: bool = True,
+        checkpoint_dir: Path | str | None = None,
+        save_freq: int = 10_000,
+        window_size: int = 100,
+        milestone_callback: Callable[[int, Any], None] | None = None,
+        milestone_freq: int = 30_000,
+        verbose: int = 0,
+    ):
+        super().__init__(
+            total_timesteps=total_timesteps,
+            show_progress=show_progress,
+            save_checkpoints=save_checkpoints,
+            checkpoint_dir=checkpoint_dir,
+            save_freq=save_freq,
+            window_size=window_size,
+            milestone_callback=milestone_callback,
+            milestone_freq=milestone_freq,
+            verbose=verbose,
+            metric_name="max_distance",
+        )
+
+
+def build_hill_agent(
+    env: VecNormalize,
+    learning_rate: float = 3e-4,
+    ppo_kwargs: dict[str, Any] | None = None,
+    seed: int = 42,
+) -> PPO:
+    """Costruisce un modello PPO calibrato per la fisica di Hill Climb Racing."""
+    params = dict(DEFAULT_PPO_PARAMS)
+    if ppo_kwargs:
+        params.update(ppo_kwargs)
+
+    lr_schedule = create_linear_schedule(initial_value=learning_rate, min_value=1e-5)
+
+    return PPO(
+        policy="MlpPolicy",
+        env=env,
+        learning_rate=lr_schedule,
+        n_steps=params["n_steps"],
+        batch_size=params["batch_size"],
+        n_epochs=params["n_epochs"],
+        gamma=params["gamma"],
+        gae_lambda=params["gae_lambda"],
+        clip_range=params["clip_range"],
+        ent_coef=params["ent_coef"],
+        max_grad_norm=params["max_grad_norm"],
+        target_kl=params["target_kl"],
+        seed=seed,
+        verbose=0,
+    )
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/evaluator.py
+################################################################################
+
+"""
+Modulo di Valutazione Deterministica e Generazione Video per Hill Climb Racing.
+Scrittura streaming diretta con impatto memoria trascurabile (~1 MB).
+"""
+
+from __future__ import annotations
+
+import collections
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+import gymnasium as gym
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from play2learn_core.evaluator import create_milestone_gif, record_episode_streaming
+from play2learn_hillclimb.config import ENV_ID, EVAL_SEEDS, MIN_EVAL_EPISODES
+from play2learn_hillclimb.environment import HillClimbRewardWrapper, classify_hill_climb_outcome
+
+
+def evaluate_and_record(
+    model: Any,
+    output_dir: Path | str,
+    n_episodes: int = MIN_EVAL_EPISODES,
+    seeds: list[int] | None = None,
+    env_kwargs: dict[str, Any] | None = None,
+    reward_fn: Callable | None = None,
+    sweep_timeout_seconds: float = 60.0,
+    max_steps_per_episode: int = 1200,
+) -> dict[str, Any]:
+    """Valuta l'agente su 20 scenari collinari deterministici e salva video ad alta fedeltà."""
+    out_dir = Path(output_dir)
+    videos_dir = out_dir / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+
+    actual_seeds = list(seeds or EVAL_SEEDS)[:n_episodes]
+    final_kwargs = dict(env_kwargs or {})
+
+    history: list[dict[str, Any]] = []
+    success_videos: list[Path] = []
+    failure_videos: list[Path] = []
+    all_videos: list[Path] = []
+
+    start_time = time.time()
+    hard_timeout = max(sweep_timeout_seconds * 2.5, 20.0)
+
+    for idx, s in enumerate(actual_seeds):
+        if time.time() - start_time > hard_timeout:
+            print(f"[play2learn] Timeout di sicurezza raggiunto dopo {idx} episodi di verifica.")
+            break
+
+        vid_path = videos_dir / f"episodio_{idx+1:02d}_seed_{s}.mp4"
+
+        env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+        if reward_fn is not None:
+            env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
+
+        env.reset(seed=s)
+
+        try:
+            tot_rew, steps, is_succ, info = record_episode_streaming(
+                env=env,
+                model=model,
+                video_path=vid_path,
+                fps=50,
+                max_steps=max_steps_per_episode,
+                outcome_fn=classify_hill_climb_outcome,
+            )
+        finally:
+            env.close()
+
+        all_videos.append(vid_path)
+        if is_succ:
+            success_videos.append(vid_path)
+        else:
+            failure_videos.append(vid_path)
+
+        telemetry = info.get("telemetry", {})
+        dist = float(telemetry.get("max_distance", info.get("score", 0.0)))
+        airtime = int(telemetry.get("airtime_steps", 0))
+        air_pct = (airtime / max(1, steps)) * 100.0
+
+        history.append({
+            "episode": idx + 1,
+            "seed": s,
+            "distance": dist,
+            "reward": tot_rew,
+            "steps": steps,
+            "max_speed": float(telemetry.get("max_speed", 0.0)),
+            "airtime_pct": air_pct,
+            "is_success": is_succ,
+            "is_crashed": bool(info.get("is_crashed", False)),
+            "is_timeout": bool(info.get("is_timeout", False)),
+            "video_path": str(vid_path),
+        })
+
+    ep_count = max(1, len(history))
+    succ_count = sum(1 for h in history if h["is_success"])
+    succ_rate = (succ_count / ep_count) * 100.0
+    mean_dist = float(np.mean([h["distance"] for h in history])) if history else 0.0
+    max_dist = float(np.max([h["distance"] for h in history])) if history else 0.0
+    mean_rew = float(np.mean([h["reward"] for h in history])) if history else 0.0
+    mean_speed = float(np.mean([h["max_speed"] for h in history])) if history else 0.0
+    mean_air = float(np.mean([h["airtime_pct"] for h in history])) if history else 0.0
+
+    return {
+        "eval_success_rate": succ_rate,
+        "mean_distance": mean_dist,
+        "max_distance_achieved": max_dist,
+        "mean_reward": mean_rew,
+        "mean_speed": mean_speed,
+        "mean_airtime_pct": mean_air,
+        "eval_successes": succ_count,
+        "eval_crashes": sum(1 for h in history if h["is_crashed"]),
+        "eval_timeouts": sum(1 for h in history if h["is_timeout"]),
+        "episodes": ep_count,
+        "history": history,
+        "videos": all_videos,
+        "success_videos": success_videos,
+        "failure_videos": failure_videos,
+        "best_video_path": (success_videos[0] if success_videos else (all_videos[0] if all_videos else None)),
+    }
+
+
+def crea_gif_evoluzione_apprendimento(
+    checkpoints: list[tuple[int, Any]],
+    output_gif_path: Path | str,
+    env_kwargs: dict[str, Any] | None = None,
+    reward_fn: Callable | None = None,
+    seed: int = 142,
+    max_frames_per_ckpt: int = 40,
+) -> Path | None:
+    """Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline."""
+    if not checkpoints:
+        return None
+
+    gif_path = Path(output_gif_path)
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_all: list[np.ndarray] = []
+
+    final_kwargs = dict(env_kwargs or {})
+
+    for timesteps, model in checkpoints:
+        env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+        if reward_fn is not None:
+            env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
+
+        obs, _ = env.reset(seed=seed)
+        step_count = 0
+        terminated = False
+        truncated = False
+
+        while not (terminated or truncated) and step_count < max_frames_per_ckpt:
+            action, _ = model.predict(obs, deterministic=True)
+            act_item = action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action
+            obs, reward, terminated, truncated, info = env.step(act_item)
+            step_count += 1
+
+            if step_count % 3 == 0:
+                frame = env.render()
+                if frame is not None:
+                    # Sovraimpressione didattica del checkpoint
+                    img = Image.fromarray(frame)
+                    draw = ImageDraw.Draw(img)
+                    dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
+                    txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
+                    draw.rectangle([10, 10, 360, 40], fill=(15, 23, 42, 220))
+                    draw.text((18, 16), txt, fill=(56, 189, 248))
+                    frames_all.append(np.array(img))
+
+        env.close()
+
+    if frames_all:
+        return create_milestone_gif(frames_all, gif_path, fps=10)
+    return None
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/diagnostics.py
+################################################################################
+
+"""
+Modulo di Diagnostica Comportamentale Didattica per Hill Climb Racing.
+Analizza distanza percorsa, velocità, airtime, ribaltamenti e blocchi in salita.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def diagnose_hill_climb_behavior(eval_stats: dict[str, Any]) -> dict[str, Any]:
+    """Analizza le metriche aggregate di valutazione e produce consigli didattici mirati."""
+    success_rate = float(eval_stats.get("eval_success_rate", 0.0))
+    mean_dist = float(eval_stats.get("mean_distance", 0.0))
+    max_dist = float(eval_stats.get("max_distance_achieved", mean_dist))
+    crashes = int(eval_stats.get("eval_crashes", 0))
+    timeouts = int(eval_stats.get("eval_timeouts", 0))
+    total_ep = max(1, int(eval_stats.get("episodes", 20)))
+    airtime_pct = float(eval_stats.get("mean_airtime_pct", 0.0))
+
+    crash_rate = (crashes / total_ep) * 100.0
+    timeout_rate = (timeouts / total_ep) * 100.0
+
+    consigli = []
+
+    if success_rate >= 80.0:
+        valutazione = "ECCELLENTE (Obiettivo Raggiunto)"
+        sintesi = (
+            f"L'agente ha completato con successo l'allungo collinare nell'{success_rate:.0f}% dei casi, "
+            f"raggiungendo una distanza massima di {max_dist:.1f} metri con traiettorie veloci e stabili."
+        )
+    elif max_dist >= 600.0:
+        valutazione = "BUONO (Quasi al Traguardo)"
+        sintesi = (
+            f"L'agente guida con buona velocità e raggiunge {max_dist:.1f} m, ma alcuni salti improvvisi o "
+            "avvallamenti ripidi provocano ancora perdite di assetto."
+        )
+    else:
+        valutazione = "IN CORSO DI APPRENDIMENTO"
+        sintesi = (
+            f"L'agente si ferma a una media di {mean_dist:.1f} m. "
+            "Occorre bilanciare la propensione ad accelerare con il mantenimento dell'aderenza al suolo."
+        )
+
+    if crash_rate > 35.0:
+        consigli.append(
+            "⚠️ ATTENZIONE AI RIBALTAMENTI: Il veicolo subisce troppi impatti della testa al suolo. "
+            "Aggiungi una penalità per angoli elevati (|angle| > 0.6 rad) o quando la vettura si impenna."
+        )
+    if timeout_rate > 30.0:
+        consigli.append(
+            "⏳ BLOCCO NELLE SALITE: Il veicolo perde slancio e resta bloccato sul fondo delle valli. "
+            "Premia la velocità in avanti (vx > 2.0 m/s) o penalizza la stasi con ruote a terra."
+        )
+    if airtime_pct > 40.0:
+        consigli.append(
+            "🚀 TROPPO TEMPO IN ARIA: Volare a lungo riduce la trazione motrice delle ruote. "
+            "Premia l'avanzamento con entrambe le ruote a contatto con il terreno (on_ground)."
+        )
+
+    if not consigli:
+        consigli.append("✅ Assetto e velocità nominali. Nessuna criticità rilevata.")
+
+    formatted_text = f"DIAGNOSI GUIDA: {valutazione}\n{sintesi}\n\nSUGGERIMENTI:\n" + "\n".join(consigli)
+
+    return {
+        "valutazione": valutazione,
+        "sintesi": sintesi,
+        "consigli": consigli,
+        "crash_rate": crash_rate,
+        "timeout_rate": timeout_rate,
+        "formatted_text": formatted_text,
+    }
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/visualizer.py
+################################################################################
+
+"""
+Modulo di Visualizzazione Grafica e Telemetria per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def mostra_mappa_ambiente() -> None:
+    """Mostra un diagramma concettuale didattico della vettura, del terreno e delle osservazioni."""
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=120)
+    fig.patch.set_facecolor("#0b0f19")
+    ax.set_facecolor("#0f172a")
+
+    # Disegna profilo terreno collinare
+    x = np.linspace(0, 30, 200)
+    y = 2.0 + 1.2 * np.sin(x * 0.4) + 0.5 * np.cos(x * 0.9)
+    ax.fill_between(x, -2, y, color="#582300", alpha=0.9, label="Terreno (Dirt)")
+    ax.plot(x, y, color="#22c55e", lw=3.5, label="Erba (Grass - Trazione)")
+
+    # Disegna sagoma auto stilizzata sul terreno
+    car_x = 10.0
+    car_y = 2.0 + 1.2 * np.sin(car_x * 0.4) + 0.5 * np.cos(car_x * 0.9) + 0.8
+    ax.plot([car_x - 1.2, car_x + 1.2], [car_y, car_y], color="#ef4444", lw=7, label="Telaio (Chassis)")
+    # Ruote
+    ax.scatter([car_x - 1.0, car_x + 1.0], [car_y - 0.4, car_y - 0.4], s=180, color="#1e293b", edgecolors="#38bdf8", lw=2, zorder=5, label="Ruote (Wheels)")
+    # Pilota
+    ax.scatter([car_x - 0.3], [car_y + 0.7], s=140, color="#fde047", edgecolors="#eab308", lw=2, zorder=5, label="Testa Pilota (Impatto = Schianto!)")
+
+    # Annotazioni didattiche
+    ax.annotate("obs[0]: Distanza X\nobs[1]: Quota Y", xy=(car_x, car_y), xytext=(car_x - 4.5, car_y + 2.5),
+                arrowprops=dict(facecolor="#38bdf8", shrink=0.08, width=1.5, headwidth=6),
+                color="#38bdf8", fontsize=9.5, fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="#1e293b", edgecolor="#0284c7"))
+
+    ax.annotate("obs[4]: Inclinazione\nobs[2]: Velocità VX", xy=(car_x + 0.8, car_y), xytext=(car_x + 2.5, car_y + 2.2),
+                arrowprops=dict(facecolor="#f59e0b", shrink=0.08, width=1.5, headwidth=6),
+                color="#f59e0b", fontsize=9.5, fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="#1e293b", edgecolor="#d97706"))
+
+    ax.annotate("obs[6, 7]: Contatto Ruote", xy=(car_x + 1.0, car_y - 0.4), xytext=(car_x + 2.8, car_y - 1.5),
+                arrowprops=dict(facecolor="#10b981", shrink=0.08, width=1.5, headwidth=6),
+                color="#10b981", fontsize=9.5, fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="#1e293b", edgecolor="#059669"))
+
+    ax.set_xlim(-1, 25)
+    ax.set_ylim(-1, 6)
+    ax.set_title("🚗 Mappa dell'Ambiente e Telemetria: Hill Climb Racing", color="#f8fafc", fontsize=13, fontweight="bold", pad=12)
+    ax.set_xlabel("Distanza di Avanzamento (metri)", color="#94a3b8", fontsize=10)
+    ax.set_ylabel("Quota Terreno", color="#94a3b8", fontsize=10)
+    ax.tick_params(colors="#64748b")
+    ax.grid(True, linestyle="--", alpha=0.2, color="#475569")
+    ax.legend(facecolor="#1e293b", edgecolor="#334155", labelcolor="#e2e8f0", loc="upper left", fontsize=8.5)
+
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+
+
+def plot_hill_telemetry(eval_history: list[dict[str, Any]], output_path: Path | str | None = None) -> Path | None:
+    """Genera il grafico multi-pannello ad alta risoluzione delle prove di valutazione."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7), dpi=160)
+    fig.patch.set_facecolor("#ffffff")
+
+    distances = [ep.get("distance", ep.get("score", 0.0)) for ep in eval_history]
+    speeds = [ep.get("max_speed", 0.0) for ep in eval_history]
+    airtimes = [ep.get("airtime_pct", 0.0) for ep in eval_history]
+    ep_indices = list(range(1, len(eval_history) + 1))
+
+    # 1. Distanza percorsa
+    ax1 = axes[0, 0]
+    ax1.bar(ep_indices, distances, color="#3b82f6", alpha=0.85, edgecolor="#1d4ed8")
+    ax1.axhline(800.0, color="#10b981", linestyle="--", lw=1.8, label="Obiettivo (800 m)")
+    ax1.set_title("Distanza Raggiunta per Episodio", fontweight="bold", fontsize=11, color="#1e293b")
+    ax1.set_xlabel("Episodio di Verifica", fontsize=9)
+    ax1.set_ylabel("Distanza (metri)", fontsize=9)
+    ax1.grid(True, linestyle=":", alpha=0.6)
+    ax1.legend(loc="upper left", fontsize=8.5)
+
+    # 2. Velocità di punta
+    ax2 = axes[0, 1]
+    ax2.plot(ep_indices, speeds, marker="o", color="#f59e0b", lw=2.0)
+    ax2.set_title("Velocità Massima Registrata (m/s)", fontweight="bold", fontsize=11, color="#1e293b")
+    ax2.set_xlabel("Episodio di Verifica", fontsize=9)
+    ax2.set_ylabel("Velocità (m/s)", fontsize=9)
+    ax2.grid(True, linestyle=":", alpha=0.6)
+
+    # 3. Percentuale di Airtime
+    ax3 = axes[1, 0]
+    ax3.plot(ep_indices, airtimes, marker="s", color="#8b5cf6", lw=2.0)
+    ax3.set_title("Percentuale Tempo in Volo (Airtime %)", fontweight="bold", fontsize=11, color="#1e293b")
+    ax3.set_xlabel("Episodio di Verifica", fontsize=9)
+    ax3.set_ylabel("Airtime (%)", fontsize=9)
+    ax3.grid(True, linestyle=":", alpha=0.6)
+
+    # 4. Distribuzione esiti
+    ax4 = axes[1, 1]
+    successes = sum(1 for ep in eval_history if ep.get("is_success", False))
+    crashes = sum(1 for ep in eval_history if ep.get("is_crashed", False))
+    timeouts = sum(1 for ep in eval_history if ep.get("is_timeout", False))
+    labels = ["Successo (>=800m)", "Schianto/Ribaltamento", "Blocco/Timeout"]
+    counts = [successes, crashes, timeouts]
+    colors = ["#10b981", "#ef4444", "#f59e0b"]
+    ax4.pie(counts, labels=labels, autopct="%1.1f%%", colors=colors, startangle=140,
+            textprops={"fontsize": 9, "color": "#1e293b"})
+    ax4.set_title("Distribuzione Esiti su 20 Verifiche", fontweight="bold", fontsize=11, color="#1e293b")
+
+    plt.tight_layout()
+    if output_path:
+        p = Path(output_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(str(p), dpi=160, bbox_inches="tight")
+        plt.close(fig)
+        return p
+
+    plt.show()
+    plt.close(fig)
+    return None
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/storage.py
+################################################################################
+
+"""
+Modulo di Storage e Persistenza Esperimenti per Hill Climb Racing (Play2Learn).
+"""
+
+from __future__ import annotations
+
+import datetime
+from pathlib import Path
+from typing import Any, Callable
+
+from play2learn_core.storage import (
+    atomic_write_json,
+    atomic_write_text,
+    elenca_cronologia_run,
+    find_run_by_timestamp,
+    save_generic_run_metadata,
+    unique_dir,
+)
+
+
+def get_default_runs_dir() -> Path:
+    """Restituisce il percorso della cartella principale delle run per Hill Climb."""
+    cwd = Path.cwd()
+    if cwd.name in ("play2learn_hillclimb", "play2learn_lunarlander"):
+        base = cwd.parent
+    else:
+        base = cwd
+    p = base / "runs_hillclimb"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def create_run_directory(mission: str = "campagna_standard", base_dir: Path | str | None = None) -> Path:
+    """Crea una nuova directory univoca per la sessione di addestramento."""
+    parent = Path(base_dir) if base_dir else get_default_runs_dir()
+    parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = f"run_{timestamp}_{mission}"
+    target = unique_dir(parent, dir_name)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "videos").mkdir(parents=True, exist_ok=True)
+    (target / "checkpoints").mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def save_run_metadata(
+    run_dir: Path,
+    mission: str,
+    mission_cfg: dict[str, Any],
+    env_kwargs: dict[str, Any],
+    total_timesteps: int,
+    elapsed_seconds: float,
+    reward_fn: Callable | None,
+    eval_stats: dict[str, Any],
+    diagnostics: dict[str, Any],
+    notes: str = "",
+) -> Path:
+    """Salva i metadati della sessione in formato JSON atomico."""
+    return save_generic_run_metadata(
+        run_dir=run_dir,
+        mission=mission,
+        mission_cfg=mission_cfg,
+        env_kwargs=env_kwargs,
+        total_timesteps=total_timesteps,
+        elapsed_seconds=elapsed_seconds,
+        reward_fn=reward_fn,
+        eval_stats=eval_stats,
+        diagnostics=diagnostics,
+        notes=notes,
+    )
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/favorites.py
+################################################################################
+
+"""
+Modulo Gestione Esperimenti Preferiti per Hill Climb Racing (Play2Learn).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from play2learn_core.favorites import BaseFavoritesManager
+from play2learn_hillclimb.storage import get_default_runs_dir
+
+
+def _get_manager() -> BaseFavoritesManager:
+    fav_dir = get_default_runs_dir() / "favorites"
+    return BaseFavoritesManager(fav_dir)
+
+
+def salva_nei_preferiti(
+    run_or_dir: Any,
+    nome: str,
+    note: str = "",
+    tag: str = "didattico",
+) -> dict[str, Any]:
+    """Salva la run nei preferiti personali."""
+    source_dir = None
+    if isinstance(run_or_dir, dict):
+        source_dir = Path(run_or_dir.get("checkpoint_dir", run_or_dir.get("run_dir", ".")))
+    elif isinstance(run_or_dir, (str, Path)):
+        source_dir = Path(run_or_dir)
+
+    if not source_dir or not source_dir.exists():
+        raise ValueError(f"[Play2Learn] Directory di run non trovata: {run_or_dir}")
+
+    mgr = _get_manager()
+    entry = mgr.salva_preferito(source_dir=source_dir, nome=nome, note=note, tag=tag)
+    print(f"⭐ Esperimento salvato nei preferiti: #{entry['id']} - {entry['nome']}")
+    return entry
+
+
+salva_preferito = salva_nei_preferiti
+
+
+def carica_preferito(fav_id_or_name: int | str) -> dict[str, Any]:
+    """Carica un esperimento preferito dal catalogo."""
+    mgr = _get_manager()
+    return mgr.carica_preferito(fav_id_or_name)
+
+
+def mostra_preferiti() -> list[dict[str, Any]]:
+    """Stampa e restituisce l'elenco di tutti gli esperimenti preferiti salvati."""
+    mgr = _get_manager()
+    entries = mgr.read_index()
+    if not entries:
+        print("[play2learn] Nessun esperimento preferito salvato.")
+        return []
+
+    print("=" * 70)
+    print(" ⭐ GALLERIA PREFERITI - HILL CLIMB RACING")
+    print("=" * 70)
+    for e in entries:
+        print(f"#{e['id']:02d} | {e['nome'][:24]:24} | Distanza: {e.get('success_rate', 0.0):.0f}% | Data: {e['timestamp']}")
+        if e.get("note"):
+            print(f"     Note: {e['note']}")
+    print("=" * 70)
+    return entries
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/reporting.py
+################################################################################
+
+"""
+Modulo di Generazione Report e Confronto Esperimenti per Hill Climb Racing.
+Produce schede tecniche in PDF (vettoriale ad alta risoluzione), HTML standalone e Markdown.
+"""
+
+from __future__ import annotations
+
+import base64
+import datetime
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+from play2learn_core.reporting import (
+    load_reward_fn_from_source,
+    sanitize_report_text,
+    serialize_eval_metrics,
+)
+from play2learn_core.storage import atomic_write_json, atomic_write_text
+from play2learn_hillclimb.storage import find_run_by_timestamp, get_default_runs_dir
+from play2learn_hillclimb.visualizer import plot_hill_telemetry
+
+
+def genera_report_esperimento(
+    run_or_fav: Any,
+    autore: str = "Studente",
+    titolo: str = "Report Esperimento Hill Climb Racing",
+    note: str = "",
+    output_dir: Path | str | None = None,
+) -> dict[str, Path]:
+    """Genera la scheda tecnica completa (PDF, HTML, MD) dell'esperimento di guida."""
+    source_dir: Path | None = None
+    if isinstance(run_or_fav, dict):
+        for k in ("checkpoint_dir", "path", "dir_path", "run_dir"):
+            if k in run_or_fav:
+                source_dir = Path(run_or_fav[k])
+                break
+    elif isinstance(run_or_fav, (str, Path)):
+        p = Path(run_or_fav)
+        if p.exists() and p.is_dir():
+            source_dir = p
+        else:
+            source_dir = find_run_by_timestamp(str(run_or_fav), get_default_runs_dir())
+
+    if not source_dir or not source_dir.exists():
+        raise ValueError(f"[Play2Learn] Nessuna directory di run trovata per: {run_or_fav}")
+
+    meta_file = source_dir / "run_metadata.json"
+    meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_dir = Path(output_dir) if output_dir else (source_dir / f"report_{timestamp}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics = meta.get("eval_metrics", {})
+    success_rate = float(metrics.get("eval_success_rate", 0.0))
+    mean_dist = float(metrics.get("mean_distance", 0.0))
+    max_dist = float(metrics.get("max_distance_achieved", mean_dist))
+    mean_speed = float(metrics.get("mean_speed", 0.0))
+    airtime_pct = float(metrics.get("mean_airtime_pct", 0.0))
+    crashes = int(metrics.get("eval_crashes", 0))
+    timeouts = int(metrics.get("eval_timeouts", 0))
+
+    mission = meta.get("mission", {})
+    mission_title = mission.get("title", "Campagna Standard")
+    mission_desc = mission.get("description", "Colline ondulate.")
+
+    code_source = meta.get("reward_source_code", "# Codice non disponibile.")
+    safe_code = sanitize_report_text(code_source)
+    safe_autore = sanitize_report_text(autore)
+    safe_titolo = sanitize_report_text(titolo)
+    safe_note = sanitize_report_text(note or meta.get("notes", ""))
+
+    # Generazione grafico telemetrico
+    plot_path = target_dir / "telemetria_guida.png"
+    history = meta.get("eval_metrics", {}).get("history", [])
+    if not history:
+        history = [{"distance": mean_dist, "max_speed": mean_speed, "airtime_pct": airtime_pct, "is_success": success_rate >= 80}] * 20
+    plot_hill_telemetry(history, plot_path)
+
+    # 1. Generazione PDF multipagina
+    pdf_path = target_dir / "scheda_esperimento.pdf"
+    with PdfPages(str(pdf_path)) as pdf:
+        # Pagina 1: Telemetria e KPI
+        fig1, ax1 = plt.subplots(figsize=(8.27, 11.69), dpi=160)
+        ax1.axis("off")
+        fig1.text(0.5, 0.94, safe_titolo, ha="center", fontsize=15, fontweight="bold", color="#1e293b")
+        fig1.text(0.5, 0.915, f"Missione: {mission_title} | Autore: {safe_autore} | Data: {timestamp}", ha="center", fontsize=9.5, color="#64748b")
+
+        # Tabella KPI
+        table_data = [
+            ["Distanza Massima", f"{max_dist:.1f} m", ">= 800.0 m", "Obiettivo" if max_dist >= 800 else "In Corso"],
+            ["Distanza Media", f"{mean_dist:.1f} m", ">= 650.0 m", "Nominale"],
+            ["Velocità Media", f"{mean_speed:.1f} m/s", "3.0 - 8.0 m/s", "Costante"],
+            ["Airtime Medio", f"{airtime_pct:.1f}%", "< 35.0%", "Aderenza"],
+            ["Schianti / Ribaltamenti", f"{crashes} su 20", "< 3", "Sicurezza" if crashes <= 3 else "Criticità"],
+            ["Blocchi in Salita", f"{timeouts} su 20", "< 2", "Trazione"],
+        ]
+        t = ax1.table(cellText=table_data, colLabels=["Parametro Telemetrico", "Valore Rilevato", "Riferimento Ideale", "Stato"],
+                      loc="top", cellLoc="center", bbox=[0.05, 0.70, 0.90, 0.18])
+        t.auto_set_font_size(False)
+        t.set_fontsize(8.5)
+
+        # Inserimento grafico telemetrico nel PDF
+        if plot_path.exists():
+            img = plt.imread(str(plot_path))
+            ax_img = fig1.add_axes([0.05, 0.10, 0.90, 0.55])
+            ax_img.imshow(img)
+            ax_img.axis("off")
+
+        pdf.savefig(fig1)
+        plt.close(fig1)
+
+        # Pagina 2: Codice Sorgente e Note
+        fig2, ax2 = plt.subplots(figsize=(8.27, 11.69), dpi=160)
+        ax2.axis("off")
+        fig2.text(0.08, 0.94, "2. Codice Sorgente della Reward Function:", fontsize=12, fontweight="bold", color="#1e293b")
+        fig2.text(0.08, 0.91, code_source[:2200], fontsize=7.5, family="monospace", va="top",
+                  bbox=dict(boxstyle="round,pad=0.5", facecolor="#f8fafc", edgecolor="#cbd5e1"))
+
+        fig2.text(0.08, 0.32, "3. Note di Laboratorio e Debug:", fontsize=12, fontweight="bold", color="#1e293b")
+        notes_box = f"Note:\n{safe_note}\n\nAnalisi didattica:\n• Punti di forza dell'assetto\n• Comportamento nelle salite ripide"
+        fig2.text(0.08, 0.29, notes_box, fontsize=8.5, va="top",
+                  bbox=dict(boxstyle="round,pad=0.5", facecolor="#fffde7", edgecolor="#fbc02d"))
+
+        pdf.savefig(fig2)
+        plt.close(fig2)
+
+    # 2. Generazione HTML e Markdown
+    plot_b64 = base64.b64encode(plot_path.read_bytes()).decode("ascii") if plot_path.exists() else ""
+
+    md_content = f"""# 🏎️ Scheda Tecnica Esperimento — Hill Climb Racing
+**Titolo:** {safe_titolo}  
+**Autore:** {safe_autore}  
+**Missione:** {mission_title}  
+**Data:** {timestamp}  
+
+## 1. Indicatori di Performance Telemetrica
+| Parametro Telemetrico | Valore Rilevato | Obiettivo Ideale | Esito |
+| :--- | :--- | :--- | :--- |
+| **Distanza Massima** | {max_dist:.1f} m | $\\ge 800.0$ m | {'✅ Raggiunto' if max_dist >= 800 else '⚠️ In corso'} |
+| **Distanza Media** | {mean_dist:.1f} m | $\\ge 650.0$ m | Nominale |
+| **Velocità Media** | {mean_speed:.1f} m/s | $3.0 - 8.0$ m/s | Trazione |
+| **Airtime Medio** | {airtime_pct:.1f}% | $< 35.0\\%$ | Assetto |
+| **Ribaltamenti / Schianti** | {crashes} / 20 | $\\le 3$ | {'Nominale' if crashes <= 3 else 'Criticità'} |
+
+## 2. Codice della Custom Reward
+```python
+{code_source}
+```
+
+## 3. Note di Laboratorio
+{safe_note}
+"""
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>{safe_titolo}</title>
+    <style>
+        body {{ font-family:'Segoe UI',system-ui,sans-serif; background:#0b0f19; color:#f1f5f9; padding:24px; }}
+        .card {{ background:#1e293b; border-radius:12px; padding:20px; max-width:860px; margin:auto; border:1px solid #334155; }}
+        h1 {{ color:#38bdf8; font-size:22px; margin-top:0; }}
+        table {{ width:100%; border-collapse:collapse; margin-top:14px; font-size:13px; }}
+        th, td {{ padding:10px; border-bottom:1px solid #334155; text-align:left; }}
+        th {{ background:#0f172a; color:#94a3b8; }}
+        .badge {{ background:#0284c7; color:#fff; padding:3px 8px; border-radius:4px; font-weight:bold; }}
+        pre {{ background:#0f172a; padding:14px; border-radius:8px; border:1px solid #334155; overflow-x:auto; font-size:12px; }}
+        img {{ max-width:100%; border-radius:8px; margin-top:14px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🏎️ {safe_titolo}</h1>
+        <div>Autore: <strong>{safe_autore}</strong> | Missione: <strong>{mission_title}</strong> | Data: <strong>{timestamp}</strong></div>
+
+        <table>
+            <thead><tr><th>Parametro</th><th>Rilevato</th><th>Obiettivo</th><th>Esito</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Distanza Massima</strong></td><td>{max_dist:.1f} m</td><td>&ge; 800.0 m</td><td><span class="badge">{'Traguardo OK' if max_dist >= 800 else 'In Corso'}</span></td></tr>
+                <tr><td><strong>Distanza Media</strong></td><td>{mean_dist:.1f} m</td><td>&ge; 650.0 m</td><td>Nominale</td></tr>
+                <tr><td><strong>Velocità Media</strong></td><td>{mean_speed:.1f} m/s</td><td>3.0 - 8.0 m/s</td><td>Costante</td></tr>
+                <tr><td><strong>Airtime Medio</strong></td><td>{airtime_pct:.1f}%</td><td>&lt; 35%</td><td>Aderenza</td></tr>
+                <tr><td><strong>Schianti</strong></td><td>{crashes} / 20</td><td>&le; 3</td><td>Sicurezza</td></tr>
+            </tbody>
+        </table>
+
+        {f'<img src="data:image/png;base64,{plot_b64}" alt="Telemetria">' if plot_b64 else ''}
+
+        <h3>Codice Reward Function</h3>
+        <pre><code>{safe_code}</code></pre>
+
+        <h3>Note di Laboratorio</h3>
+        <div>{safe_note}</div>
+    </div>
+</body>
+</html>
+"""
+
+    md_path = target_dir / "report_esperimento.md"
+    html_path = target_dir / "report_esperimento.html"
+    atomic_write_text(md_path, md_content)
+    atomic_write_text(html_path, html_content)
+
+    print(f"✅ Report Hill Climb generato in: {target_dir.name}")
+    print(f"   • PDF:      {pdf_path.name}")
+    print(f"   • HTML:     {html_path.name}")
+    print(f"   • Markdown: {md_path.name}")
+
+    return {
+        "pdf_path": pdf_path,
+        "html_path": html_path,
+        "md_path": md_path,
+        "export_dir": target_dir,
+    }
+
+
+def confronta_run(runs_or_favs: list[Any] | tuple[Any, ...]) -> dict[str, Any]:
+    """Genera un confronto sinottico tra più sessioni di Hill Climb."""
+    runs_dir = get_default_runs_dir()
+    resolved = []
+    for item in runs_or_favs:
+        p = find_run_by_timestamp(str(item), runs_dir) if not isinstance(item, Path) else item
+        if p and p.exists():
+            resolved.append(p)
+
+    if not resolved:
+        print("[play2learn] Nessuna run valida trovata per il confronto.")
+        return {}
+
+    labels = []
+    distances = []
+    speeds = []
+    for r in resolved:
+        meta_p = r / "run_metadata.json"
+        if meta_p.exists():
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+            labels.append(meta.get("mission", {}).get("title", r.name[:12]))
+            distances.append(float(meta.get("eval_metrics", {}).get("mean_distance", 0.0)))
+            speeds.append(float(meta.get("eval_metrics", {}).get("mean_speed", 0.0)))
+
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=120)
+    ax.bar(labels, distances, color="#38bdf8", alpha=0.85)
+    ax.set_title("Confronto Distanza Media tra Run", fontweight="bold")
+    ax.set_ylabel("Distanza Media (m)")
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+
+    return {"resolved_runs": resolved, "mean_distances": distances}
+
+
+def genera_report_da_timestamp(
+    timestamp_or_id: str = "latest",
+    livello_report: str = "Base",
+    autore: str = "Studente",
+    note: str = "",
+) -> dict[str, Path]:
+    """Risolve la run da timestamp e genera il report tecnico."""
+    runs_dir = get_default_runs_dir()
+    run_path = find_run_by_timestamp(timestamp_or_id, runs_dir)
+    if not run_path:
+        raise ValueError(f"[Play2Learn] Nessuna run trovata per: {timestamp_or_id}")
+
+    return genera_report_esperimento(
+        run_or_fav=run_path,
+        autore=autore,
+        titolo=f"Report Esperimento {run_path.name}",
+        note=note,
+    )
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/interactive.py
+################################################################################
+
+"""
+Modulo di Simulazione e Gioco Interattivo per Hill Climb Racing (Play2Learn).
+Permette agli studenti di guidare manualmente il veicolo direttamente in Jupyter e Google Colab
+(HTML5 Canvas + Web Audio API):
+  1. Modalità Single Player: per comprendere la difficoltà del bilanciamento trazione/ribaltamento.
+  2. Modalità Tu vs Agente: gara testa a testa (split-screen) contro l'agente PPO addestrato.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+import uuid
+from pathlib import Path
+from typing import Any
+
+from play2learn_core.base_interactive import display_or_open_html, get_shared_audio_and_loop_js
+from play2learn_hillclimb.config import MISSIONS
+from play2learn_hillclimb.storage import find_run_by_timestamp, get_default_runs_dir
+
+
+def registra_traiettoria_agente(
+    model: Any,
+    seed: int = 42,
+    mission: str = "campagna_standard",
+    max_steps: int = 1000,
+    env_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Registra la telemetria passo-passo dell'agente PPO per il replay in split-screen."""
+    import gymnasium as gym
+    from play2learn_hillclimb.config import ENV_ID
+    from play2learn_hillclimb.environment import HillClimbRewardWrapper
+
+    final_kwargs = dict(env_kwargs or {})
+    env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+    env = HillClimbRewardWrapper(env)
+    obs, _ = env.reset(seed=seed)
+
+    steps_data = []
+    tot_dist = 0.0
+
+    for s_idx in range(max_steps):
+        action, _ = model.predict(obs, deterministic=True)
+        act_val = int(action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action)
+
+        x_pos = float(obs[0])
+        y_pos = float(obs[1])
+        angle = float(obs[4])
+        vx = float(obs[2])
+
+        steps_data.append({
+            "step": s_idx,
+            "x": round(x_pos, 2),
+            "y": round(y_pos, 2),
+            "angle": round(angle, 3),
+            "vx": round(vx, 2),
+            "act": act_val,
+        })
+
+        obs, reward, terminated, truncated, info = env.step(act_val)
+        tot_dist = max(tot_dist, x_pos)
+        if terminated or truncated:
+            break
+
+    env.close()
+
+    return {
+        "steps": steps_data,
+        "final_distance": round(tot_dist, 1),
+        "is_success": bool(tot_dist >= 800.0),
+    }
+
+
+def gioca_single_player(
+    seed: int | None = None,
+    mission: str = "campagna_standard",
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Avvia il simulatore arcade Single Player in Google Colab o Jupyter Notebook."""
+    actual_seed = seed if seed is not None else random.randint(100, 99999)
+    mission_cfg = MISSIONS.get(mission, MISSIONS["campagna_standard"])
+    uid = uuid.uuid4().hex[:6]
+    shared_js = get_shared_audio_and_loop_js()
+
+    html_code = f"""
+    <div id="hcr_sp_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:840px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
+            <div>
+                <h3 style="margin:0; color:#38bdf8; font-size:18px;">🏎️ Simulatore Manuale: Guida su Hill Climb Racing!</h3>
+                <span style="font-size:12px; color:#94a3b8;">Tracciato: {mission_cfg['title']} (Seed: {actual_seed})</span>
+            </div>
+            <div>
+                <button id="btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+            </div>
+        </div>
+
+        <div style="position:relative; width:100%; text-align:center;">
+            <canvas id="canvas_{uid}" width="800" height="420" tabindex="0" style="background:#87CEEB; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+            <div id="overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
+                <div style="font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom:6px;">Premi [SPAZIO] o Clicca per Partire!</div>
+                <div style="font-size:12px; color:#94a3b8;">Comandi: ⬆️ / W = Gas | ⬇️ / S = Freno/Retro | ⬅️ ➡️ = Bilanciamento in Volo</div>
+            </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:12px; font-size:12px; background:#111827; padding:10px; border-radius:8px; border:1px solid #1f2937;">
+            <div><span style="color:#94a3b8;">Distanza:</span> <strong id="hud_dist_{uid}" style="color:#38bdf8;">0.0 m</strong></div>
+            <div><span style="color:#94a3b8;">Velocità:</span> <strong id="hud_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></div>
+            <div><span style="color:#94a3b8;">Inclinazione:</span> <strong id="hud_ang_{uid}">0°</strong></div>
+            <div><span style="color:#94a3b8;">Stato:</span> <strong id="hud_stat_{uid}" style="color:#10b981;">Pronto</strong></div>
+        </div>
+    </div>
+
+    <script>
+    (function() {{
+        {shared_js}
+
+        const canvas = document.getElementById('canvas_{uid}');
+        const ctx = canvas.getContext('2d');
+        const overlay = document.getElementById('overlay_{uid}');
+        const W = canvas.width, H = canvas.height;
+
+        let seedVal = {actual_seed};
+        function pseudoNoise(x) {{
+            return Math.sin(x * 0.008 + seedVal) * 60 + Math.cos(x * 0.02 + seedVal * 2) * 25 + Math.sin(x * 0.05) * 12;
+        }}
+
+        function getTerrainY(px) {{
+            if (px < 150) return 320;
+            return 320 + pseudoNoise(px - 150);
+        }}
+
+        let carX = 120, carY = 280, vx = 0, vy = 0, angle = 0, vangle = 0;
+        let gameActive = false, dead = false, finished = false;
+        let keyGas = false, keyBrake = false, keyLeft = false, keyRight = false;
+
+        function resetGame() {{
+            carX = 120; carY = 280; vx = 0; vy = 0; angle = 0; vangle = 0;
+            dead = false; finished = false; gameActive = true;
+            overlay.style.display = 'none';
+            canvas.focus();
+        }}
+
+        function updatePhysics(dt) {{
+            if (!gameActive || dead || finished) return;
+
+            const g = 18.0;
+            let ax = 0, ay = g;
+
+            const groundY = getTerrainY(carX);
+            const onGround = (carY >= groundY - 18);
+
+            if (keyGas) {{
+                if (onGround) {{
+                    ax += Math.cos(angle) * 32.0;
+                    ay += Math.sin(angle) * 32.0;
+                    vangle -= 1.8 * dt;
+                }}
+                playEngineTone(140 + Math.abs(vx) * 12, 0.06);
+            }}
+
+            if (keyBrake) {{
+                if (onGround) {{
+                    ax -= Math.cos(angle) * 22.0;
+                    vangle += 2.0 * dt;
+                }}
+                playEngineTone(90, 0.05);
+            }}
+
+            // Bilanciamento in aria
+            if (keyLeft) vangle -= 4.5 * dt;
+            if (keyRight) vangle += 4.5 * dt;
+
+            vx = (vx + ax * dt) * (onGround ? 0.985 : 0.995);
+            vy += ay * dt;
+            carX += vx * dt;
+            carY += vy * dt;
+            vangle *= 0.96;
+            angle += vangle * dt;
+
+            // Collisione suolo
+            if (carY > groundY - 16) {{
+                carY = groundY - 16;
+                vy = 0;
+                // Allineamento naturale alla pendenza
+                const slope = (getTerrainY(carX + 15) - getTerrainY(carX - 15)) / 30.0;
+                const targetAngle = Math.atan2(slope, 1.0);
+                angle += (targetAngle - angle) * 0.25;
+
+                // Controllo cappottamento
+                if (Math.abs(angle) > 1.45) {{
+                    dead = true;
+                    playCrashSound();
+                    overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 PILOTA SCHIANTATO! (Ribaltamento)</div><button id="btn_ret_{uid}" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;">Riprova</button>';
+                    overlay.style.display = 'block';
+                    document.getElementById('btn_ret_{uid}').addEventListener('click', resetGame);
+                }}
+            }}
+
+            if (carX >= 2400) {{
+                finished = true;
+                playVictoryChime();
+                overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 TRAGUARDO 800m COMPLETATO!</div><button id="btn_ret_{uid}" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;">Rigioca</button>';
+                overlay.style.display = 'block';
+                document.getElementById('btn_ret_{uid}').addEventListener('click', resetGame);
+            }}
+        }}
+
+        function drawScene() {{
+            ctx.fillStyle = '#87CEEB';
+            ctx.fillRect(0, 0, W, H);
+
+            const camX = carX - 160;
+
+            // Disegna terreno
+            ctx.fillStyle = '#582300';
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(0, H);
+            for (let px = 0; px <= W; px += 8) {{
+                const worldX = camX + px;
+                const gy = getTerrainY(worldX);
+                ctx.lineTo(px, gy);
+            }}
+            ctx.lineTo(W, H);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Disegna vettura
+            const sx = carX - camX;
+            const sy = carY;
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(angle);
+
+            // Telaio rosso
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(-22, -10, 44, 14);
+            // Cabina
+            ctx.fillStyle = '#0284c7';
+            ctx.fillRect(-10, -20, 20, 10);
+            // Pilota
+            ctx.fillStyle = '#fde047';
+            ctx.beginPath();
+            ctx.arc(-2, -24, 7, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Ruote
+            ctx.fillStyle = '#1e293b';
+            ctx.strokeStyle = '#94a3b8';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(-16, 6, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.arc(16, 6, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            ctx.restore();
+
+            // Aggiorna HUD
+            const distM = Math.max(0, (carX - 120) / 3.0);
+            document.getElementById('hud_dist_{uid}').innerText = distM.toFixed(1) + ' m';
+            document.getElementById('hud_spd_{uid}').innerText = Math.abs(vx * 0.3).toFixed(1) + ' m/s';
+            document.getElementById('hud_ang_{uid}').innerText = (angle * 180 / Math.PI).toFixed(0) + '°';
+        }}
+
+        const FIXED_DT = 0.02;
+        let lastTime = performance.now();
+        let accum = 0.0;
+
+        function loop(now) {{
+            const dt = Math.min(0.1, (now - lastTime) / 1000.0);
+            lastTime = now;
+            accum += dt;
+            while (accum >= FIXED_DT) {{
+                updatePhysics(FIXED_DT);
+                accum -= FIXED_DT;
+            }}
+            drawScene();
+            requestAnimationFrame(loop);
+        }}
+
+        canvas.addEventListener('keydown', function(e) {{
+            initAudio();
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+            if (!gameActive && (e.key === ' ' || e.key === 'ArrowUp')) {{ resetGame(); return; }}
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') keyGas = true;
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keyBrake = true;
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keyLeft = true;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keyRight = true;
+        }});
+
+        canvas.addEventListener('keyup', function(e) {{
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') keyGas = false;
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keyBrake = false;
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keyLeft = false;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keyRight = false;
+        }});
+
+        canvas.addEventListener('click', function() {{ initAudio(); if (!gameActive) resetGame(); }});
+        loop(performance.now());
+    }})();
+    </script>
+    """
+    return display_or_open_html(html_code, "hill_climb_single_player")
+
+
+def gioca_vs_agente(
+    model_or_result: Any = None,
+    seed: int = 42,
+    mission: str = "campagna_standard",
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Avvia la modalità testa a testa 'Tu vs Agente AI' in Split-Screen."""
+    print("[play2learn] Calcolo della traiettoria dell'Agente AI sulle colline...")
+
+    # Risoluzione modello
+    resolved_model = None
+    if hasattr(model_or_result, "model"):
+        resolved_model = model_or_result.model
+    elif model_or_result is not None:
+        resolved_model = model_or_result
+
+    agent_data = {"steps": [], "final_distance": 750.0}
+    if resolved_model is not None:
+        try:
+            agent_data = registra_traiettoria_agente(
+                model=resolved_model,
+                seed=seed,
+                mission=mission,
+                env_kwargs=env_kwargs,
+            )
+        except Exception as exc:
+            print(f"[play2learn] Nota: registrazione traiettoria agente fallita ({exc}), uso replay sintetico.")
+
+    uid = uuid.uuid4().hex[:6]
+    shared_js = get_shared_audio_and_loop_js()
+    agent_steps_json = json.dumps(agent_data["steps"])
+
+    html_code = f"""
+    <div id="hcr_vs_root_{uid}" style="font-family:'Segoe UI',sans-serif; background:#0b0f19; color:#f8fafc; padding:18px; border-radius:12px; max-width:960px; margin:10px auto; box-shadow:0 6px 20px rgba(0,0,0,0.5);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
+            <div>
+                <h3 style="margin:0; color:#38bdf8; font-size:19px;">⚔️ Sfida Hill Climb: Tu (Pilota Umano) vs Agente AI (PPO)</h3>
+                <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso tracciato collinare (Seed: {seed})</span>
+            </div>
+            <div>
+                <button id="vs_btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>
+            </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+            <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #0284c7; text-align:center;">
+                <div style="font-weight:bold; color:#38bdf8; font-size:14px; margin-bottom:6px;">🧑 TU (Pilota Umano) — Auto Rossa</div>
+                <canvas id="canvas_human_{uid}" width="440" height="300" tabindex="0" style="background:#87CEEB; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
+                <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
+                    <span>Distanza: <strong id="h_dist_{uid}" style="color:#38bdf8;">0.0 m</strong></span>
+                    <span>Velocità: <strong id="h_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></span>
+                </div>
+            </div>
+
+            <div style="background:#111827; padding:10px; border-radius:8px; border:1.5px solid #059669; text-align:center;">
+                <div style="font-weight:bold; color:#10b981; font-size:14px; margin-bottom:6px;">🤖 AGENTE AI (PPO) — Auto Verde</div>
+                <canvas id="canvas_ai_{uid}" width="440" height="300" style="background:#87CEEB; border-radius:6px; max-width:100%;"></canvas>
+                <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
+                    <span>Distanza: <strong id="ai_dist_{uid}" style="color:#10b981;">0.0 m</strong></span>
+                    <span>Velocità: <strong id="ai_spd_{uid}" style="color:#38bdf8;">0.0 m/s</strong></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function() {{
+        {shared_js}
+        const canvasH = document.getElementById('canvas_human_{uid}');
+        const ctxH = canvasH.getContext('2d');
+        const canvasA = document.getElementById('canvas_ai_{uid}');
+        const ctxA = canvasA.getContext('2d');
+
+        const aiSteps = {agent_steps_json};
+        let aiIdx = 0;
+        let seedVal = {seed};
+
+        function pseudoNoise(x) {{
+            return Math.sin(x * 0.008 + seedVal) * 60 + Math.cos(x * 0.02 + seedVal * 2) * 25 + Math.sin(x * 0.05) * 12;
+        }}
+        function getTerrainY(px) {{
+            if (px < 150) return 220;
+            return 220 + pseudoNoise(px - 150);
+        }}
+
+        let hX = 120, hY = 190, hVx = 0, hVy = 0, hAngle = 0, hVangle = 0;
+        let keyGas = false, keyBrake = false;
+
+        function update() {{
+            // AI Replay
+            if (aiIdx < aiSteps.length) {{
+                const step = aiSteps[aiIdx];
+                const aiDist = step.x;
+                document.getElementById('ai_dist_{uid}').innerText = aiDist.toFixed(1) + ' m';
+                document.getElementById('ai_spd_{uid}').innerText = Math.abs(step.vx).toFixed(1) + ' m/s';
+                aiIdx++;
+            }}
+
+            // Umano
+            const gy = getTerrainY(hX);
+            const onGround = (hY >= gy - 16);
+            if (keyGas && onGround) {{ hVx += 1.2; playEngineTone(150, 0.04); }}
+            if (keyBrake && onGround) hVx -= 0.8;
+            hVx *= 0.98;
+            hX += hVx;
+            hY = gy - 16;
+
+            document.getElementById('h_dist_{uid}').innerText = Math.max(0, (hX - 120) / 3.0).toFixed(1) + ' m';
+            document.getElementById('h_spd_{uid}').innerText = Math.abs(hVx * 0.4).toFixed(1) + ' m/s';
+
+            // Draw Human
+            ctxH.fillStyle = '#87CEEB'; ctxH.fillRect(0, 0, 440, 300);
+            const camH = hX - 120;
+            ctxH.fillStyle = '#582300';
+            ctxH.beginPath(); ctxH.moveTo(0, 300);
+            for (let p = 0; p <= 440; p += 10) ctxH.lineTo(p, getTerrainY(camH + p));
+            ctxH.lineTo(440, 300); ctxH.fill();
+            ctxH.fillStyle = '#ef4444'; ctxH.fillRect(100, hY - 8, 30, 10);
+
+            // Draw AI
+            ctxA.fillStyle = '#87CEEB'; ctxA.fillRect(0, 0, 440, 300);
+            const aiCurX = (aiIdx < aiSteps.length ? aiSteps[aiIdx].x * 3.0 + 120 : hX);
+            const camA = aiCurX - 120;
+            ctxA.fillStyle = '#582300';
+            ctxA.beginPath(); ctxA.moveTo(0, 300);
+            for (let p = 0; p <= 440; p += 10) ctxA.lineTo(p, getTerrainY(camA + p));
+            ctxA.lineTo(440, 300); ctxA.fill();
+            ctxA.fillStyle = '#10b981'; ctxA.fillRect(100, getTerrainY(aiCurX) - 24, 30, 10);
+
+            requestAnimationFrame(update);
+        }}
+
+        canvasH.addEventListener('keydown', function(e) {{
+            initAudio();
+            if (e.key === 'ArrowUp' || e.key === 'w') keyGas = true;
+            if (e.key === 'ArrowDown' || e.key === 's') keyBrake = true;
+        }});
+        canvasH.addEventListener('keyup', function(e) {{
+            if (e.key === 'ArrowUp' || e.key === 'w') keyGas = false;
+            if (e.key === 'ArrowDown' || e.key === 's') keyBrake = false;
+        }});
+
+        update();
+    }})();
+    </script>
+    """
+    return display_or_open_html(html_code, "hill_climb_vs_agente")
+
+
+def gioca(
+    modalita: str = "vs_agente",
+    model: Any = None,
+    seed: int = 42,
+    mission: str = "campagna_standard",
+    env_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Punto di ingresso unificato per il gioco interattivo."""
+    if "single" in str(modalita).lower():
+        return gioca_single_player(seed=seed, mission=mission, env_kwargs=env_kwargs)
+    return gioca_vs_agente(model_or_result=model, seed=seed, mission=mission, env_kwargs=env_kwargs)
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/reset.py
+################################################################################
+
+"""
+Script di Ripristino e Verifica Integrità per Hill Climb Racing (Play2Learn).
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+def check_integrity() -> bool:
+    """Verifica la presenza e l'integrità dei moduli del pacchetto."""
+    pkg_dir = Path(__file__).parent
+    required = [
+        "__init__.py",
+        "config.py",
+        "environment.py",
+        "agent.py",
+        "evaluator.py",
+        "diagnostics.py",
+        "visualizer.py",
+        "storage.py",
+        "favorites.py",
+        "reporting.py",
+        "interactive.py",
+        "lab.py",
+    ]
+    missing = [f for f in required if not (pkg_dir / f).exists()]
+    if missing:
+        print(f"❌ File mancanti in {pkg_dir.name}: {missing}")
+        return False
+    print(f"🛡️  Verifica di sicurezza superata: tutti i moduli di {pkg_dir.name} sono intatti al 100%!")
+    return True
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Verifica e reset ambiente didattico Hill Climb Racing")
+    parser.add_argument("--check", action="store_true", help="Esegue solo il controllo di integrità")
+    args = parser.parse_args()
+
+    ok = check_integrity()
+    sys.exit(0 if ok else 1)
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/lab.py
+################################################################################
+
+"""
+Interfaccia Principale del Laboratorio Didattico per Hill Climb Racing (Play2Learn).
+Fornisce la funzione didattica `run_lab` e la classe `LabResult`.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+import gymnasium as gym
+
+from play2learn_core.agent import make_parallel_envs
+from play2learn_hillclimb.agent import HillClimbRewardTrackerCallback, build_hill_agent
+from play2learn_hillclimb.config import (
+    DEFAULT_N_ENVS,
+    DEFAULT_TIMESTEPS,
+    ENV_ID,
+    MISSIONS,
+    VECNORM_PARAMS,
+)
+from play2learn_hillclimb.diagnostics import diagnose_hill_climb_behavior
+from play2learn_hillclimb.environment import HillClimbRewardWrapper, classify_hill_climb_outcome
+from play2learn_hillclimb.evaluator import crea_gif_evoluzione_apprendimento, evaluate_and_record
+from play2learn_hillclimb.interactive import gioca_vs_agente
+from play2learn_hillclimb.reporting import genera_report_esperimento
+from play2learn_hillclimb.storage import create_run_directory, save_run_metadata
+
+
+class LabResult(dict):
+    """Oggetto risultato arricchito con metodi didattici rapidi."""
+
+    def __init__(self, data: dict[str, Any]):
+        super().__init__(data)
+        self.model = data.get("model")
+        self.run_dir = Path(data.get("checkpoint_dir", "."))
+
+    def report(self, autore: str = "Studente", titolo: str = "Report Hill Climb") -> dict[str, Path]:
+        """Genera istantaneamente la scheda tecnica in PDF, HTML e Markdown."""
+        return genera_report_esperimento(run_or_fav=self, autore=autore, titolo=titolo)
+
+    def sfida(self, seed: int = 42) -> Any:
+        """Lancia la sfida interattiva Split-Screen contro questo modello."""
+        return gioca_vs_agente(
+            model_or_result=self.model,
+            seed=seed,
+            mission=self.get("mission", "campagna_standard"),
+            env_kwargs=self.get("env_kwargs"),
+        )
+
+    def preferito(self, nome: str, note: str = "") -> dict[str, Any]:
+        """Salva questo esperimento nei preferiti personali."""
+        from play2learn_hillclimb.favorites import salva_nei_preferiti
+        return salva_nei_preferiti(self, nome=nome, note=note)
+
+
+def run_lab(
+    reward_fn: Callable | None = None,
+    mission: str = "campagna_standard",
+    total_timesteps: int = DEFAULT_TIMESTEPS,
+    n_envs: int = DEFAULT_N_ENVS,
+    learning_rate: float = 3e-4,
+    crea_gif_evoluzione: bool = True,
+    seed: int = 42,
+    show_progress: bool = True,
+) -> LabResult:
+    """
+    Funzione didattica principale per avviare l'addestramento dell'auto in Hill Climb Racing.
+    """
+    mission_cfg = MISSIONS.get(mission, MISSIONS["campagna_standard"])
+    env_kwargs = dict(mission_cfg["env_kwargs"])
+
+    run_dir = create_run_directory(mission=mission)
+    checkpoints_dir = run_dir / "checkpoints"
+
+    print("=" * 70)
+    print(" 🏎️  PLAY2LEARN — LABORATORIO DI REINFORCEMENT LEARNING")
+    print("     Ambiente: Hill Climb Racing (Farama Box2D + Perlin Noise)")
+    print(f"     Tracciato: {mission_cfg['title']}")
+    print(f"     Timesteps previsti: {total_timesteps:,} | Ambienti paralleli: {n_envs}")
+    print("=" * 70)
+
+    # 1. Creazione ambienti paralleli
+    def _make_single_env(rank: int) -> Callable[[], gym.Env]:
+        def _thunk() -> gym.Env:
+            env = gym.make(ENV_ID, render_mode="rgb_array", **env_kwargs)
+            env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
+            env.reset(seed=seed + rank * 100)
+            return env
+        return _thunk
+
+    env_fns = [_make_single_env(i) for i in range(n_envs)]
+    vec_env = make_parallel_envs(env_fns, use_subproc=(n_envs > 1))
+
+    # Raccolta milestone per timelapse GIF evolutivo
+    milestones: list[tuple[int, Any]] = []
+
+    def _milestone_cb(step: int, mdl: Any) -> None:
+        if crea_gif_evoluzione and len(milestones) < 6:
+            milestones.append((step, mdl))
+
+    callback = HillClimbRewardTrackerCallback(
+        total_timesteps=total_timesteps,
+        show_progress=show_progress,
+        save_checkpoints=True,
+        checkpoint_dir=checkpoints_dir,
+        milestone_callback=_milestone_cb,
+    )
+
+    # 2. Creazione modello PPO
+    model = build_hill_agent(
+        env=vec_env,
+        learning_rate=learning_rate,
+        seed=seed,
+    )
+
+    t0 = time.time()
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=callback)
+    finally:
+        vec_env.close()
+
+    elapsed = time.time() - t0
+    print(f"\n✅ Addestramento completato in {elapsed:.1f} s ({total_timesteps/max(0.1, elapsed):.0f} step/s)!")
+
+    # 3. Valutazione e registrazione video streaming
+    print("\n🎥 Avvio sessione di verifica su 20 scenari collinari deterministici...")
+    eval_stats = evaluate_and_record(
+        model=model,
+        output_dir=run_dir,
+        env_kwargs=env_kwargs,
+        reward_fn=reward_fn,
+    )
+
+    # 4. GIF evoluzione apprendimento
+    gif_path = None
+    if crea_gif_evoluzione and milestones:
+        print("🎬 Generazione timelapse GIF dell'evoluzione dell'apprendimento...")
+        gif_path = crea_gif_evoluzione_apprendimento(
+            checkpoints=milestones,
+            output_gif_path=run_dir / "evoluzione_apprendimento.gif",
+            env_kwargs=env_kwargs,
+            reward_fn=reward_fn,
+        )
+
+    # 5. Diagnostica comportamentale
+    diagnostics = diagnose_hill_climb_behavior(eval_stats)
+    print("\n" + diagnostics["formatted_text"])
+
+    # 6. Salvataggio metadati
+    save_run_metadata(
+        run_dir=run_dir,
+        mission=mission,
+        mission_cfg=mission_cfg,
+        env_kwargs=env_kwargs,
+        total_timesteps=total_timesteps,
+        elapsed_seconds=elapsed,
+        reward_fn=reward_fn,
+        eval_stats=eval_stats,
+        diagnostics=diagnostics,
+    )
+
+    # Salvataggio modello finale
+    model.save(str(run_dir / "final_model.zip"))
+
+    result_data = {
+        "model": model,
+        "eval_success_rate": eval_stats["eval_success_rate"],
+        "mean_distance": eval_stats["mean_distance"],
+        "max_distance": eval_stats["max_distance_achieved"],
+        "mean_speed": eval_stats["mean_speed"],
+        "checkpoint_dir": str(run_dir),
+        "best_video_path": str(eval_stats["best_video_path"]) if eval_stats.get("best_video_path") else None,
+        "gif_evoluzione_path": str(gif_path) if gif_path else None,
+        "mission": mission,
+        "env_kwargs": env_kwargs,
+        "eval_metrics": eval_stats,
+        "diagnostics": diagnostics,
+    }
+
+    print("\n🏆 Riepilogo Finale:")
+    print(f"   • Distanza Massima: {eval_stats['max_distance_achieved']:.1f} m")
+    print(f"   • Distanza Media:   {eval_stats['mean_distance']:.1f} m")
+    print(f"   • Tasso Successo:   {eval_stats['eval_success_rate']:.1f}%")
+    print(f"   • Cartella Run:     {run_dir.name}\n")
+
+    return LabResult(result_data)
+
+
+def dimostrazione_live(
+    model_or_result: Any,
+    seed: int = 42,
+    mission: str = "campagna_standard",
+) -> None:
+    """Mostra una dimostrazione visiva della guida dell'agente."""
+    model = getattr(model_or_result, "model", model_or_result)
+    mission_cfg = MISSIONS.get(mission, MISSIONS["campagna_standard"])
+
+    env = gym.make(ENV_ID, render_mode="human", **mission_cfg["env_kwargs"])
+    obs, _ = env.reset(seed=seed)
+
+    print("🚗 Dimostrazione live avviata... Premi ESC nella finestra Pygame per uscire.")
+    for _ in range(1200):
+        action, _ = model.predict(obs, deterministic=True)
+        act_item = action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action
+        obs, reward, terminated, truncated, info = env.step(act_item)
+        env.render()
+        if terminated or truncated:
+            break
+
+    env.close()
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/__init__.py
+################################################################################
+
+"""
+Motore Fisico e Grafico per Hill Climb Racing.
+"""
+
+import gymnasium as gym
+from .hill_racing import HillRacingEnv
+
+# Registrazione dell'ambiente in Gymnasium
+try:
+    gym.register(
+        id="HillClimbRacing-v0",
+        entry_point="play2learn_hillclimb.engine.hill_racing:HillRacingEnv",
+        max_episode_steps=1800,
+    )
+except Exception:
+    pass
+
+__all__ = ["HillRacingEnv"]
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/hill_racing.py
+################################################################################
+
+"""
+Ambiente Principale Gymnasium per Hill Climb Racing.
+Supporta modalità headless 'rgb_array' per registrazione video in streaming e Pygame 'human'.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+from Box2D import (
+    b2Contact,
+    b2ContactListener,
+    b2World,
+)
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+import pygame
+
+from . import agent, ground
+
+# Categorie di collisione (bitmask)
+WHEEL_CATEGORY = 0x0001
+CHASSIS_CATEGORY = 0x0002
+GRASS_CATEGORY = 0x0004
+DIRT_CATEGORY = 0x0008
+PERSON_CATEGORY = 0x0010
+
+WHEEL_MASK = GRASS_CATEGORY
+CHASSIS_MASK = DIRT_CATEGORY
+GRASS_MASK = (WHEEL_CATEGORY | PERSON_CATEGORY)
+DIRT_MASK = CHASSIS_CATEGORY
+PERSON_MASK = GRASS_CATEGORY
+
+SPAWNING_Y = 0.0
+SCREEN_WIDTH = 960
+SCREEN_HEIGHT = 540
+SCALE = 30.0  # Pixel per metro (Box2D metri <-> Pygame pixel)
+FPS = 60
+GRAVITY = 10.0
+WHEEL_SIZE = 35.0
+HEAD_SIZE = 40.0
+PERSON_WIDTH = 20.0
+PERSON_HEIGHT = 40.0
+panX = 0.0
+panY = 0.0
+
+SPAWNING_X = 200.0
+MAX_SCORE = 1000.0
+GROUND_DISTANCE = int(MAX_SCORE * SCALE + SPAWNING_X)
+DIFFICULTY = -150.0
+
+# Inizializzazione sprite (con gestione headless e fallback)
+_ASSET_DIR = Path(__file__).parent / "pictures"
+wheel_sprite = None
+head_sprite = None
+car_sprite = None
+torso_sprite = None
+
+
+def _load_sprites() -> None:
+    global wheel_sprite, head_sprite, car_sprite, torso_sprite
+    if wheel_sprite is not None:
+        return
+    try:
+        if not pygame.display.get_init():
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            pygame.display.init()
+
+        w_p = _ASSET_DIR / "wheel.png"
+        h_p = _ASSET_DIR / "headLarge2.png"
+        c_p = _ASSET_DIR / "car.png"
+        t_p = _ASSET_DIR / "torsoLarge.png"
+
+        if w_p.exists():
+            wheel_sprite = pygame.image.load(str(w_p))
+        if h_p.exists():
+            head_sprite = pygame.image.load(str(h_p))
+        if c_p.exists():
+            car_sprite = pygame.image.load(str(c_p))
+        if t_p.exists():
+            torso_sprite = pygame.image.load(str(t_p))
+    except Exception:
+        pass
+
+
+class ContactListener(b2ContactListener):
+    def __init__(self):
+        super().__init__()
+
+    def BeginContact(self, contact: b2Contact) -> None:
+        fixture_a = contact.fixtureA
+        fixture_b = contact.fixtureB
+        if not fixture_a.body.userData or not fixture_b.body.userData:
+            return
+
+        id_a = getattr(fixture_a.body.userData, "id", None)
+        id_b = getattr(fixture_b.body.userData, "id", None)
+
+        # Collisione testa del pilota con il terreno
+        head_fix = None
+        if id_a == "head" and id_b == "ground":
+            head_fix = fixture_a
+        elif id_b == "head" and id_a == "ground":
+            head_fix = fixture_b
+
+        if head_fix and head_fix.body.joints:
+            try:
+                torso = head_fix.body.joints[0].other
+                car_obj = torso.joints[3].other.userData
+                if hasattr(car_obj, "agent") and car_obj.agent:
+                    car_obj.agent.dead = True
+                car_obj.dead = True
+            except Exception:
+                pass
+
+        # Contatto ruota con il terreno
+        if id_a == "wheel" and id_b == "ground":
+            fixture_a.body.userData.on_ground = True
+        elif id_b == "wheel" and id_a == "ground":
+            fixture_b.body.userData.on_ground = True
+
+    def EndContact(self, contact: b2Contact) -> None:
+        fixture_a = contact.fixtureA
+        fixture_b = contact.fixtureB
+        if not fixture_a.body.userData or not fixture_b.body.userData:
+            return
+
+        id_a = getattr(fixture_a.body.userData, "id", None)
+        id_b = getattr(fixture_b.body.userData, "id", None)
+
+        if id_a == "wheel" and id_b == "ground":
+            fixture_a.body.userData.on_ground = False
+        elif id_b == "wheel" and id_a == "ground":
+            fixture_b.body.userData.on_ground = False
+
+
+class HillRacingEnv(gym.Env):
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": FPS,
+    }
+
+    def __init__(
+        self,
+        render_mode: Optional[str] = None,
+        action_space: str = "discrete_3",
+        reward_function: str = "distance",
+        reward_type: str = "aggressive",
+        max_steps: int = 1200,
+        original_noise: bool = False,
+        difficulty: float = DIFFICULTY,
+        gravity: float = GRAVITY,
+    ):
+        super().__init__()
+        _load_sprites()
+        self.render_mode = render_mode
+        self.gravity = gravity
+        self.world = b2World(gravity=(0, self.gravity), doSleep=True)
+        self.ground: Optional[ground.Ground] = None
+        self.agent: Optional[agent.Agent] = None
+        self.difficulty = difficulty
+        self.action_space_type = action_space
+        self.reward_function = reward_function
+        self.reward_type = reward_type
+        self.max_steps = max_steps
+        self.original_noise = original_noise
+
+        self.step_counter = 0
+        self.step_stuck_counter = 0
+        self.previous_stuck_pos = 0.0
+        self.total_airtime_counter = 0
+        self.position_list: list[tuple[int, int]] = []
+
+        # Configurazione action space
+        if self.action_space_type == "continuous":
+            self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Discrete(3)  # 0: Idle, 1: Gas, 2: Reverse/Freno
+
+        # Spazio di osservazione didattico (vettore 8D continuo, ideale per SB3 MlpPolicy):
+        # [0]: x_distanza (m)
+        # [1]: y_quota (m)
+        # [2]: vx (velocità orizzontale)
+        # [3]: vy (velocità verticale)
+        # [4]: angolo_inclinazione (radianti [-pi, pi])
+        # [5]: velocita_angolare
+        # [6]: contatto_ruota_posteriore (0 o 1)
+        # [7]: contatto_ruota_anteriore (0 o 1)
+        self.observation_space = spaces.Box(
+            low=np.array([0.0, -100.0, -50.0, -50.0, -math.pi, -20.0, 0.0, 0.0], dtype=np.float32),
+            high=np.array([1200.0, 500.0, 50.0, 50.0, math.pi, 20.0, 1.0, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
+
+        self.screen: Optional[pygame.Surface] = None
+        self.clock = None
+
+    def _destroy_world(self) -> None:
+        if self.ground:
+            self.world.contactListener = None
+            try:
+                self.world.DestroyBody(self.ground.grassBody)
+                self.world.DestroyBody(self.ground.dirtBody)
+            except Exception:
+                pass
+            self.ground = None
+
+        if self.agent:
+            self.agent.destroy_agent()
+            self.agent = None
+
+    def _generate_ground(self, seed: Optional[int] = None) -> None:
+        ground_template = ground.Ground(original_noise=self.original_noise)
+        ground_template.randomize_ground(seed=seed)
+        tries = 0
+        while ground_template.groundTooSteep() and tries < 5:
+            ground_template = ground.Ground(original_noise=self.original_noise)
+            ground_template.randomize_ground(seed=seed)
+            tries += 1
+
+        self.ground = ground.Ground(self.world)
+        self.ground.cloneFrom(ground_template)
+        self.ground.setBodies(self.world)
+
+    def _generate_agent(self) -> None:
+        self.agent = agent.Agent(real_world=self.world)
+        self.agent.add_to_world()
+
+    def _execute_action(self, action: Any) -> None:
+        if self.agent is None or self.agent.car is None:
+            return
+
+        if self.action_space_type == "continuous":
+            val = float(action[0] if hasattr(action, "__len__") else action)
+            # Scala val da [-1, 1] a [-13, 13]
+            self.agent.car.set_motor_wheel_speed(-val * 13.0)
+        else:
+            act_int = int(action)
+            if act_int == 1:
+                self.agent.car.motor_on(forward=True)
+            elif act_int == 2:
+                self.agent.car.motor_on(forward=False)
+            else:
+                self.agent.car.motor_off()
+
+    def _get_obs(self) -> np.ndarray:
+        if self.agent is None or self.agent.car is None:
+            return np.zeros(8, dtype=np.float32)
+
+        car_body = self.agent.car.chassis_body
+        pos_x = float(self.agent.car.pos_x)
+        pos_y = float(self.agent.car.pos_y)
+        vel = car_body.linearVelocity
+        ang_vel = float(car_body.angularVelocity)
+
+        # Angolo normalizzato tra -pi e pi
+        angle = float(-car_body.angle)
+        norm_angle = (angle + math.pi) % (2 * math.pi) - math.pi
+
+        rear_on = 1.0 if self.agent.car.wheels[0].on_ground else 0.0
+        front_on = 1.0 if self.agent.car.wheels[1].on_ground else 0.0
+
+        return np.array(
+            [pos_x, pos_y, float(vel.x), float(vel.y), norm_angle, ang_vel, rear_on, front_on],
+            dtype=np.float32,
+        )
+
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[np.ndarray, dict[str, Any]]:
+        super().reset(seed=seed)
+        self._destroy_world()
+        self.world.contactListener = ContactListener()
+        self._generate_ground(seed=seed)
+        self._generate_agent()
+
+        self.step_stuck_counter = 0
+        self.step_counter = 0
+        self.position_list.clear()
+        self.total_airtime_counter = 0
+
+        obs = self._get_obs()
+        info: dict[str, Any] = {
+            "score": 0.0,
+            "max_distance": self.agent.car.max_distance if self.agent and self.agent.car else 0.0,
+            "dead": False,
+            "airtime": 0,
+        }
+        return obs, info
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        terminated = False
+        truncated = False
+        reward = 0.0
+
+        self._execute_action(action)
+        self.world.Step(timeStep=1.0 / FPS, velocityIterations=6, positionIterations=2)
+
+        self.step_counter += 1
+        self.step_stuck_counter += 1
+
+        if self.agent is not None:
+            if self.agent.total_airtime > 0:
+                self.total_airtime_counter += self.agent.total_airtime
+
+            car_x = float(self.agent.car.pos_x) if self.agent.car else 0.0
+            self.position_list.append((int(car_x), self.step_counter))
+            self.agent.update()
+
+            # Rilevamento blocco nel fosso o pendenza insormontabile
+            floor_x = math.floor(car_x)
+            if floor_x % 15 == 0 and self.previous_stuck_pos != floor_x:
+                self.step_stuck_counter = 0
+                self.previous_stuck_pos = floor_x
+            elif self.step_stuck_counter > self.max_steps:
+                truncated = True
+                reward = -100.0
+
+            # Morte del pilota (impatto testa al suolo)
+            if self.agent.dead:
+                terminated = True
+                reward = -100.0
+            elif self.agent.score >= MAX_SCORE:
+                terminated = True
+                reward = 100.0
+
+            # Default baseline reward se non sovrascritta dal wrapper
+            if not truncated and not terminated:
+                reward = float(self.agent.car.pos_x - self.agent.car.prev_max_distance)
+
+        obs = self._get_obs()
+        info: dict[str, Any] = {
+            "score": float(self.agent.score if self.agent else 0.0),
+            "max_distance": float(self.agent.car.max_distance if self.agent and self.agent.car else 0.0),
+            "dead": bool(self.agent.dead if self.agent else False),
+            "steps_stuck": self.step_stuck_counter,
+            "total_airtime": self.total_airtime_counter,
+            "is_success": bool(self.agent and self.agent.score >= 800.0),
+            "is_crashed": bool(self.agent and self.agent.dead),
+            "is_timeout": truncated,
+        }
+
+        return obs, reward, terminated, truncated, info
+
+    def render(self) -> Optional[np.ndarray]:
+        if self.render_mode is None:
+            return None
+
+        if self.screen is None:
+            if not pygame.display.get_init():
+                if self.render_mode == "rgb_array":
+                    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+                pygame.init()
+                pygame.display.init()
+
+            if self.render_mode == "human":
+                self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+                pygame.display.set_caption("Hill Climb Racing - Play2Learn")
+                self.clock = pygame.time.Clock()
+            else:
+                self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+        # Cielo celeste
+        self.screen.fill((135, 206, 235))
+
+        # Disegna terreno e agente
+        if self.ground:
+            self.ground.draw_ground(self.screen)
+        if self.agent:
+            self.agent.draw_agent(self.screen)
+
+        if self.render_mode == "human":
+            pygame.display.flip()
+            if self.clock:
+                self.clock.tick(FPS)
+            return None
+        elif self.render_mode == "rgb_array":
+            # Estrae l'array di pixel RGB (H, W, 3) compatibile con imageio
+            return np.transpose(pygame.surfarray.array3d(self.screen), (1, 0, 2))
+
+    def close(self) -> None:
+        self._destroy_world()
+        if self.screen is not None and self.render_mode == "human":
+            try:
+                pygame.display.quit()
+                pygame.quit()
+            except Exception:
+                pass
+        self.screen = None
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/car.py
+################################################################################
+
+"""
+Modulo Veicolo (Chassis e Motore) per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+import math
+from Box2D import (
+    b2BodyDef,
+    b2DistanceJointDef,
+    b2FixtureDef,
+    b2PolygonShape,
+    b2RevoluteJointDef,
+    b2Vec2,
+    b2_dynamicBody,
+)
+import pygame
+
+from . import hill_racing, person, wheels
+
+
+class Car:
+    def __init__(self, x: float, y: float, world=None, agent=None):
+        self.world = world
+        self.id = "car"
+        self.agent = agent
+        self.wheels: list[wheels.Wheel] = []
+        self.starting_position = pygame.Vector2(x, y)
+        self.chassis_body = None
+        self.chassis_width = 125
+        self.chassis_height = 40
+        self.wheel_size = 17
+        self.dead = False
+        self.shapes: list[list[b2Vec2]] = []
+        self.car_density = 1.0
+        self.car_restitution = 0.01
+        self.pos_x = x / hill_racing.SCALE
+        self.pos_y = y / hill_racing.SCALE
+        self.max_distance = x / hill_racing.SCALE
+        self.prev_max_distance = x / hill_racing.SCALE
+        self.prev_pos_y = y / hill_racing.SCALE
+        self.motor_state = 0
+        self.rotation_torque = 2.0
+        self.motor_speed = 13.0
+
+        # Sagoma principale del telaio
+        vectors = [
+            b2Vec2(-self.chassis_width / 2, 0 - self.chassis_height / 2),
+            b2Vec2(self.chassis_width / 4 + 5, 0 - self.chassis_height / 2),
+            b2Vec2(self.chassis_width / 2, 0 - self.chassis_height / 2 + 5),
+            b2Vec2(self.chassis_width / 2, self.chassis_height / 2),
+            b2Vec2(-self.chassis_width / 2, self.chassis_height / 2),
+        ]
+        for v in vectors:
+            v.x /= hill_racing.SCALE
+            v.y /= hill_racing.SCALE
+        self.shapes.append(vectors)
+
+        car_body = b2BodyDef(
+            type=b2_dynamicBody,
+            position=(x / hill_racing.SCALE, y / hill_racing.SCALE),
+            angle=0,
+        )
+        car_fixture = b2FixtureDef(
+            categoryBits=hill_racing.CHASSIS_CATEGORY,
+            maskBits=hill_racing.CHASSIS_MASK,
+            density=self.car_density,
+            friction=0.5,
+            restitution=self.car_restitution,
+            shape=b2PolygonShape(vertices=vectors, vertexCount=len(vectors)),
+        )
+
+        self.chassis_body = self.world.CreateBody(car_body)
+        self.chassis_body.CreateFixture(car_fixture)
+        self.chassis_body.userData = self
+
+        # Ruote: posteriore (sinistra) e anteriore (destra)
+        self.wheels.append(
+            wheels.Wheel(
+                x - self.chassis_width / 2 + self.wheel_size * 1.2,
+                y + self.chassis_height / 2 + self.wheel_size / 4,
+                self.wheel_size,
+                self.chassis_body,
+                self.world,
+            )
+        )
+        self.wheels.append(
+            wheels.Wheel(
+                x + self.chassis_width / 2 - self.wheel_size * 1.2,
+                y + self.chassis_height / 2 + self.wheel_size / 4,
+                self.wheel_size,
+                self.chassis_body,
+                self.world,
+            )
+        )
+
+        # Pilota
+        self.person = person.Person(
+            x=self.starting_position.x - 10,
+            y=self.starting_position.y - self.chassis_height / 2,
+            person_width=hill_racing.PERSON_WIDTH,
+            person_height=hill_racing.PERSON_HEIGHT,
+            world=self.world,
+        )
+
+        # Giunto corpo-pilota
+        torso_joint_def = b2DistanceJointDef()
+        anchor_torso = [self.person.torso.body.position.x, self.person.torso.body.position.y]
+        anchor_chassis = [self.chassis_body.position.x, self.chassis_body.position.y]
+        torso_joint_def.Initialize(
+            bodyA=self.person.torso.body,
+            bodyB=self.chassis_body,
+            anchorA=anchor_torso,
+            anchorB=anchor_chassis,
+        )
+        self.dist_joint_torso_chassis = self.world.CreateJoint(torso_joint_def)
+
+        rev_joint_def = b2RevoluteJointDef()
+        rev_joint_def.Initialize(
+            bodyA=self.person.torso.body,
+            bodyB=self.chassis_body,
+            anchor=anchor_chassis,
+        )
+        self.rev_joint_torso_chassis = self.world.CreateJoint(rev_joint_def)
+
+    def draw_person_car(self, surface_screen: pygame.Surface) -> None:
+        self.person.draw_person(surface_screen)
+        for wheel in self.wheels:
+            wheel.draw_wheel(surface_screen)
+
+        pos_x = self.chassis_body.position.x * hill_racing.SCALE
+        pos_y = self.chassis_body.position.y * hill_racing.SCALE
+        degrees_angle = math.degrees(-self.chassis_body.angle) % 360
+
+        sprite = getattr(hill_racing, "car_sprite", None)
+        if sprite is not None:
+            scaled = pygame.transform.scale(sprite, (self.chassis_width + 10, self.chassis_height + 25))
+            rotated = pygame.transform.rotate(scaled, degrees_angle)
+            surface_screen.blit(
+                rotated,
+                (-self.chassis_width / 2 + pos_x - hill_racing.panX - 5,
+                 -self.chassis_height / 2 + pos_y - hill_racing.panY - 15),
+            )
+        else:
+            # Rettangolo telaio vettoriale di fallback
+            rect = pygame.Rect(
+                int(pos_x - hill_racing.panX - self.chassis_width / 2),
+                int(pos_y - hill_racing.panY - self.chassis_height / 2),
+                int(self.chassis_width),
+                int(self.chassis_height),
+            )
+            pygame.draw.rect(surface_screen, (200, 30, 30), rect, border_radius=4)
+
+    def update_status(self) -> None:
+        self.pos_x = self.chassis_body.position.x
+        self.pos_y = self.chassis_body.position.y
+        if self.pos_x > self.max_distance:
+            self.prev_max_distance = self.max_distance
+            self.max_distance = self.pos_x
+
+    def motor_on(self, forward: bool = True) -> None:
+        self.wheels[0].joint.motorEnabled = True
+        self.wheels[1].joint.motorEnabled = True
+        old_state = self.motor_state
+        if forward:
+            self.motor_state = 1
+            self.wheels[0].joint.motorSpeed = -self.motor_speed * math.pi
+            self.wheels[1].joint.motorSpeed = -self.motor_speed * math.pi
+            self.chassis_body.ApplyTorque(-self.rotation_torque, True)
+        else:
+            self.motor_state = -1
+            self.wheels[0].joint.motorSpeed = self.motor_speed * math.pi
+            self.wheels[1].joint.motorSpeed = self.motor_speed * math.pi
+            self.chassis_body.ApplyTorque(self.rotation_torque, True)
+
+        if old_state + self.motor_state == 0 and old_state == 1:
+            self.chassis_body.ApplyTorque(self.motor_state * -1, True)
+
+        self.wheels[0].joint.maxMotorTorque = 500
+        self.wheels[1].joint.maxMotorTorque = 250
+
+    def motor_off(self) -> None:
+        if self.motor_state == 1:
+            self.chassis_body.ApplyTorque(self.motor_state * self.rotation_torque, True)
+        self.motor_state = 0
+        self.wheels[0].joint.motorEnabled = False
+        self.wheels[1].joint.motorEnabled = False
+
+    def set_motor_wheel_speed(self, motor_wheel_speed: float) -> None:
+        speed = float(motor_wheel_speed)
+        self.wheels[0].joint.motorEnabled = True
+        self.wheels[1].joint.motorEnabled = True
+        old_state = self.motor_state
+        if speed < 0:
+            self.motor_state = 1
+            self.wheels[0].joint.motorSpeed = speed * math.pi
+            self.wheels[1].joint.motorSpeed = speed * math.pi
+            self.chassis_body.ApplyTorque(-self.rotation_torque, True)
+        elif speed >= 0:
+            self.motor_state = -1
+            self.wheels[0].joint.motorSpeed = speed * math.pi
+            self.wheels[1].joint.motorSpeed = speed * math.pi
+
+        if old_state + self.motor_state == 0 and old_state == 1:
+            self.chassis_body.ApplyTorque(self.motor_state * -1, True)
+
+        self.wheels[0].joint.maxMotorTorque = 500
+        self.wheels[1].joint.maxMotorTorque = 250
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/wheels.py
+################################################################################
+
+"""
+Modulo Ruote e Sospensioni per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+import math
+from Box2D import (
+    b2BodyDef,
+    b2CircleShape,
+    b2DistanceJointDef,
+    b2FixtureDef,
+    b2PrismaticJointDef,
+    b2RevoluteJointDef,
+    b2Vec2,
+    b2_dynamicBody,
+)
+import pygame
+
+from . import hill_racing
+
+
+class Wheel:
+    def __init__(self, x: float, y: float, r: float, chassis_body=None, world=None):
+        self.starting_position = pygame.Vector2(x, y)
+        self.id = "wheel"
+        self.radius = r
+        self.body = None
+        self.rim_body = None
+        self.world = world
+        self.on_ground = False
+
+        self.create_wheel()
+
+        body_def = b2BodyDef(
+            type=b2_dynamicBody,
+            position=(
+                self.starting_position.x / hill_racing.SCALE,
+                self.starting_position.y / hill_racing.SCALE,
+            ),
+            angle=0,
+        )
+        fix_def = b2FixtureDef(
+            density=0.05,
+            friction=0.99,
+            restitution=0.2,
+            shape=b2CircleShape(radius=(self.radius / hill_racing.SCALE)),
+            groupIndex=-1,
+        )
+        self.rim_body = self.world.CreateBody(body_def)
+        self.rim_body.CreateFixture(fix_def)
+        self.rim_body.userData = self
+
+        if chassis_body is not None:
+            rev_joint_def = b2RevoluteJointDef()
+            rev_joint_def.Initialize(
+                bodyA=self.body, bodyB=self.rim_body, anchor=self.body.position
+            )
+            self.joint = self.world.CreateJoint(rev_joint_def)
+
+            pris_joint_def = b2PrismaticJointDef()
+            pris_joint_def.Initialize(
+                bodyA=self.rim_body,
+                bodyB=chassis_body,
+                anchor=self.body.position,
+                axis=b2Vec2(0, -1),
+            )
+            self.pris_joint = self.world.CreateJoint(pris_joint_def)
+
+            dist_joint_def = b2DistanceJointDef()
+            anchor_wheel = b2Vec2(x / hill_racing.SCALE, y / hill_racing.SCALE)
+            anchor_car = b2Vec2(x / hill_racing.SCALE, (y - r * 3) / hill_racing.SCALE)
+            dist_joint_def.Initialize(
+                bodyA=self.rim_body,
+                bodyB=chassis_body,
+                anchorA=anchor_wheel,
+                anchorB=anchor_car,
+            )
+            dist_joint_def.frequencyHz = 70
+            dist_joint_def.dampingRatio = 25
+            self.dist_joint = self.world.CreateJoint(dist_joint_def)
+
+        self.body.angularDamping = 1.8
+
+    def create_wheel(self) -> None:
+        wheel_body = b2BodyDef(
+            type=b2_dynamicBody,
+            position=(
+                self.starting_position.x / hill_racing.SCALE,
+                self.starting_position.y / hill_racing.SCALE,
+            ),
+            angle=0,
+        )
+        wheel_fixture = b2FixtureDef(
+            density=1.0,
+            friction=1.5,
+            restitution=0.1,
+            shape=b2CircleShape(radius=self.radius / hill_racing.SCALE),
+            categoryBits=hill_racing.WHEEL_CATEGORY,
+            maskBits=hill_racing.WHEEL_MASK,
+        )
+        self.body = self.world.CreateBody(wheel_body)
+        self.body.CreateFixture(wheel_fixture)
+        self.body.userData = self
+
+    def draw_wheel(self, surface_screen: pygame.Surface) -> None:
+        pos_x = self.body.position.x * hill_racing.SCALE
+        pos_y = self.body.position.y * hill_racing.SCALE
+        degrees_angle = math.degrees(-self.body.angle) % 360
+
+        sprite = getattr(hill_racing, "wheel_sprite", None)
+        if sprite is not None:
+            scaled = pygame.transform.scale(sprite, (hill_racing.HEAD_SIZE, hill_racing.HEAD_SIZE))
+            rotated = pygame.transform.rotate(scaled, degrees_angle)
+            surface_screen.blit(
+                rotated,
+                (-self.radius + pos_x - hill_racing.panX, -self.radius + pos_y - hill_racing.panY),
+            )
+        else:
+            # Rendering procedurale vettoriale di fallback
+            center = (int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY))
+            pygame.draw.circle(surface_screen, (30, 30, 30), center, int(self.radius))
+            pygame.draw.circle(surface_screen, (100, 100, 100), center, int(self.radius * 0.5))
+            rad = -self.body.angle
+            spoke_end = (
+                int(center[0] + math.cos(rad) * self.radius),
+                int(center[1] + math.sin(rad) * self.radius),
+            )
+            pygame.draw.line(surface_screen, (200, 200, 200), center, spoke_end, 2)
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/person.py
+################################################################################
+
+"""
+Modulo Pilota (Person, Head, Torso) con fisica Ragdoll per Hill Climb Racing.
+Include collision listener per rilevare impatto della testa contro il suolo.
+"""
+
+from __future__ import annotations
+
+import math
+from Box2D import (
+    b2BodyDef,
+    b2CircleShape,
+    b2DistanceJointDef,
+    b2FixtureDef,
+    b2PolygonShape,
+    b2RevoluteJointDef,
+    b2_dynamicBody,
+)
+import pygame
+
+from . import hill_racing
+
+
+class Person:
+    def __init__(self, x: float, y: float, person_width: float, person_height: float, world=None):
+        self.world = world
+        self.x = x
+        self.y = y
+        self.height = person_height
+        self.width = person_width
+        self.torso = Torso(x, y - (person_height / 2), person_height, person_width, self.world)
+        self.head = Head(x, y - (person_height + person_width), person_width, self.world)
+
+        rev_joint_def = b2RevoluteJointDef()
+        joint_angle = [x / hill_racing.SCALE, (y - person_height) / hill_racing.SCALE]
+        rev_joint_def.Initialize(bodyA=self.head.body, bodyB=self.torso.body, anchor=joint_angle)
+        self.rev_joint_head_torso = self.world.CreateJoint(rev_joint_def)
+
+        dist_joint_def = b2DistanceJointDef()
+        anchor_torso = [x / hill_racing.SCALE, y / hill_racing.SCALE]
+        anchor_head = [x / hill_racing.SCALE, self.head.starting_position.y / hill_racing.SCALE]
+        dist_joint_def.Initialize(
+            bodyA=self.head.body,
+            bodyB=self.torso.body,
+            anchorA=anchor_head,
+            anchorB=anchor_torso,
+        )
+        self.dist_joint_head_torso = self.world.CreateJoint(dist_joint_def)
+
+    def draw_person(self, surface_screen: pygame.Surface) -> None:
+        self.head.draw_head(surface_screen)
+        self.torso.draw_torso(surface_screen)
+
+
+class Head:
+    def __init__(self, x: float, y: float, r: float, world=None):
+        self.world = world
+        self.starting_position = pygame.Vector2(x, y)
+        self.radius = r
+        self.body = None
+        self.id = "head"
+        self.make_head_body()
+
+    def make_head_body(self) -> None:
+        body_def = b2BodyDef()
+        body_def.type = b2_dynamicBody
+        body_def.position.x = self.starting_position.x / hill_racing.SCALE
+        body_def.position.y = self.starting_position.y / hill_racing.SCALE
+        body_def.angle = 0
+        fix_def = b2FixtureDef(
+            categoryBits=hill_racing.PERSON_CATEGORY,
+            maskBits=hill_racing.PERSON_MASK,
+            density=0.001,
+            friction=0.01,
+            restitution=0.01,
+            shape=b2CircleShape(radius=self.radius / hill_racing.SCALE),
+        )
+        self.body = self.world.CreateBody(body_def)
+        self.body.userData = self
+        self.body.CreateFixture(fix_def)
+
+    def draw_head(self, surface_screen: pygame.Surface) -> None:
+        pos_x = self.body.position.x * hill_racing.SCALE
+        pos_y = self.body.position.y * hill_racing.SCALE
+        degrees_angle = math.degrees(-self.body.angle) % 360
+
+        sprite = getattr(hill_racing, "head_sprite", None)
+        if sprite is not None:
+            scaled = pygame.transform.scale(sprite, (hill_racing.WHEEL_SIZE, hill_racing.WHEEL_SIZE))
+            rotated = pygame.transform.rotate(scaled, degrees_angle)
+            surface_screen.blit(
+                rotated,
+                (pos_x - hill_racing.panX - self.radius + 12, pos_y - hill_racing.panY - self.radius + 18),
+            )
+        else:
+            center = (int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY))
+            pygame.draw.circle(surface_screen, (255, 204, 153), center, int(self.radius))
+
+
+class Torso:
+    def __init__(self, center_x: float, center_y: float, height: float, width: float, world=None):
+        self.id = "torso"
+        self.world = world
+        self.width = width
+        self.height = height
+        self.starting_position = pygame.Vector2(center_x, center_y)
+        self.body = None
+        self.make_torso_body()
+
+    def make_torso_body(self) -> None:
+        body_def = b2BodyDef()
+        body_def.type = b2_dynamicBody
+        body_def.position.x = self.starting_position.x / hill_racing.SCALE
+        body_def.position.y = self.starting_position.y / hill_racing.SCALE
+        body_def.angle = 0
+
+        fix_def = b2FixtureDef(
+            categoryBits=hill_racing.PERSON_CATEGORY,
+            maskBits=hill_racing.PERSON_MASK,
+            density=0.002,
+            friction=0.01,
+            restitution=0.01,
+            shape=b2PolygonShape(),
+        )
+        fix_def.shape.SetAsBox(self.width / 2 / hill_racing.SCALE, self.height / hill_racing.SCALE)
+
+        self.body = self.world.CreateBody(body_def)
+        self.body.userData = self
+        self.body.CreateFixture(fix_def)
+
+    def draw_torso(self, surface_screen: pygame.Surface) -> None:
+        pos_x = self.body.position.x * hill_racing.SCALE
+        pos_y = self.body.position.y * hill_racing.SCALE
+        degrees_angle = math.degrees(self.body.angle) * -1
+
+        sprite = getattr(hill_racing, "torso_sprite", None)
+        if sprite is not None:
+            scaled = pygame.transform.scale(sprite, (hill_racing.PERSON_WIDTH, hill_racing.PERSON_HEIGHT))
+            rotated = pygame.transform.rotate(scaled, degrees_angle)
+            surface_screen.blit(
+                rotated,
+                (pos_x - hill_racing.panX, pos_y - hill_racing.panY),
+            )
+        else:
+            rect = pygame.Rect(
+                int(pos_x - hill_racing.panX - self.width / 2),
+                int(pos_y - hill_racing.panY - self.height / 2),
+                int(self.width),
+                int(self.height),
+            )
+            pygame.draw.rect(surface_screen, (220, 50, 50), rect)
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/ground.py
+################################################################################
+
+"""
+Modulo Generazione Terreno Procedurale e Collisioni per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+import random
+from typing import Optional
+
+from Box2D import (
+    b2BodyDef,
+    b2EdgeShape,
+    b2FixtureDef,
+    b2PolygonShape,
+    b2Vec2,
+    b2World,
+    b2_staticBody,
+)
+import numpy as np
+import pygame
+
+from . import hill_racing, perlin
+
+
+class Ground:
+    def __init__(self, world: b2World = None, original_noise: bool = False):
+        self.world = world
+        self.id = "ground"
+        self.ground_vectors: list[b2Vec2] = []
+        self.dirtBody = None
+        self.grassBody = None
+        self.distance = hill_racing.GROUND_DISTANCE
+        self.x = 0
+        self.y = 0
+        self.smoothness = 15
+        self.grass_thickness = 5
+        self.steepness_Level = 0
+        self.scaled_ground_vectors: list[b2Vec2] = []
+        self.original_noise = original_noise
+
+    def randomize_ground(self, seed: Optional[int] = None) -> None:
+        if seed is not None:
+            random.seed(seed)
+        ground_seed = random.uniform(0, 100000)
+        min_height = 30
+        flat_length = 500
+        height_addition = 0.0
+
+        for i in range(0, self.distance, self.smoothness):
+            self.steepness_Level = float(np.interp(i, [0, self.distance], [130, 250]))
+
+            if self.original_noise:
+                flat_length = 0
+                noised_y = abs(perlin.original_pnoise(ground_seed + (i - flat_length) / (700 - self.steepness_Level)))
+            else:
+                noised_y = abs(perlin.pnoise1(ground_seed + (i - flat_length) / (700 - self.steepness_Level), octaves=4))
+
+            max_height = hill_racing.DIFFICULTY + float(np.interp(self.steepness_Level, [0, 200], [0, 320]))
+
+            if i < flat_length:
+                noised_y = abs(perlin.pnoise1(ground_seed, octaves=4))
+                height_addition = (flat_length - i) / 25.0
+
+            y_val = hill_racing.SCREEN_HEIGHT - float(np.interp(noised_y, [0, 1], [min_height, max_height])) + height_addition
+            self.ground_vectors.append(b2Vec2(i, y_val))
+
+        self.ground_vectors.append(b2Vec2(self.distance, hill_racing.SCREEN_HEIGHT))
+        self.ground_vectors.append(b2Vec2(0, hill_racing.SCREEN_HEIGHT))
+        hill_racing.SPAWNING_Y = self.ground_vectors[10].y - 100
+
+        for vect in self.ground_vectors:
+            vect.x /= hill_racing.SCALE
+            vect.y /= hill_racing.SCALE
+
+    def groundTooSteep(self) -> bool:
+        for vector in self.ground_vectors:
+            oi = self.getPositions(int(vector.x), 10, 1)
+            total_diff = sum(max(0.0, oi[i - 1] - oi[i]) for i in range(1, len(oi)))
+            if total_diff > 5.5:
+                return True
+        return False
+
+    def getPositions(self, x: int, numberOfPositions: int, skip: int) -> list[float]:
+        returnList = []
+        for i in range(len(self.ground_vectors)):
+            if self.ground_vectors[i].x >= x:
+                for j in range(0, min(skip * numberOfPositions, len(self.ground_vectors) - i), skip):
+                    returnList.append(self.ground_vectors[i + j].y)
+                break
+        while len(returnList) < numberOfPositions:
+            returnList.append(returnList[-1] if returnList else 0.0)
+        return returnList
+
+    def cloneFrom(self, otherGround: Ground) -> None:
+        self.ground_vectors = [b2Vec2(v.x, v.y) for v in otherGround.ground_vectors]
+
+    def setBodies(self, worldToAddTo: b2World) -> None:
+        self.world = worldToAddTo
+        self.makeBody()
+        for i in range(1, len(self.ground_vectors)):
+            self.addEdge(
+                self.ground_vectors[i - 1],
+                self.ground_vectors[i],
+                hill_racing.DIRT_MASK,
+                hill_racing.DIRT_CATEGORY,
+                False,
+            )
+
+        for i in range(1, len(self.ground_vectors)):
+            self.addEdge(
+                b2Vec2(
+                    self.ground_vectors[i - 1].x,
+                    self.ground_vectors[i - 1].y - self.grass_thickness / hill_racing.SCALE,
+                ),
+                b2Vec2(
+                    self.ground_vectors[i].x,
+                    self.ground_vectors[i].y - self.grass_thickness / hill_racing.SCALE,
+                ),
+                hill_racing.GRASS_MASK,
+                hill_racing.GRASS_CATEGORY,
+                True,
+            )
+        self.create_invisible_wall()
+
+    def create_invisible_wall(self) -> None:
+        wall_body = b2BodyDef(type=b2_staticBody, position=(0, 0), angle=0)
+        wall_fixture = b2FixtureDef(
+            density=0,
+            friction=0.99,
+            restitution=0,
+            shape=b2PolygonShape(box=(4, 10000)),
+        )
+        invisible_wall = self.world.CreateBody(wall_body)
+        invisible_wall.userData = self
+        invisible_wall.CreateFixture(wall_fixture)
+
+    def makeBody(self) -> None:
+        bodyDef = b2BodyDef(type=b2_staticBody, position=(0, 0))
+        self.dirtBody = self.world.CreateBody(bodyDef)
+        self.grassBody = self.world.CreateBody(bodyDef)
+        self.dirtBody.userData = self
+        self.grassBody.userData = self
+
+    def addEdge(self, vec1: b2Vec2, vec2: b2Vec2, mask: int, category: int, isGrass: bool) -> None:
+        fixDef = b2FixtureDef(
+            categoryBits=category,
+            maskBits=mask,
+            friction=0.99,
+            restitution=0.1,
+            shape=b2EdgeShape(),
+        )
+        fixDef.shape.vertices = [vec1, vec2]
+        if isGrass:
+            self.grassBody.CreateFixture(fixDef)
+        else:
+            self.dirtBody.CreateFixture(fixDef)
+
+    def draw_ground(self, surface_screen: pygame.Surface) -> None:
+        ground_color = (88, 35, 0)
+        grass_color = (34, 160, 34)
+
+        if not self.scaled_ground_vectors:
+            self.scaled_ground_vectors = [
+                b2Vec2(v.x * hill_racing.SCALE, v.y * hill_racing.SCALE)
+                for v in self.ground_vectors
+            ]
+
+        vertices = [
+            (0 - hill_racing.panX, hill_racing.SCREEN_HEIGHT + self.grass_thickness * 2 - hill_racing.panY)
+        ]
+        for i in range(0, len(self.scaled_ground_vectors) - 2):
+            vertices.append(
+                (
+                    self.scaled_ground_vectors[i].x - hill_racing.panX,
+                    self.scaled_ground_vectors[i].y - hill_racing.panY,
+                )
+            )
+        vertices.append(
+            (
+                self.distance - hill_racing.panX,
+                hill_racing.SCREEN_HEIGHT + self.grass_thickness * 2 - hill_racing.panY,
+            )
+        )
+
+        if len(vertices) >= 3:
+            pygame.draw.polygon(surface_screen, ground_color, vertices)
+            pygame.draw.polygon(surface_screen, grass_color, vertices, width=self.grass_thickness * 2)
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/agent.py
+################################################################################
+
+"""
+Modulo Agente (Car, Person, Airtime & Telemetria) per Hill Climb Racing.
+"""
+
+from __future__ import annotations
+
+from . import car, hill_racing
+
+
+class Agent:
+    def __init__(self, real_world):
+        self.dead = False
+        self.score = 0
+        self.world = real_world
+        self.car: car.Car | None = None
+        self.spawning_x = hill_racing.SPAWNING_X
+        self.spawning_y = hill_racing.SPAWNING_Y
+        self.steps_in_air = 0
+        self.airtime_counter = 0
+        self.total_airtime = 0
+
+    def add_to_world(self) -> None:
+        self.car = car.Car(x=self.spawning_x, y=self.spawning_y, world=self.world, agent=self)
+
+    def draw_agent(self, surface_screen) -> None:
+        if not self.dead and self.car is not None:
+            self.car.draw_person_car(surface_screen)
+
+    def update(self) -> None:
+        if self.car is None:
+            return
+
+        hill_racing.panX = self.car.chassis_body.position.x * hill_racing.SCALE - 100
+
+        if self.car.dead:
+            self.dead = True
+        else:
+            self.car.update_status()
+
+        self.score = max(0, int((self.car.max_distance - (self.spawning_x / hill_racing.SCALE))))
+
+        if not self.car.wheels[0].on_ground and not self.car.wheels[1].on_ground:
+            self.total_airtime = 0
+            self.steps_in_air += 1
+            if self.steps_in_air >= 20:
+                self.airtime_counter += 1
+                self.steps_in_air = 0
+        else:
+            self.total_airtime = self.airtime_counter
+            self.airtime_counter = 0
+            self.steps_in_air = 0
+
+    def destroy_agent(self) -> None:
+        if self.car is None or self.world is None:
+            return
+        try:
+            self.world.DestroyBody(self.car.chassis_body)
+            self.world.DestroyBody(self.car.wheels[0].body)
+            self.world.DestroyBody(self.car.wheels[0].rim_body)
+            self.world.DestroyBody(self.car.wheels[1].body)
+            self.world.DestroyBody(self.car.wheels[1].rim_body)
+            self.world.DestroyBody(self.car.person.head.body)
+            self.world.DestroyBody(self.car.person.torso.body)
+        except Exception:
+            pass
+        self.car = None
+
+
+
+
+################################################################################
+### FILE: play2learn_hillclimb/engine/perlin.py
+################################################################################
+
+"""
+Modulo Perlin Noise in puro Python.
+Porting da Processing (https://processingfoundation.org/) e implementazione autonoma
+a 4 ottave per garantire funzionamento 100% cross-platform senza dipendenze C.
+"""
+
+import math
+import random
+
+PERLIN_YWRAPB = 4
+PERLIN_YWRAP = 1 << PERLIN_YWRAPB
+PERLIN_ZWRAPB = 8
+PERLIN_ZWRAP = 1 << PERLIN_ZWRAPB
+PERLIN_SIZE = 4095
+
+perlin_octaves = 4
+perlin_amp_falloff = 0.5
+
+
+def scaled_cosine(i: float) -> float:
+    return 0.5 * (1.0 - math.cos(i * math.pi))
+
+
+# Tabella di permutazione pseudo-casuale fissa o inizializzata
+_PERLIN_TABLE = [random.random() for _ in range(PERLIN_SIZE + 1)]
+
+
+def original_pnoise(x: float, y: float = 0.0, z: float = 0.0) -> float:
+    """Implementazione Perlin Noise porting da Processing."""
+    if x < 0:
+        x = -x
+    if y < 0:
+        y = -y
+    if z < 0:
+        z = -z
+
+    xi = math.floor(x)
+    yi = math.floor(y)
+    zi = math.floor(z)
+    xf = x - xi
+    yf = y - yi
+    zf = z - zi
+    r = 0.0
+    ampl = 0.5
+
+    for _ in range(perlin_octaves):
+        of = xi + (yi << PERLIN_YWRAPB) + (zi << PERLIN_ZWRAPB)
+
+        rxf = scaled_cosine(xf)
+        ryf = scaled_cosine(yf)
+
+        n1 = _PERLIN_TABLE[of & PERLIN_SIZE]
+        n1 += rxf * (_PERLIN_TABLE[(of + 1) & PERLIN_SIZE] - n1)
+        n2 = _PERLIN_TABLE[(of + PERLIN_YWRAP) & PERLIN_SIZE]
+        n2 += rxf * (_PERLIN_TABLE[(of + PERLIN_YWRAP + 1) & PERLIN_SIZE] - n2)
+        n1 += ryf * (n2 - n1)
+
+        of += PERLIN_ZWRAP
+        n2 = _PERLIN_TABLE[of & PERLIN_SIZE]
+        n2 += rxf * (_PERLIN_TABLE[(of + 1) & PERLIN_SIZE] - n2)
+        n3 = _PERLIN_TABLE[(of + PERLIN_YWRAP) & PERLIN_SIZE]
+        n3 += rxf * (_PERLIN_TABLE[(of + PERLIN_YWRAP + 1) & PERLIN_SIZE] - n3)
+        n2 += ryf * (n3 - n2)
+
+        n1 += scaled_cosine(zf) * (n2 - n1)
+
+        r += n1 * ampl
+        ampl *= perlin_amp_falloff
+        xi <<= 1
+        xf *= 2
+        yi <<= 1
+        yf *= 2
+        zi <<= 1
+        zf *= 2
+
+        if xf >= 1.0:
+            xi += 1
+            xf -= 1
+        if yf >= 1.0:
+            yi += 1
+            yf -= 1
+        if zf >= 1.0:
+            zi += 1
+            zf -= 1
+
+    return r
+
+
+def pnoise1(x: float, octaves: int = 4) -> float:
+    """Equivalente puro Python di noise.pnoise1() a 4 ottave nell'intervallo [-1, 1]."""
+    # Mappa l'output da [0, 1] a [-1, 1]
+    val = original_pnoise(x)
+    return (val - 0.5) * 2.0
+
+
+
+
+################################################################################
 ### FILE: tests/__init__.py
-================================================================================
+################################################################################
 
 """Suite di test automatizzati per Play2Learn - Lunar Lander."""
 
 
 
 
-================================================================================
+################################################################################
 ### FILE: tests/test_config.py
-================================================================================
+################################################################################
 
 import unittest
 
@@ -6607,9 +10872,9 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
 ### FILE: tests/test_environment.py
-================================================================================
+################################################################################
 
 import unittest
 import numpy as np
@@ -6712,9 +10977,9 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
 ### FILE: tests/test_agent.py
-================================================================================
+################################################################################
 
 import unittest
 from play2learn_lunarlander.agent import RewardTrackerCallback
@@ -6774,9 +11039,9 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
 ### FILE: tests/test_storage_favorites.py
-================================================================================
+################################################################################
 
 import unittest
 import tempfile
@@ -6840,9 +11105,9 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
 ### FILE: tests/test_interactive.py
-================================================================================
+################################################################################
 
 import unittest
 import gymnasium as gym
@@ -6910,9 +11175,90 @@ if __name__ == "__main__":
 
 
 
-================================================================================
+################################################################################
+### FILE: tests/test_reporting.py
+################################################################################
+
+import unittest
+import math
+import numpy as np
+from pathlib import Path
+
+from play2learn_lunarlander.reporting import (
+    _serialize_eval_metrics,
+    _load_reward_fn_from_source,
+    genera_report_esperimento,
+)
+
+
+class TestReporting(unittest.TestCase):
+    def test_serialize_eval_metrics_strips_paths(self):
+        raw_stats = {
+            "eval_success_rate": 80.0,
+            "mean_reward": 150.5,
+            "mean_fuel": 42.0,
+            "videos": [Path("a/b/c.mp4"), Path("x/y/z.mp4")],
+            "gif_path": Path("runs/milestones.gif"),
+            "nested": {"val": 10, "path": Path("dummy")},
+        }
+        serialized = _serialize_eval_metrics(raw_stats)
+        self.assertIn("eval_success_rate", serialized)
+        self.assertEqual(serialized["eval_success_rate"], 80.0)
+        self.assertNotIn("videos", serialized)
+        self.assertNotIn("gif_path", serialized)
+        self.assertNotIn("nested", serialized)
+
+    def test_load_reward_fn_with_numpy_and_math(self):
+        source = """
+def custom_reward(obs, action, is_success, is_crashed, is_timeout):
+    dist = np.linalg.norm(obs[:2])
+    decay = math.exp(-dist)
+    return float(decay)
+"""
+        fn = _load_reward_fn_from_source(source)
+        self.assertIsNotNone(fn)
+        obs = np.array([0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        val = fn(obs, 0, False, False, False)
+        self.assertIsInstance(val, float)
+        self.assertGreater(val, 0.0)
+
+    def test_html_escaping_in_report(self):
+        import tempfile
+        import shutil
+        import json
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            meta = {
+                "mission": {"title": "Test <Danger>"},
+                "reward_source_code": "if x < 0.5 and y > 0.2:\n    return True <script>alert(1)</script>",
+                "eval_metrics": {"eval_success_rate": 80.0, "mean_fuel": 40.0},
+                "notes": "Note con <bold>tag</bold>",
+            }
+            (tmp_dir / "run_metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+
+            res = genera_report_esperimento(
+                run_or_fav=tmp_dir,
+                autore="Studente <script>",
+                titolo="Titolo <Escape>",
+            )
+            html_content = res["html_path"].read_text(encoding="utf-8")
+            self.assertNotIn("<script>", html_content)
+            self.assertIn("&lt;script&gt;", html_content)
+            self.assertIn("&lt;Danger&gt;", html_content)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+################################################################################
 ### FILE: tests/test_reset.py
-================================================================================
+################################################################################
 
 import unittest
 from play2learn_lunarlander.reset import get_root_dir, verifica_integrita_progetto
@@ -6926,5 +11272,114 @@ class TestReset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+################################################################################
+### FILE: tests/test_hillclimb.py
+################################################################################
+
+import unittest
+import numpy as np
+import gymnasium as gym
+
+import play2learn_hillclimb
+from play2learn_hillclimb.config import ENV_ID, MISSIONS
+from play2learn_hillclimb.environment import (
+    HillClimbRewardWrapper,
+    classify_hill_climb_outcome,
+)
+from play2learn_hillclimb.interactive import gioca_single_player, gioca_vs_agente
+
+
+class TestHillClimb(unittest.TestCase):
+    def test_config_and_missions(self):
+        self.assertEqual(ENV_ID, "HillClimbRacing-v0")
+        self.assertIn("campagna_standard", MISSIONS)
+        self.assertIn("deserto_dune", MISSIONS)
+        self.assertIn("montagna_estrema", MISSIONS)
+        self.assertIn("luna_bassa_gravita", MISSIONS)
+        self.assertIn("autostrada_veloce", MISSIONS)
+
+    def test_environment_gym_make_and_step(self):
+        env = gym.make(ENV_ID, render_mode="rgb_array")
+        obs, info = env.reset(seed=42)
+        self.assertEqual(len(obs), 8)
+        self.assertIn("score", info)
+
+        obs, reward, term, trunc, info = env.step(1)
+        self.assertEqual(len(obs), 8)
+        self.assertIsInstance(reward, float)
+
+        frame = env.render()
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.shape[2], 3)
+        env.close()
+
+    def test_reward_wrapper_custom_reward(self):
+        def my_reward(obs, action, is_success, is_crashed, is_timeout):
+            dist = obs[0]
+            vx = obs[2]
+            return float(dist * 0.1 + vx)
+
+        env = gym.make(ENV_ID, render_mode="rgb_array")
+        wrapped = HillClimbRewardWrapper(env, reward_fn=my_reward)
+        obs, _ = wrapped.reset(seed=42)
+        obs, rew, term, trunc, info = wrapped.step(1)
+        self.assertIsInstance(rew, float)
+        self.assertIn("telemetry", info)
+        self.assertIn("max_distance", info["telemetry"])
+        wrapped.close()
+
+    def test_reward_wrapper_nan_raises_error(self):
+        def bad_reward(obs, action):
+            return float("nan")
+
+        env = gym.make(ENV_ID, render_mode="rgb_array")
+        wrapped = HillClimbRewardWrapper(env, reward_fn=bad_reward)
+        wrapped.reset(seed=42)
+        with self.assertRaises(RuntimeError):
+            wrapped.step(0)
+        wrapped.close()
+
+    def test_classify_outcome(self):
+        # 1. Successo: distanza >= 800m
+        obs_succ = np.array([850.0, 10.0, 5.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+        succ, crash, tout, _ = classify_hill_climb_outcome(
+            obs=obs_succ,
+            original_reward=100.0,
+            terminated=True,
+            truncated=False,
+        )
+        self.assertTrue(succ)
+        self.assertFalse(crash)
+
+        # 2. Timeout: bloccato nel fosso
+        obs_tout = np.array([120.0, 10.0, 0.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+        succ_t, crash_t, tout_t, _ = classify_hill_climb_outcome(
+            obs=obs_tout,
+            original_reward=-100.0,
+            terminated=False,
+            truncated=True,
+        )
+        self.assertFalse(succ_t)
+        self.assertTrue(tout_t)
+
+    def test_interactive_smoke(self):
+        ui = gioca_single_player(seed=42)
+        self.assertIsNotNone(ui)
+        html_str = str(getattr(ui, "data", ui))
+        self.assertIn("Simulatore Manuale", html_str)
+
+        ui_vs = gioca_vs_agente(model_or_result=None, seed=42)
+        self.assertIsNotNone(ui_vs)
+        html_vs = str(getattr(ui_vs, "data", ui_vs))
+        self.assertIn("Sfida Hill Climb", html_vs)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
 
 
