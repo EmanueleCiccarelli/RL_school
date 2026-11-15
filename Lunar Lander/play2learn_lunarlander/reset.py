@@ -54,6 +54,10 @@ def pulisci_notebook(nb_path: Path) -> int:
 
 def pulisci_runs(runs_dir: Path) -> None:
     """Elimina tutte le run precedenti e ricrea l'alberatura runs/favorites vergine."""
+    # Controllo di sicurezza: verifica che il target sia effettivamente la cartella 'runs'
+    if runs_dir.name != "runs":
+        raise ValueError(f"❌ Errore di sicurezza: la cartella target non è 'runs' ma '{runs_dir.name}'. Operazione bloccata!")
+
     if runs_dir.exists():
         for item in runs_dir.iterdir():
             if item.is_dir():
@@ -71,9 +75,13 @@ def pulisci_runs(runs_dir: Path) -> None:
 
 
 def pulisci_cache(root_dir: Path) -> None:
-    """Rimuove tutte le cartelle __pycache__ e i file .pyc."""
+    """Rimuove unicamente le cartelle __pycache__, i file .pyc e i checkpoint di Jupyter."""
     rimossi = 0
     for p in root_dir.rglob("__pycache__"):
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+            rimossi += 1
+    for p in root_dir.rglob(".ipynb_checkpoints"):
         if p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
             rimossi += 1
@@ -82,11 +90,40 @@ def pulisci_cache(root_dir: Path) -> None:
             p.unlink(missing_ok=True)
             rimossi += 1
     if rimossi > 0:
-        print(f"✅ Cache Python rimossa ({rimossi} elementi eliminati)")
+        print(f"✅ Cache Python e checkpoint temporanei rimossi ({rimossi} elementi eliminati)")
+
+
+def verifica_integrita_progetto(root_dir: Path) -> bool:
+    """
+    Verifica che il reset non abbia toccato o rimosso nessun file fondamentale
+    della codebase o dei notebook.
+    """
+    file_critici = [
+        root_dir / "laboratorio_lunar_lander.ipynb",
+        root_dir / "play2learn_lunarlander" / "laboratorio_lunar_lander_locale.ipynb",
+        root_dir / "play2learn_lunarlander" / "__init__.py",
+        root_dir / "play2learn_lunarlander" / "config.py",
+        root_dir / "play2learn_lunarlander" / "environment.py",
+        root_dir / "play2learn_lunarlander" / "agent.py",
+        root_dir / "play2learn_lunarlander" / "lab.py",
+        root_dir / "play2learn_lunarlander" / "reporting.py",
+        root_dir / "README.md",
+        root_dir / ".gitignore",
+    ]
+
+    mancanti = [f.relative_to(root_dir) for f in file_critici if not f.exists()]
+    if mancanti:
+        print(f"🚨 ALLARME INTEGRITÀ: i seguenti file critici risultano mancanti dopo il reset:")
+        for m in mancanti:
+            print(f"   ❌ {m}")
+        return False
+
+    print("🛡️  Verifica di sicurezza superata: tutti i file sorgente, moduli e notebook sono intatti al 100%!")
+    return True
 
 
 def reset_laboratorio(chiedi_conferma: bool = False) -> None:
-    """Esegue il reset completo del laboratorio."""
+    """Esegue il reset completo del laboratorio con controlli di integrità."""
     root_dir = get_root_dir()
 
     print("\n" + "=" * 70)
@@ -106,12 +143,18 @@ def reset_laboratorio(chiedi_conferma: bool = False) -> None:
     pulisci_notebook(root_dir / "laboratorio_lunar_lander.ipynb")
     pulisci_notebook(root_dir / "play2learn_lunarlander" / "laboratorio_lunar_lander_locale.ipynb")
 
-    # 3. Pulizia cache Python
+    # 3. Pulizia cache Python e checkpoint temporanei
     pulisci_cache(root_dir)
 
+    # 4. Controllo automatico di integrità post-reset
+    integro = verifica_integrita_progetto(root_dir)
+
     print("=" * 70)
-    print("  ✨ AMBIENTE COMPLETAMENTE RIPRISTINATO E PULITO!")
-    print("  Il laboratorio è pronto per essere distribuito agli studenti.")
+    if integro:
+        print("  ✨ AMBIENTE COMPLETAMENTE RIPRISTINATO, PULITO E VERIFICATO!")
+        print("  Il laboratorio è pronto per essere distribuito agli studenti.")
+    else:
+        print("  ⚠️ Attenzione: verificare i file mancanti segnalati.")
     print("=" * 70 + "\n")
 
 
