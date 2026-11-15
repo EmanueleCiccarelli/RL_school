@@ -14,11 +14,13 @@ numpy>=1.24.0
 matplotlib>=3.7.0
 imageio>=2.30.0
 imageio-ffmpeg>=0.4.8
+pillow>=9.5.0
 
 # Interfaccia Utente, Barre di Avanzamento e Tabelle
 tqdm>=4.65.0
 rich>=13.0.0
 
-# Supporto Jupyter Notebook per esecuzione locale
+# Supporto Jupyter Notebook e Testing
 ipykernel>=6.20.0
 jupyterlab>=4.0.0
+pytest>=7.0.0

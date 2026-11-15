@@ -117,9 +117,11 @@ def verifica_integrita_progetto(root_dir: Path) -> bool:
         root_dir / "play2learn_lunarlander" / "favorites.py",
         root_dir / "play2learn_lunarlander" / "reporting.py",
         root_dir / "play2learn_lunarlander" / "lab.py",
+        root_dir / "play2learn_lunarlander" / "interactive.py",
         root_dir / "play2learn_lunarlander" / "reset.py",
         root_dir / "README.md",
         root_dir / "requirements.txt",
+        root_dir / "pyproject.toml",
         root_dir / ".gitignore",
     ]
 
@@ -171,5 +173,10 @@ def reset_laboratorio(chiedi_conferma: bool = False) -> None:
 
 
 if __name__ == "__main__":
+    if "--check" in sys.argv or "--dry-run" in sys.argv:
+        r_dir = get_root_dir()
+        ok = verifica_integrita_progetto(r_dir)
+        sys.exit(0 if ok else 1)
+
     force = ("--force" in sys.argv) or ("-y" in sys.argv)
     reset_laboratorio(chiedi_conferma=not force)

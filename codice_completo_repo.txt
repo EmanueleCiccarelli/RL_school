@@ -14,43 +14,58 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-Box2D-green.svg)](https://gymnasium.farama.org/environments/box2d/lunar_lander/)
 [![Stable Baselines3](https://img.shields.io/badge/Algorithm-PPO-orange.svg)](https://stable-baselines3.readthedocs.io/)
+[![Unit Tests](https://img.shields.io/badge/tests-15%20passed-brightgreen.svg)](https://github.com/EmanueleCiccarelli/RL_school)
 
-Laboratorio didattico di **Reinforcement Learning** per studenti di scuola secondaria di secondo grado (quinta superiore). L'obiettivo formativo è comprendere il funzionamento dell'apprendimento per rinforzo attraverso il **Reward Shaping**: gli studenti progettano la logica matematica della funzione di ricompensa per insegnare a un modulo spaziale ad allunare in modo autonomo, sicuro ed efficiente.
+Laboratorio didattico avanzato di **Reinforcement Learning** per studenti di scuola secondaria di secondo grado (quinta superiore) e corsi introduttivi universitari. L'obiettivo formativo è padroneggiare i principi dell'apprendimento per rinforzo attraverso il **Reward Shaping**: gli studenti progettano la logica matematica della funzione di ricompensa per insegnare a un modulo spaziale ad allunare in modo autonomo, sicuro ed efficiente nel simulatore Box2D `LunarLander-v3`.
 
-Tutto il codice di orchestrazione, calcolo numerico, simulazione fisica e rendering è incapsulato nel motore modulare `play2learn_lunarlander`, consentendo agli studenti di concentrarsi esclusivamente sulla modellazione logico-matematica e sul debug del comportamento dell'agente.
+Tutto il codice di orchestrazione, calcolo numerico, parallelizzazione dei processi, simulazione fisica e rendering è incapsulato nel pacchetto modulare `play2learn_lunarlander`, consentendo agli studenti di concentrarsi esclusivamente sulla modellazione logico-matematica e sul debug qualitativo e quantitativo del comportamento dell'agente.
 
 ---
 
-## 📂 Struttura del Progetto
+## 📂 Architettura del Progetto
+
+Il progetto segue le specifiche moderne di packaging Python (PEP 517 / PEP 621) ed è corredato da una suite completa di test automatizzati:
 
 ```text
 RL_school/
 │
-├── laboratorio_lunar_lander.ipynb          # 🌐 Notebook ottimizzato per Google Colab
-├── README.md                               # 📖 Documentazione del laboratorio
-├── .gitignore                              # 🙈 Esclusioni Git
+├── pyproject.toml                          # 📦 Metadata packaging PEP 517 / PEP 621 & tool config
+├── requirements.txt                        # 📋 Dipendenze pip del laboratorio
+├── laboratorio_lunar_lander.ipynb          # 🌐 Notebook didattico principale (Colab & Cloud)
+├── README.md                               # 📖 Documentazione completa del laboratorio
+├── .gitignore                              # 🙈 Esclusioni Git per artefatti pesanti e checkpoint
 │
-├── play2learn_lunarlander/                 # ⚙️ Pacchetto orchestratore modulare
+├── play2learn_lunarlander/                 # ⚙️ Pacchetto motore di RL & orchestrazione
 │   ├── laboratorio_lunar_lander_locale.ipynb # 💻 Notebook ottimizzato per esecuzione in Locale
-│   ├── __init__.py                         # API pubblica del laboratorio
-│   ├── config.py                           # Costanti fisiche, 6 missioni e iperparametri PPO
-│   ├── environment.py                      # Wrapper reward, telemetria e parallelizzazione
-│   ├── agent.py                            # PPO agent e RewardTrackerCallback
-│   ├── diagnostics.py                      # "Flight Coach": diagnostica automatica anomalie
-│   ├── visualizer.py                       # Mappa fisica, dashboard 2x2 e player video HTML5
-│   ├── evaluator.py                        # Valutazione mista (3 successi + 3 fallimenti)
-│   ├── storage.py                          # Gestione salvataggi runs, metadati JSON e codice
-│   ├── favorites.py                        # Gestione archivio modelli preferiti
-│   ├── reporting.py                        # Generatore schede tecniche (PDF vettoriale, HTML, MD)
+│   ├── __init__.py                         # API pubblica del laboratorio (import diretti)
+│   ├── config.py                           # Parametri PPO, costanti fisiche, 6 missioni speciali
+│   ├── environment.py                      # Wrapper reward ad alta efficienza e parallelizzazione
+│   ├── agent.py                            # PPO agent, schedule LR e RewardTrackerCallback
+│   ├── diagnostics.py                      # "Flight Coach": diagnostica automatica in linguaggio naturale
+│   ├── visualizer.py                       # Mappe fisiche, dashboard 2x2 e player video HTML5
+│   ├── evaluator.py                        # Valutazione mista bilanciata (successi + schianti)
+│   ├── storage.py                          # Gestione salvataggi runs, metadati JSON e snapshot codice
+│   ├── favorites.py                        # Gestione archivio dedicato dei preferiti utente
+│   ├── reporting.py                        # Schede tecniche (PDF vettoriale 300 DPI, HTML5, Markdown)
+│   ├── interactive.py                      # Motore di gioco: Single Player e Sfida Tu vs Agente
 │   ├── lab.py                              # Orchestratore principale (run_lab)
-│   └── reset.py                            # 🧹 Script di reset per pulire l'ambiente
+│   └── reset.py                            # 🧹 Script di ripristino ambiente e verifica integrità
+│
+├── tests/                                  # 🧪 Suite di test unitari automatizzati (100% passing)
+│   ├── __init__.py
+│   ├── test_config.py                      # Verifica costanti, iperparametri e missioni
+│   ├── test_environment.py                 # Verifica signature dispatching e wrapper reward
+│   ├── test_agent.py                       # Test scorrimento finestra metrica live O(1)
+│   ├── test_storage_favorites.py           # Test indicizzazione run, preferiti e metadati
+│   ├── test_interactive.py                 # Test estrazione poligoni terreno e traiettorie
+│   └── test_reset.py                       # Test verifica integrità e file critici
 │
 └── runs/                                   # 📁 Cartella di archiviazione automatica delle run
-    ├── successi/                           # 🎯 Archivio automatico esperimenti di successo (>= 80%) con PDF
-    │   └── index.json                      # Indice degli esperimenti riusciti
-    └── favorites/                          # ⭐ Galleria dei PREFERITI personali salvati dall'utente
-        ├── index.json                      # Indice persistente dei modelli preferiti
-        └── videos/                         # Cartella dei video preferiti salvati
+    ├── successi/                           # 🎯 Archivio esperimenti di successo (tasso >= 80%) con PDF
+    │   └── index.json                      # Indice globale degli allunaggi riusciti
+    └── favorites/                          # ⭐ Archivio dei modelli PREFERITI salvati dall'utente
+        ├── index.json                      # Registro persistente dei modelli scelti
+        └── videos/                         # Video MP4 dei migliori allunaggi preferiti
 ```
 
 ---
@@ -62,8 +77,8 @@ Il laboratorio è disponibile in **due modalità sincronizzate**:
 ### Modalità 1: Google Colab (Consigliata per la classe)
 1. Clicca sul badge in cima al README:  
    [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
-2. Il notebook scaricherà automaticamente il pacchetto dalla repository GitHub ed installerà le librerie necessarie (`gymnasium[box2d]`, `stable-baselines3`, `imageio`, ecc.).
-3. Gli studenti possono subito concentrarsi sulla modifica di `custom_reward` ed eseguire l'addestramento direttamente nel browser.
+2. Il notebook clona automaticamente la repository GitHub e installa le dipendenze in circa 30 secondi.
+3. Gli studenti possono subito modificare la cella di `custom_reward` ed eseguire l'addestramento sfruttando le risorse cloud gratuite.
 
 ### Modalità 2: Ambiente Locale (per docenti o sviluppo offline)
 
@@ -74,21 +89,24 @@ Il laboratorio è disponibile in **due modalità sincronizzate**:
    ```
 
 2. **Crea e attiva un ambiente virtuale (consigliato):**
-   * **Su Windows (PowerShell):**
+   * **Windows (PowerShell):**
      ```powershell
      python -m venv venv
      .\venv\Scripts\Activate.ps1
      ```
-   * **Su Linux / macOS:**
+   * **Linux / macOS:**
      ```bash
      python3 -m venv venv
      source venv/bin/activate
      ```
 
-3. **Installa tutte le dipendenze tramite `requirements.txt`:**
+3. **Installa le dipendenze:**
+   Puoi installare le dipendenze classiche o installare il pacchetto in modalità sviluppatore editable:
    ```bash
    pip install --upgrade pip
    pip install -r requirements.txt
+   # oppure con il nuovo standard pyproject.toml:
+   pip install -e .
    ```
    > 💡 **Nota per utenti Windows:** Se `gymnasium[box2d]` segnala la mancanza di SWIG durante la compilazione, è sufficiente installare il compilatore precompilato con:
    > ```bash
@@ -102,15 +120,51 @@ Il laboratorio è disponibile in **due modalità sincronizzate**:
    # oppure: jupyter notebook
    ```
 
-5. **Apri il notebook dedicato all'ambiente locale:**  
-   Naviga ed apri il file:  
-   📂 `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`
+5. **Apri il notebook dedicato:**  
+   Naviga ed apri `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`.
+
+---
+
+## 🧭 Struttura del Percorso Didattico (Le 10 Sezioni)
+
+Il notebook guida gli studenti passo-passo attraverso 10 sezioni strutturate:
+
+1. **Sezione 1: Setup dell'Ambiente e Importazioni**  
+   Verifica delle versioni software, rilevamento automatico hardware (CPU/GPU) e configurazione thread per massimizzare gli FPS.
+2. **Sezione 2: Esplorazione dell'Ambiente Box2D**  
+   Ispezione visiva del vettore di stato ad 8 dimensioni (`x`, `y`, `vx`, `vy`, `angle`, `vangle`, `left_leg`, `right_leg`) e dello spazio delle 4 azioni discrete.
+3. **Sezione 3: L'Obiettivo Didattico (Reward Shaping)**  
+   Modellazione matematica della funzione di ricompensa con prevenzione delle trappole del *Reward Hacking* (trappola kamikaze e hovering infinito).
+4. **Sezione 4: Addestramento dell'Agente PPO**  
+   Esecuzione del training a 300k step con barra di avanzamento interattiva, telemetria in tempo reale (`Reward`, `Fuel`, `Success%`) e generazione opzionale di GIF animate sui milestone di apprendimento (`salva_gif_progresso=True`).
+5. **Sezione 5: Valutazione e Telemetria**  
+   Dashboard 2x2 ad alta risoluzione con curve di apprendimento e visualizzazione mista dei video: fino a 3 allunaggi riusciti (🟢) e fino a 3 schianti (🔴) per comprendere gli errori residui.
+6. **Sezione 6: Dimostrazione Live dell'Allunaggio**  
+   Esecuzione immediata di un episodio di test con rendering grafico o video HTML5.
+7. **Sezione 7: Sfide Avanzate (Missioni Speciali)**  
+   Metti alla prova la robustezza della policy in 6 scenari fisici estremi:
+   - 🌬️ *Vento Laterale Improvviso* (`vento`)
+   - 🪐 *Gravità Lunare Ridotta* (`bassa_gravita`)
+   - 🪨 *Gravità Gioviana Pesante* (`alta_gravita`)
+   - ⚡ *Spinta Motore Principale Depotenziata* (`motore_debole`)
+   - ⛽ *Carburante Critico e Limitato* (`carburante_critico`)
+   - 🌪️ *Tempesta Lunare Totale* (`tempesta_lunare`)
+8. **Sezione 8: Archivio Preferiti e Successi**  
+   Separazione concettuale pulita:
+   - `runs/successi/`: Tutti gli esperimenti con tasso di successo $\ge 80\%$, corredati da scheda tecnica.
+   - `runs/favorites/`: I video e i modelli scelti e salvati esplicitamente dallo studente con un commento personale.
+9. **Sezione 9: Generatore Report da Timestamp**  
+   Inserendo il timestamp di qualsiasi run storica (es. `20261115_214530`), genera istantaneamente la scheda tecnica in versione *Base* o *Avanzata* (con valutazione multi-video) e permette il confronto grafico tra esperimenti.
+10. **Sezione 10: Sfida Interattiva: Single Player & Tu vs Agente**  
+    Mini-gioco interattivo giocabile sia in locale (tastiera/tasti freccia) sia su Google Colab:
+    - **Single Player:** Prova a pilotare manualmente il modulo spaziale per capire quanto sia difficile l'allunaggio umano!
+    - **Tu vs Agente:** Sfida diretta contro il tuo modello addestrato con visualizzazione sinottica delle traiettorie fianco a fianco, confronto del consumo di carburante e calcolo del punteggio finale.
 
 ---
 
 ## 🧠 L'Obiettivo Didattico: La Funzione di Reward
 
-Ad ogni step ($0{,}02\text{ secondi}$), l'agente riceve gli 8 sensori fisici di bordo (`obs`), il comando motore (`action`) e gli eventi di fine volo:
+Ad ogni step ($0{,}02\text{ secondi}$), l'agente riceve gli 8 sensori fisici di bordo (`obs`), il comando motore (`action`) e i flag di stato terminali:
 
 ```python
 def custom_reward(obs, action, is_success, is_crashed, is_timeout):
@@ -122,10 +176,10 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
     # =========================================================================
 
     # Esempi di termini da considerare:
-    # - Posizione orizzontale: avvicinarsi al centro (x = 0.0)
-    # - Velocità di discesa: frenare quando vy è troppo negativo
+    # - Posizione orizzontale: avvicinarsi alla piazzola centrale (x = 0.0)
+    # - Velocità di discesa: frenare dolcemente quando vy è negativo
     # - Assetto angolare: mantenere il modulo verticale (angle = 0.0)
-    # - Efficienza: premiare lo spegnimento dei motori a terra (action == 0)
+    # - Efficienza: premiare il contatto a terra e lo spegnimento motori
 
     # Eventi terminali
     if is_success:
@@ -136,47 +190,164 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
     return float(reward)
 ```
 
-### Le 2 Trappole Matematiche Classiche
-Gli studenti imparano ad analizzare il fenomeno del *Reward Hacking*:
-1. 💥 **La Trappola Kamikaze (Suicidio Rapido):** Se le penalità per step in volo sono troppo elevate, all'agente conviene schiantarsi subito per interrompere l'episodio ed evitare di accumulare penalità continue.
-2. 🪂 **La Trappola dell'Hovering Infinito:** Se l'agente riceve premi positivi in volo o non viene penalizzato il timeout, sceglie di galleggiare a mezz'aria senza mai rischiare l'atterraggio.
-
 ---
 
-## 📊 Telemetria, Diagnostica e Reportistica
+## 🧪 Suite di Test Unitari
 
-Al termine di ogni sessione di addestramento:
-* **Dashboard 2x2:** Mostra curva di ricompensa, tassi percentuali di successo/schianto/timeout nel tempo, durata del volo e consumo di carburante.
-* **Valutazione Mista:** Vengono registrati e mostrati sia **esempi di allunaggi riusciti** (🟢 fino a 3 video) sia **esempi di fallimento** (🔴 fino a 3 video) per comprendere esattamente cosa correggere.
-* **Diagnostica "Flight Coach":** Fornisce un feedback in linguaggio naturale spiegando la dinamica fisica del volo.
-* **Scheda Tecnica di Esportazione:** Se l'allunaggio raggiunge $\ge 80\%$ di successo, viene generata una scheda riassuntiva in triplice formato:
-  * **PDF Vettoriale** (`scheda_esperimento.pdf`) pronto per la stampa
-  * **HTML Autonomo** (`report_esperimento.html`) visualizzabile nel browser
-  * **Markdown** (`report_esperimento.md`) modificabile per aggiungere annotazioni personali
-* **Confronto tra Esperimenti:** La funzione `play2learn_lunarlander.confronta_run([run_1, run_2])` permette di visualizzare i progressi tra diverse formulazioni matematiche della reward.
-
----
-
-## 🧹 Reset dell'Ambiente
-
-Per ripulire l'ambiente da tutte le run precedenti, azzerare gli output di entrambi i notebook e riportare il laboratorio allo stato iniziale:
+Il progetto include una suite completa di test unitari automatizzati, eseguibili sia tramite il modulo standard Python `unittest` (zero dipendenze esterne richieste), sia tramite `pytest`:
 
 ```bash
-python play2learn_lunarlander/reset.py
+# Esecuzione con il modulo standard di Python:
+python -m unittest discover tests
+
+# Oppure con pytest:
+pytest
 ```
-*(usa `--force` o `-y` per eseguire il reset immediato).*
+
+I test verificano:
+- Costanti fisiche, 6 configurazioni di missioni speciali e parametri PPO/VecNormalize.
+- Flessibilità della signature di `custom_reward` (compatibilità con 1, 2, 5 argomenti o `**kwargs`).
+- Calcolo in tempo reale a complessità $O(1)$ della finestra mobile del tracker di reward e telemetria.
+- Persistenza e indicizzazione corretta delle cartelle di run e dei preferiti.
+- Estrazione geometrica del terreno Box2D e tracciamento delle traiettorie per la sfida interattiva.
+- Integrità dei file sorgente del progetto tramite `reset.py --check`.
+
+---
+
+## 🧹 Manutenzione e Reset dell'Ambiente
+
+Per ripulire l'ambiente dalle cartelle di training, azzerare le celle di output dei notebook e ripristinare il laboratorio allo stato iniziale:
+
+```bash
+# Modalità interattiva con conferma:
+python play2learn_lunarlander/reset.py
+
+# Modalità forzata immediata:
+python play2learn_lunarlander/reset.py --force
+
+# Modalità verifica non-distruttiva (Dry-run):
+python play2learn_lunarlander/reset.py --check
+```
 
 ---
 
 ## 📜 Licenza e Crediti
 
-Progetto didattico sviluppato per scuole secondarie di secondo grado.  
-Repository: [https://github.com/EmanueleCiccarelli/RL_school](https://github.com/EmanueleCiccarelli/RL_school)
+Progetto didattico e scientifico sviluppato per la formazione nelle scuole secondarie di secondo grado e università.  
+Repository ufficiale: [https://github.com/EmanueleCiccarelli/RL_school](https://github.com/EmanueleCiccarelli/RL_school)
+
 
 
 
 ################################################################################
-### FILE: play2learn_lunarlander\__init__.py
+### FILE: pyproject.toml
+################################################################################
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "play2learn-lunarlander"
+version = "2.0.0"
+description = "Laboratorio didattico di Reinforcement Learning per studenti di scuola secondaria (Gymnasium LunarLander-v3 & PPO)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Emanuele Ciccarelli" }
+]
+keywords = [
+    "reinforcement-learning",
+    "education",
+    "lunar-lander",
+    "ppo",
+    "gymnasium",
+    "stable-baselines3",
+    "colab"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Education",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "gymnasium[box2d]>=0.29.0",
+    "stable-baselines3>=2.1.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "imageio>=2.30.0",
+    "imageio-ffmpeg>=0.4.8",
+    "pillow>=9.5.0",
+    "tqdm>=4.65.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ipykernel>=6.20.0",
+    "jupyterlab>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/EmanueleCiccarelli/RL_school"
+Repository = "https://github.com/EmanueleCiccarelli/RL_school.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["play2learn_lunarlander*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+
+
+
+################################################################################
+### FILE: requirements.txt
+################################################################################
+
+# =============================================================================
+# Dipendenze per RL_school - Laboratorio di Reinforcement Learning
+# =============================================================================
+
+# Ambiente di Simulazione Fisica
+gymnasium[box2d]>=0.29.0
+
+# Algoritmi di Reinforcement Learning (PPO) e Deep Learning
+stable-baselines3>=2.1.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# Telemetria, Grafica e Visualizzazione Video/GIF
+matplotlib>=3.7.0
+imageio>=2.30.0
+imageio-ffmpeg>=0.4.8
+pillow>=9.5.0
+
+# Interfaccia Utente, Barre di Avanzamento e Tabelle
+tqdm>=4.65.0
+rich>=13.0.0
+
+# Supporto Jupyter Notebook e Testing
+ipykernel>=6.20.0
+jupyterlab>=4.0.0
+pytest>=7.0.0
+
+
+
+
+################################################################################
+### FILE: play2learn_lunarlander/__init__.py
 ################################################################################
 
 """
@@ -251,8 +422,9 @@ __all__ = [
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\config.py
+### FILE: play2learn_lunarlander/config.py
 ################################################################################
 
 """
@@ -415,8 +587,9 @@ DEFAULT_TIMESTEPS: int = 300_000
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\environment.py
+### FILE: play2learn_lunarlander/environment.py
 ################################################################################
 
 """
@@ -747,8 +920,9 @@ def wrap_vec_normalize(
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\agent.py
+### FILE: play2learn_lunarlander/agent.py
 ################################################################################
 
 """
@@ -1169,8 +1343,9 @@ def create_ppo_agent(
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\evaluator.py
+### FILE: play2learn_lunarlander/evaluator.py
 ################################################################################
 
 """
@@ -1702,8 +1877,9 @@ def crea_gif_evoluzione_apprendimento(
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\diagnostics.py
+### FILE: play2learn_lunarlander/diagnostics.py
 ################################################################################
 
 """
@@ -1826,8 +2002,9 @@ def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\visualizer.py
+### FILE: play2learn_lunarlander/visualizer.py
 ################################################################################
 
 """
@@ -1895,9 +2072,9 @@ def mostra_mappa_ambiente() -> None:
     ax.annotate(
         "PUNTO DI PARTENZA (x ≈ 0.0, y ≈ 1.4)\n"
         "• Azione 0: Motori spenti (fuel = 0.0)\n"
-        "• Azione 1: Razzo SX (spinge a SX: vx < 0, angle > 0)\n"
-        "• Azione 2: Motore Principale (frena caduta: vy sale, fuel = 1.0)\n"
-        "• Azione 3: Razzo DX (spinge a DX: vx > 0, angle < 0)",
+        "• Azione 1: Razzo Destro (spinge verso SX: vx < 0, rotazione oraria)\n"
+        "• Azione 2: Motore Principale (frena la caduta: vy sale, spinta verticale)\n"
+        "• Azione 3: Razzo Sinistro (spinge verso DX: vx > 0, rotazione antioraria)",
         xy=(0.0, 1.25), xytext=(-0.95, 1.06),
         color="white", fontsize=9,
         bbox=dict(boxstyle="round,pad=0.4", facecolor="#0d47a1", edgecolor="#64b5f6", alpha=0.92),
@@ -2199,8 +2376,9 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\storage.py
+### FILE: play2learn_lunarlander/storage.py
 ################################################################################
 
 """
@@ -2715,8 +2893,9 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\favorites.py
+### FILE: play2learn_lunarlander/favorites.py
 ################################################################################
 
 """
@@ -3074,8 +3253,9 @@ def carica_preferito(identifier: str | int = 0) -> tuple[PPO, dict[str, Any]]:
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\reporting.py
+### FILE: play2learn_lunarlander/reporting.py
 ################################################################################
 
 """
@@ -3954,8 +4134,9 @@ def genera_report_da_timestamp(
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\interactive.py
+### FILE: play2learn_lunarlander/interactive.py
 ################################################################################
 
 """
@@ -5163,8 +5344,9 @@ def gioca(
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\reset.py
+### FILE: play2learn_lunarlander/reset.py
 ################################################################################
 
 """
@@ -5286,9 +5468,11 @@ def verifica_integrita_progetto(root_dir: Path) -> bool:
         root_dir / "play2learn_lunarlander" / "favorites.py",
         root_dir / "play2learn_lunarlander" / "reporting.py",
         root_dir / "play2learn_lunarlander" / "lab.py",
+        root_dir / "play2learn_lunarlander" / "interactive.py",
         root_dir / "play2learn_lunarlander" / "reset.py",
         root_dir / "README.md",
         root_dir / "requirements.txt",
+        root_dir / "pyproject.toml",
         root_dir / ".gitignore",
     ]
 
@@ -5340,13 +5524,19 @@ def reset_laboratorio(chiedi_conferma: bool = False) -> None:
 
 
 if __name__ == "__main__":
+    if "--check" in sys.argv or "--dry-run" in sys.argv:
+        r_dir = get_root_dir()
+        ok = verifica_integrita_progetto(r_dir)
+        sys.exit(0 if ok else 1)
+
     force = ("--force" in sys.argv) or ("-y" in sys.argv)
     reset_laboratorio(chiedi_conferma=not force)
 
 
 
+
 ################################################################################
-### FILE: play2learn_lunarlander\lab.py
+### FILE: play2learn_lunarlander/lab.py
 ################################################################################
 
 """
@@ -5912,4 +6102,326 @@ def dimostrazione_live(
         print("-" * 65)
 
     env.close()
+
+
+
+
+################################################################################
+### FILE: tests/__init__.py
+################################################################################
+
+"""Suite di test automatizzati per Play2Learn - Lunar Lander."""
+
+
+
+
+################################################################################
+### FILE: tests/test_config.py
+################################################################################
+
+import unittest
+
+from play2learn_lunarlander.config import (
+    ENV_ID,
+    MISSIONS,
+    DEFAULT_PPO_PARAMS,
+    VECNORM_PARAMS,
+    DEFAULT_N_ENVS,
+    DEFAULT_TIMESTEPS,
+    HELIPAD_X_MIN,
+    HELIPAD_X_MAX,
+)
+
+
+class TestConfig(unittest.TestCase):
+    def test_env_id(self):
+        self.assertEqual(ENV_ID, "LunarLander-v3")
+
+    def test_missions_structure(self):
+        self.assertIn("luna_standard", MISSIONS)
+        self.assertIn("eco_lander", MISSIONS)
+        self.assertIn("speedrun", MISSIONS)
+        self.assertIn("tempesta_solare", MISSIONS)
+        self.assertIn("pianeta_pesante", MISSIONS)
+        self.assertIn("marte_leggero", MISSIONS)
+
+        for key, m in MISSIONS.items():
+            self.assertIn("title", m)
+            self.assertIn("description", m)
+            self.assertIn("goal", m)
+            self.assertIn("env_kwargs", m)
+            self.assertIn("gravity", m["env_kwargs"])
+
+    def test_ppo_hyperparameters(self):
+        self.assertEqual(DEFAULT_PPO_PARAMS["batch_size"], 64)
+        self.assertEqual(DEFAULT_PPO_PARAMS["n_epochs"], 8)
+        self.assertEqual(DEFAULT_PPO_PARAMS["gamma"], 0.995)
+        self.assertEqual(DEFAULT_PPO_PARAMS["gae_lambda"], 0.98)
+        self.assertEqual(DEFAULT_PPO_PARAMS["target_kl"], 0.03)
+        self.assertGreater(DEFAULT_PPO_PARAMS["learning_rate"], 0)
+
+    def test_vecnorm_params(self):
+        self.assertFalse(VECNORM_PARAMS["norm_obs"])
+        self.assertTrue(VECNORM_PARAMS["norm_reward"])
+        self.assertEqual(VECNORM_PARAMS["clip_reward"], 10.0)
+
+    def test_defaults(self):
+        self.assertEqual(DEFAULT_N_ENVS, 4)
+        self.assertEqual(DEFAULT_TIMESTEPS, 300_000)
+        self.assertEqual(HELIPAD_X_MIN, -0.20)
+        self.assertEqual(HELIPAD_X_MAX, 0.20)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+################################################################################
+### FILE: tests/test_environment.py
+################################################################################
+
+import unittest
+import numpy as np
+
+from play2learn_lunarlander.environment import _build_reward_caller
+
+
+class TestEnvironment(unittest.TestCase):
+    def test_reward_caller_5_params(self):
+        def rew_fn(obs, action, is_success, is_crashed, is_timeout):
+            return 10.0 if is_success else -1.0
+
+        caller = _build_reward_caller(rew_fn)
+        obs = np.zeros(8)
+        self.assertEqual(caller(obs, 0, True, False, False), 10.0)
+        self.assertEqual(caller(obs, 2, False, True, False), -1.0)
+
+    def test_reward_caller_2_params(self):
+        def rew_fn(obs, action):
+            return float(action * 2)
+
+        caller = _build_reward_caller(rew_fn)
+        obs = np.zeros(8)
+        self.assertEqual(caller(obs, 3, False, False, False), 6.0)
+
+    def test_reward_caller_1_param(self):
+        def rew_fn(obs):
+            return float(obs[0])
+
+        caller = _build_reward_caller(rew_fn)
+        obs = np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(caller(obs, 0, False, False, False), 0.5)
+
+    def test_reward_caller_fallback(self):
+        # Firma complessa con kwargs
+        def rew_fn(obs, action, is_success, is_crashed, is_timeout, **extra):
+            return 99.0
+
+        caller = _build_reward_caller(rew_fn)
+        obs = np.zeros(8)
+        self.assertEqual(caller(obs, 2, False, False, False), 99.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+
+################################################################################
+### FILE: tests/test_agent.py
+################################################################################
+
+import unittest
+from play2learn_lunarlander.agent import RewardTrackerCallback
+
+
+class TestAgent(unittest.TestCase):
+    def test_tracker_sliding_window(self):
+        tracker = RewardTrackerCallback(
+            total_timesteps=1000,
+            show_progress=False,
+            window_size=5,
+        )
+
+        class FakeInfo:
+            def __init__(self, r, l, succ, fuel):
+                self.d = {
+                    "episode": {"r": r, "l": l},
+                    "is_success": succ,
+                    "is_crashed": not succ,
+                    "is_timeout": False,
+                    "telemetry": {
+                        "fuel_used": fuel,
+                        "air_steps": l,
+                        "ground_steps": 0,
+                        "final_abs_x": 0.05,
+                        "final_abs_vy": 0.1,
+                        "final_abs_angle": 0.02,
+                    },
+                }
+
+            def get(self, k, default=None):
+                return self.d.get(k, default)
+
+        tracker.locals = {
+            "infos": [
+                FakeInfo(r=100.0, l=150, succ=True, fuel=40.0),
+                FakeInfo(r=50.0, l=120, succ=False, fuel=30.0),
+                FakeInfo(r=150.0, l=160, succ=True, fuel=50.0),
+                FakeInfo(r=200.0, l=140, succ=True, fuel=45.0),
+                FakeInfo(r=0.0, l=80, succ=False, fuel=20.0),
+            ]
+        }
+
+        tracker._on_step()
+
+        self.assertEqual(len(tracker.episode_rewards), 5)
+        self.assertEqual(tracker.successes, 3)
+        self.assertEqual(tracker.crashes, 2)
+        self.assertEqual(tracker.current_moving_success_rate, 60.0)
+        self.assertEqual(tracker.current_moving_reward, 100.0)
+        self.assertEqual(tracker.current_moving_fuel, 37.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+################################################################################
+### FILE: tests/test_storage_favorites.py
+################################################################################
+
+import unittest
+import tempfile
+import json
+import shutil
+from pathlib import Path
+
+from play2learn_lunarlander.storage import (
+    create_run_directory,
+    save_run_metadata,
+    find_run_by_timestamp,
+)
+
+
+class TestStorage(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_create_and_find_run_dir(self):
+        run_dir = create_run_directory(mission="test_mission", base_dir=self.test_dir)
+        self.assertTrue(run_dir.exists())
+        self.assertTrue((run_dir / "videos").exists())
+
+        # Crea un metadato minimo per rendere la run indicizzabile
+        (run_dir / "run_metadata.json").write_text("{}", encoding="utf-8")
+
+        found = find_run_by_timestamp("latest", runs_dir=self.test_dir)
+        self.assertEqual(found, run_dir)
+
+    def test_save_metadata(self):
+        run_dir = create_run_directory(mission="luna_standard", base_dir=self.test_dir)
+
+        def dummy_reward(obs, action):
+            return 42.0
+
+        meta_path = save_run_metadata(
+            run_dir=run_dir,
+            mission="luna_standard",
+            mission_cfg={"title": "Test Mission"},
+            env_kwargs={"gravity": -10.0},
+            total_timesteps=1000,
+            elapsed_seconds=1.5,
+            reward_fn=dummy_reward,
+            eval_stats={"eval_success_rate": 85.0, "mean_fuel": 45.0},
+            diagnostics={"formatted_text": "Ottimo volo"},
+        )
+
+        self.assertTrue(meta_path.exists())
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["mission"]["title"], "Test Mission")
+        self.assertEqual(data["eval_metrics"]["eval_success_rate"], 85.0)
+        self.assertIn("dummy_reward", data["reward_source_code"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+################################################################################
+### FILE: tests/test_interactive.py
+################################################################################
+
+import unittest
+import gymnasium as gym
+from stable_baselines3 import PPO
+
+from play2learn_lunarlander.interactive import (
+    _extract_terrain_and_helipad,
+    registra_traiettoria_agente,
+)
+
+
+class TestInteractive(unittest.TestCase):
+    def test_terrain_extraction(self):
+        env = gym.make("LunarLander-v3")
+        env.reset(seed=42)
+        pts, helipad = _extract_terrain_and_helipad(env)
+        env.close()
+
+        self.assertGreaterEqual(len(pts), 10)
+        self.assertLess(helipad[0], helipad[1])
+        self.assertGreater(helipad[2], 0)
+
+    def test_agent_trajectory_recording(self):
+        env = gym.make("LunarLander-v3")
+        model = PPO("MlpPolicy", env, n_steps=64, batch_size=64)
+        env.close()
+
+        data = registra_traiettoria_agente(model=model, seed=42, max_steps=20)
+        self.assertIn("terrain", data)
+        self.assertIn("helipad", data)
+        self.assertIn("steps", data)
+        self.assertIn("stats", data)
+        self.assertGreater(len(data["steps"]), 0)
+        self.assertIn("x", data["steps"][0])
+        self.assertIn("y", data["steps"][0])
+        self.assertIn("action", data["steps"][0])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+
+################################################################################
+### FILE: tests/test_reset.py
+################################################################################
+
+import unittest
+from play2learn_lunarlander.reset import get_root_dir, verifica_integrita_progetto
+
+
+class TestReset(unittest.TestCase):
+    def test_integrity_check(self):
+        root = get_root_dir()
+        self.assertTrue(verifica_integrita_progetto(root))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
 

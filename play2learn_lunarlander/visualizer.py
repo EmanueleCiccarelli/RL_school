@@ -63,9 +63,9 @@ def mostra_mappa_ambiente() -> None:
     ax.annotate(
         "PUNTO DI PARTENZA (x ≈ 0.0, y ≈ 1.4)\n"
         "• Azione 0: Motori spenti (fuel = 0.0)\n"
-        "• Azione 1: Razzo SX (spinge a SX: vx < 0, angle > 0)\n"
-        "• Azione 2: Motore Principale (frena caduta: vy sale, fuel = 1.0)\n"
-        "• Azione 3: Razzo DX (spinge a DX: vx > 0, angle < 0)",
+        "• Azione 1: Razzo Destro (spinge verso SX: vx < 0, rotazione oraria)\n"
+        "• Azione 2: Motore Principale (frena la caduta: vy sale, spinta verticale)\n"
+        "• Azione 3: Razzo Sinistro (spinge verso DX: vx > 0, rotazione antioraria)",
         xy=(0.0, 1.25), xytext=(-0.95, 1.06),
         color="white", fontsize=9,
         bbox=dict(boxstyle="round,pad=0.4", facecolor="#0d47a1", edgecolor="#64b5f6", alpha=0.92),
