@@ -92,64 +92,78 @@ BELOW IS THE COMPLETE REPOSITORY CODEBASE FOR REVIEW:
 ### FILE: README.md
 ================================================================================
 
-# 🚀 RL_school - Laboratorio di Reinforcement Learning: Lunar Lander
+# 🚀 RL_school - Laboratorio di Reinforcement Learning: Lunar Lander & Hill Climb Racing
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
+[![Open In Colab (Lunar Lander)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
+[![Open In Colab (Hill Climb)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-Box2D-green.svg)](https://gymnasium.farama.org/environments/box2d/lunar_lander/)
 [![Stable Baselines3](https://img.shields.io/badge/Algorithm-PPO-orange.svg)](https://stable-baselines3.readthedocs.io/)
-[![Unit Tests](https://img.shields.io/badge/tests-15%20passed-brightgreen.svg)](https://github.com/EmanueleCiccarelli/RL_school)
+[![Unit Tests](https://img.shields.io/badge/tests-28%20passed-brightgreen.svg)](https://github.com/EmanueleCiccarelli/RL_school)
 
-Laboratorio didattico avanzato di **Reinforcement Learning** per studenti di scuola secondaria di secondo grado (quinta superiore) e corsi introduttivi universitari. L'obiettivo formativo è padroneggiare i principi dell'apprendimento per rinforzo attraverso il **Reward Shaping**: gli studenti progettano la logica matematica della funzione di ricompensa per insegnare a un modulo spaziale ad allunare in modo autonomo, sicuro ed efficiente nel simulatore Box2D `LunarLander-v3`.
+Laboratorio didattico avanzato di **Reinforcement Learning** per studenti di scuola secondaria di secondo grado (quinta superiore) e corsi introduttivi universitari. L'obiettivo formativo è padroneggiare i principi dell'apprendimento per rinforzo attraverso il **Reward Shaping** su due scenari di simulazione fisica Box2D:
+1. 🚀 **Lunar Lander (`LunarLander-v3`)**: pilotaggio e atterraggio morbido tra le bandierine della piazzola lunare.
+2. 🏎️ **Hill Climb Racing (`HillClimbRacing-v0`)**: controllo di trazione, velocità e stabilità di un veicolo su colline procedurali generate con Perlin Noise (ispirato al repository `alexzh3/hillclimbracing`).
 
-Tutto il codice di orchestrazione, calcolo numerico, parallelizzazione dei processi, simulazione fisica e rendering è incapsulato nel pacchetto modulare `play2learn_lunarlander`, consentendo agli studenti di concentrarsi esclusivamente sulla modellazione logico-matematica e sul debug qualitativo e quantitativo del comportamento dell'agente.
+Tutto il codice di orchestrazione, calcolo numerico, parallelizzazione dei processi, streaming video H.264 e rendering interattivo è strutturato con **design pattern riutilizzabili** nel core unificato `play2learn_core` e specializzato nei pacchetti `play2learn_lunarlander` e `play2learn_hillclimb`.
 
 ---
 
 ## 📂 Architettura del Progetto
 
-Il progetto segue le specifiche moderne di packaging Python (PEP 517 / PEP 621) ed è corredato da una suite completa di test automatizzati:
-
 ```text
 RL_school/
 │
 ├── pyproject.toml                          # 📦 Metadata packaging PEP 517 / PEP 621 & tool config
-├── requirements.txt                        # 📋 Dipendenze pip del laboratorio
-├── laboratorio_lunar_lander.ipynb          # 🌐 Notebook didattico principale (Colab & Cloud)
+├── requirements.txt                        # 📋 Dipendenze pip del laboratorio (incluso Pygame)
+├── laboratorio_lunar_lander.ipynb          # 🌐 Notebook didattico Lunar Lander (Colab & Cloud)
+├── laboratorio_hill_climb.ipynb            # 🏎️ Notebook didattico Hill Climb Racing
+├── laboratorio_hill_climb_colab.ipynb      # ☁️ Notebook Hill Climb per Google Colab
 ├── README.md                               # 📖 Documentazione completa del laboratorio
 ├── .gitignore                              # 🙈 Esclusioni Git per artefatti pesanti e checkpoint
 │
-├── play2learn_lunarlander/                 # ⚙️ Pacchetto motore di RL & orchestrazione
-│   ├── laboratorio_lunar_lander_locale.ipynb # 💻 Notebook ottimizzato per esecuzione in Locale
-│   ├── __init__.py                         # API pubblica del laboratorio (import diretti)
-│   ├── config.py                           # Parametri PPO, costanti fisiche, 6 missioni speciali
-│   ├── environment.py                      # Wrapper reward ad alta efficienza e parallelizzazione
-│   ├── agent.py                            # PPO agent, schedule LR e RewardTrackerCallback
-│   ├── diagnostics.py                      # "Flight Coach": diagnostica automatica in linguaggio naturale
-│   ├── visualizer.py                       # Mappe fisiche, dashboard 2x2 e player video HTML5
-│   ├── evaluator.py                        # Valutazione mista bilanciata (successi + schianti)
-│   ├── storage.py                          # Gestione salvataggi runs, metadati JSON e snapshot codice
-│   ├── favorites.py                        # Gestione archivio dedicato dei preferiti utente
-│   ├── reporting.py                        # Schede tecniche (PDF vettoriale 300 DPI, HTML5, Markdown)
-│   ├── interactive.py                      # Motore di gioco: Single Player e Sfida Tu vs Agente
-│   ├── lab.py                              # Orchestratore principale (run_lab)
-│   └── reset.py                            # 🧹 Script di ripristino ambiente e verifica integrità
+├── play2learn_core/                        # 🧠 Core comune (Design Pattern & Orchestrazione)
+│   ├── base_env.py                         # BaseRewardWrapper con ispezione firma & guardie NaN/Inf
+│   ├── agent.py                            # PPO orchestrator, scheduler LR & sliding window O(1)
+│   ├── evaluator.py                        # Streaming video recording H.264 (<1 MB RAM) & GIF generator
+│   ├── storage.py                          # Scritture atomiche, cartelle univoche & timestamp resolution
+│   ├── favorites.py                        # BaseFavoritesManager per cataloghi persistenti
+│   ├── reporting.py                        # Base report engine: PDF vettoriale, HTML5, Markdown
+│   └── base_interactive.py                 # Sintetizzatore Web Audio & game loop fisso 50 Hz
 │
-├── tests/                                  # 🧪 Suite di test unitari automatizzati (100% passing)
-│   ├── __init__.py
-│   ├── test_config.py                      # Verifica costanti, iperparametri e missioni
-│   ├── test_environment.py                 # Verifica signature dispatching e wrapper reward
-│   ├── test_agent.py                       # Test scorrimento finestra metrica live O(1)
-│   ├── test_storage_favorites.py           # Test indicizzazione run, preferiti e metadati
-│   ├── test_interactive.py                 # Test estrazione poligoni terreno e traiettorie
-│   └── test_reset.py                       # Test verifica integrità e file critici
+├── play2learn_lunarlander/                 # 🚀 Pacchetto specializzato Lunar Lander
+│   ├── config.py                           # Missioni lunari, costanti fisiche
+│   ├── environment.py                      # LunarLanderWrapper & classificazione atterraggi
+│   ├── diagnostics.py                      # Flight Coach: diagnostica atterraggi
+│   ├── visualizer.py                       # Mappe fisiche e telemetria radar
+│   ├── evaluator.py                        # Valutazione 20 seed deterministici & video
+│   ├── reporting.py                        # Schede tecniche (PDF, HTML5, Markdown)
+│   ├── interactive.py                      # Arcade Canvas HTML5: Single Player & Tu vs Agente
+│   └── lab.py                              # run_lab() didattico
 │
-└── runs/                                   # 📁 Cartella di archiviazione automatica delle run
-    ├── successi/                           # 🎯 Archivio esperimenti di successo (tasso >= 80%) con PDF
-    │   └── index.json                      # Indice globale degli allunaggi riusciti
-    └── favorites/                          # ⭐ Archivio dei modelli PREFERITI salvati dall'utente
-        ├── index.json                      # Registro persistente dei modelli scelti
-        └── videos/                         # Video MP4 dei migliori allunaggi preferiti
+├── play2learn_hillclimb/                   # 🏎️ Pacchetto specializzato Hill Climb Racing
+│   ├── engine/                             # Motore fisico Box2D + Pygame (human + rgb_array headless)
+│   │   ├── hill_racing.py                  # Gymnasium Env HillClimbRacing-v0
+│   │   ├── car.py, wheels.py, person.py    # Chassis, ruote a sospensione & ragdoll driver
+│   │   ├── ground.py, perlin.py            # Terreno procedurale Perlin Noise (100% pure Python fallback)
+│   │   └── pictures/                       # Sprite originali vettura, ruote, pilota ed erba
+│   ├── config.py                           # Tracciati speciali: Campagna, Deserto, Montagna, Luna
+│   ├── environment.py                      # HillClimbRewardWrapper & classificazione ribaltamenti/fossi
+│   ├── diagnostics.py                      # Diagnostica guida: distanza, velocità, airtime, ribaltamenti
+│   ├── visualizer.py                       # Mappa veicolo e dashboard telemetrica colline
+│   ├── evaluator.py                        # Streaming mp4 ad alta fedeltà & GIF evoluzione
+│   ├── reporting.py                        # Scheda tecnica (Distanza max, velocità, airtime, ribaltamenti)
+│   ├── interactive.py                      # Arcade Canvas HTML5: Guida manuale & Gara Tu vs Agente AI
+│   └── lab.py                              # run_lab() didattico per Hill Climb
+│
+└── tests/                                  # 🧪 Suite di test unitari automatizzati (28/28 passing)
+    ├── test_hillclimb.py                   # Test suite Hill Climb Racing
+    ├── test_environment.py                 # Test wrapper reward e guardie NaN
+    ├── test_agent.py                       # Test callback scorrimento O(1)
+    ├── test_interactive.py                 # Test Canvas interattivo & compatibilità
+    ├── test_reporting.py                   # Test PDF, HTML escape e serializzazione
+    ├── test_storage_favorites.py           # Test persistenza atomica
+    └── test_config.py                      # Test configurazioni e iperparametri
 ```
 
 ---
@@ -371,6 +385,7 @@ dependencies = [
     "pillow>=9.5.0",
     "tqdm>=4.65.0",
     "rich>=13.0.0",
+    "pygame>=2.1.0",
 ]
 
 [project.optional-dependencies]
@@ -386,7 +401,7 @@ Repository = "https://github.com/EmanueleCiccarelli/RL_school.git"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["play2learn_lunarlander*"]
+include = ["play2learn_core*", "play2learn_lunarlander*", "play2learn_hillclimb*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -406,6 +421,7 @@ addopts = "-v --tb=short"
 
 # Ambiente di Simulazione Fisica
 gymnasium[box2d]>=0.29.0
+pygame>=2.1.0
 
 # Algoritmi di Reinforcement Learning (PPO) e Deep Learning
 stable-baselines3>=2.1.0

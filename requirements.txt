@@ -4,6 +4,7 @@
 
 # Ambiente di Simulazione Fisica
 gymnasium[box2d]>=0.29.0
+pygame>=2.1.0
 
 # Algoritmi di Reinforcement Learning (PPO) e Deep Learning
 stable-baselines3>=2.1.0
