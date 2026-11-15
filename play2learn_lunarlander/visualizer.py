@@ -263,6 +263,13 @@ def display_notebook_summary(
                     f'<div style="display:flex; flex-wrap:wrap; justify-content:center;">{"".join(cards)}</div>'
                     f'</div>'
                 )
+        else:
+            sections.append(
+                f'<div style="margin-top: 14px; background: #f1f8e9; padding: 12px 16px; border-radius: 8px; border-left: 4px solid #4caf50;">'
+                f'<strong style="color: #2e7d32;">🛡️ Nessun fallimento registrato nelle prove:</strong> '
+                f'<span style="color: #333;">Tutti i voli di test sono stati completati con successo senza schianti o timeout!</span>'
+                f'</div>'
+            )
 
         if sections:
             display(HTML("".join(sections)))
@@ -272,7 +279,7 @@ def display_notebook_summary(
 
 def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> None:
     """
-    Genera un grafico comparativo tra più run (utile per la presentazione di Maturità:
+    Genera un grafico comparativo tra più run (utile per la reportistica tecnica:
     es. confronto tra approccio iniziale ingenuo vs approccio ingegnerizzato con reward shaping).
     """
     save_path = Path(save_path)
@@ -291,7 +298,7 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     width = 0.28
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), dpi=120)
-    fig.suptitle("Confronto Esperimenti di Reinforcement Learning — Presentazione Maturità", fontsize=13, fontweight="bold")
+    fig.suptitle("Confronto Esperimenti di Reinforcement Learning — Report Tecnico", fontsize=13, fontweight="bold")
 
     # Grafico 1: Tasso di Successo
     bars1 = ax1.bar(x, success_rates, width, color="#2e7d32", alpha=0.85, edgecolor="black")

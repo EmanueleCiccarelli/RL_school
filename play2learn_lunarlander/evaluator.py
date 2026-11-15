@@ -28,7 +28,7 @@ def evaluate_and_record(
     video_dir: Path | str,
     target_successes: int = 3,
     target_failures: int = 3,
-    max_eval_episodes: int = 12,
+    max_eval_episodes: int = 30,
     seed: int = 100,
     env_kwargs: dict[str, Any] | None = None,
     create_gif: bool = True,
@@ -71,6 +71,13 @@ def evaluate_and_record(
         if len(success_videos) >= target_successes and len(failure_videos) >= target_failures:
             break
 
+        # Se abbiamo già raccolto tutti i successi ma mancano ancora video di fallimento
+        # e dopo 12 tentativi deterministici non ne abbiamo trovati, testiamo in modalità stocastica
+        # (la stessa usata in fase di addestramento che ha generato il tasso di fallimento)
+        use_deterministic = True
+        if len(success_videos) >= target_successes and len(failure_videos) < target_failures and ep >= 12:
+            use_deterministic = False
+
         obs, _ = eval_env.reset(seed=seed + ep)
         done = False
         ep_rew = 0.0
@@ -84,7 +91,7 @@ def evaluate_and_record(
             frames.append(initial_frame)
 
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            action, _ = model.predict(obs, deterministic=use_deterministic)
             obs, rew, terminated, truncated, last_info = eval_env.step(action)
             frame = eval_env.render()
             if frame is not None:
@@ -119,6 +126,8 @@ def evaluate_and_record(
                 eval_crashes += 1
             elif is_time:
                 eval_timeouts += 1
+            else:
+                eval_crashes += 1  # Fallimento generico classificato come crash
             failure_fuels.append(fuel)
             if len(failure_videos) < target_failures and frames:
                 causa = "crash" if is_crash else ("timeout" if is_time else "fallimento")
@@ -130,6 +139,9 @@ def evaluate_and_record(
 
     total_evaluated = max(1, len(eval_rewards))
     success_rate = (eval_successes / total_evaluated) * 100.0
+
+    print(f"[play2learn] Valutazione completata ({total_evaluated} prove): "
+          f"{len(success_videos)} video di successo, {len(failure_videos)} video di fallimento registrati.")
 
     # Generazione della GIF animata dell'allunaggio di successo migliore
     gif_path: Path | None = None

@@ -36,7 +36,7 @@ from play2learn_lunarlander.storage import (
     save_run_metadata,
 )
 from play2learn_lunarlander.favorites import salva_nei_preferiti
-from play2learn_lunarlander.reporting import genera_report_maturita
+from play2learn_lunarlander.reporting import genera_report_esperimento, genera_report_maturita
 
 
 class LabResult(dict):
@@ -206,6 +206,7 @@ def run_lab(
         video_dir=video_dir,
         target_successes=3,
         target_failures=3,
+        max_eval_episodes=30,
         seed=seed + 1000,
         env_kwargs=env_kwargs,
         create_gif=crea_gif,
@@ -240,7 +241,7 @@ def run_lab(
     print("=" * 76 + "\n")
 
     # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Reportistica estesa
-    maturita_bundle = None
+    report_bundle = None
     if succ_rate >= 80.0:
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
@@ -256,11 +257,11 @@ def run_lab(
             tag="Top Run"
         )
         fav_dir = Path(fav_entry["dir_path"])
-        rep_files = genera_report_maturita(
+        rep_files = genera_report_esperimento(
             run_or_fav=fav_dir,
             output_dir=fav_dir
         )
-        maturita_bundle = {
+        report_bundle = {
             "fav_entry": fav_entry,
             "rep_files": rep_files,
             "dir_path": fav_dir,
@@ -296,7 +297,8 @@ def run_lab(
         "reward_fn": reward_fn,
         "env_id": env_id,
         "env_kwargs": env_kwargs,
-        "maturita_bundle": maturita_bundle,
+        "report_bundle": report_bundle,
+        "maturita_bundle": report_bundle,
     })
 
 
@@ -348,7 +350,7 @@ def dimostrazione_live(
 ) -> None:
     """
     Esegue uno o più episodi dimostrativi stampando a video la telemetria
-    in tempo reale (ideale durante il colloquio orale di Maturità).
+    in tempo reale per osservare il comportamento dinamico dell'agente.
     """
     if not _LIBS_AVAILABLE:
         raise ImportError(
@@ -364,7 +366,7 @@ def dimostrazione_live(
         env = CustomRewardWrapper(env, reward_fn)
 
     print("\n" + "=" * 65)
-    print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA (ORALE DI MATURITÀ)")
+    print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA")
     print("=" * 65)
 
     for ep in range(n_episodi):

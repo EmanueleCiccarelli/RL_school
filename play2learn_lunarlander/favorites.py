@@ -1,7 +1,7 @@
 """
-Modulo per la gestione della sezione 'Preferiti' / 'Hall of Fame' per l'Esame di Maturità.
+Modulo per la gestione della sezione 'Preferiti' / 'Migliori Run'.
 Permette agli studenti di salvare, organizzare, commentare e ricaricare le run
-di maggior successo da mostrare durante il colloquio orale.
+di maggior successo per analizzare e confrontare i risultati ottenuti.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ def mostra_preferiti() -> None:
             rows.append(
                 f"<tr>"
                 f"<td style='padding:8px 12px; font-weight:bold;'>{e.get('name')}</td>"
-                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Maturità')}</span></td>"
+                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Top Run')}</span></td>"
                 f"<td style='padding:8px 12px;'>{e.get('mission_title', '')}</td>"
                 f"<td style='padding:8px 12px; font-weight:bold; color:{badge_color};'>{succ}</td>"
                 f"<td style='padding:8px 12px;'>{e.get('mean_fuel', 0):.1f} un.</td>"
