@@ -214,29 +214,39 @@ class RewardTrackerCallback(BaseCallback):
             self._window_fuel_sum += fuel
             self._window_reward_sum += ep_r
 
-            # Snapshot in RAM del miglior modello (zero disk I/O!)
-            if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
-                curr_rate = (self._window_successes / self.window_size) * 100.0
-                curr_fuel = self._window_fuel_sum / self.window_size
-                is_better = (
-                    curr_rate >= 40.0
-                    and (
-                        curr_rate > self.best_moving_success_rate
-                        or (
-                            curr_rate == self.best_moving_success_rate
-                            and curr_fuel < self._best_moving_fuel - 2.0
-                        )
+        # Aggiornamento UI throttled (controllo temporale ogni 64 step per azzerare chiamate di sistema perf_counter)
+        if self.show_progress and self.total_timesteps > 0 and (self.n_calls & 63) == 0:
+            now = time.perf_counter()
+            if (now - self._last_ui_update) >= self.progress_interval_sec:
+                self._last_ui_update = now
+                self._update_progress_ui(now)
+
+        return True
+
+    def _on_rollout_end(self) -> None:
+        # 1. Snapshot in RAM del miglior modello al termine del rollout (pesi stabili, zero overhead per-step)
+        if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
+            curr_rate = (self._window_successes / self.window_size) * 100.0
+            curr_fuel = self._window_fuel_sum / self.window_size
+            is_better = (
+                curr_rate >= 40.0
+                and (
+                    curr_rate > self.best_moving_success_rate
+                    or (
+                        curr_rate == self.best_moving_success_rate
+                        and curr_fuel < self._best_moving_fuel - 2.0
                     )
                 )
-                if is_better:
-                    self.best_moving_success_rate = curr_rate
-                    self._best_moving_fuel = curr_fuel
-                    self._best_policy_state = {
-                        k: v.detach().cpu().clone()
-                        for k, v in self.model.policy.state_dict().items()
-                    }
+            )
+            if is_better:
+                self.best_moving_success_rate = curr_rate
+                self._best_moving_fuel = curr_fuel
+                self._best_policy_state = {
+                    k: v.detach().cpu().clone()
+                    for k, v in self.model.policy.state_dict().items()
+                }
 
-        # Snapshot intermedi per timelapse evoluzione (RAM, eseguito 3 volte durante tutto il training)
+        # 2. Snapshot intermedi distribuiti per timelapse evoluzione
         if self.capture_milestones and self.total_timesteps > 0 and self._next_milestone_idx < len(self._milestone_targets):
             target_step = int(self._milestone_targets[self._next_milestone_idx] * self.total_timesteps)
             if self.num_timesteps >= target_step:
@@ -251,15 +261,6 @@ class RewardTrackerCallback(BaseCallback):
                     },
                 })
                 self._next_milestone_idx += 1
-
-        # Aggiornamento UI throttled (controllo temporale ogni 64 step per azzerare chiamate di sistema perf_counter)
-        if self.show_progress and self.total_timesteps > 0 and (self.n_calls & 63) == 0:
-            now = time.perf_counter()
-            if (now - self._last_ui_update) >= self.progress_interval_sec:
-                self._last_ui_update = now
-                self._update_progress_ui(now)
-
-        return True
 
     def _on_training_end(self) -> None:
         if self.capture_milestones and hasattr(self, "model") and hasattr(self.model, "policy"):
@@ -419,8 +420,8 @@ def create_ppo_agent(
 
     # Adattamento automatico di n_steps a n_envs se non forzato manualmente
     if not (custom_hyperparams and "n_steps" in custom_hyperparams):
-        n_envs = max(1, getattr(env, "num_envs", 4))
-        batch_size = int(params.get("batch_size", 64))
+        n_envs = max(1, getattr(env, "num_envs", 8))
+        batch_size = int(params.get("batch_size", 256))
         raw_steps = max(batch_size, TARGET_ROLLOUT_SIZE // n_envs)
         # Allinea al multiplo di batch_size per evitare minibatch troncati
         params["n_steps"] = max(batch_size, (raw_steps // batch_size) * batch_size)

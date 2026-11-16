@@ -85,8 +85,8 @@ def build_hill_agent(
         params.update(ppo_kwargs)
 
     if not (ppo_kwargs and "n_steps" in ppo_kwargs):
-        n_envs = max(1, getattr(env, "num_envs", 4))
-        batch_size = int(params.get("batch_size", 64))
+        n_envs = max(1, getattr(env, "num_envs", 8))
+        batch_size = int(params.get("batch_size", 256))
         raw_steps = max(batch_size, TARGET_ROLLOUT_SIZE // n_envs)
         params["n_steps"] = max(batch_size, (raw_steps // batch_size) * batch_size)
 

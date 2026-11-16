@@ -57,6 +57,7 @@ from play2learn_lunarlander.config import (
     SAFE_MAX_VY,
     VECNORM_PARAMS,
 )
+from play2learn_core.agent import ChunkedSubprocVecEnv
 
 
 def classify_lunar_lander_outcome(
@@ -305,17 +306,16 @@ def get_optimal_vec_config(
 ) -> tuple[int, bool]:
     """
     Determina la combinazione ottimale (n_envs, use_subproc) per l'hardware corrente:
-    - Colab / CPU <= 4 thread: DummyVecEnv con 8 env (massimo throughput, zero IPC).
-    - Windows (spawn lento e fragile in Jupyter): DummyVecEnv con 8 env di default.
-    - Linux multi-core (>= 6 thread) su run >= 250k step: SubprocVecEnv con 8 env.
+    - Colab / Linux: ChunkedSubprocVecEnv con 2 worker x 4 envs (sfrutta entrambi i vCPU con IPC leggero).
+    - Windows / macOS: DummyVecEnv con 8 envs (massima stabilità, zero problemi spawn pickling).
     """
     cpu_count = os.cpu_count() or 2
-    is_windows = sys.platform.startswith("win")
+    is_linux = sys.platform.startswith("linux")
 
     if prefer_subproc is not None:
         use_subproc = prefer_subproc
     else:
-        use_subproc = (not is_windows) and (cpu_count >= 6) and (total_timesteps >= 250_000)
+        use_subproc = is_linux and (cpu_count >= 2)
 
     if n_envs is None:
         resolved_envs = 8
@@ -353,8 +353,7 @@ def make_parallel_envs(
 
     if use_subproc:
         try:
-            start_method = "forkserver" if not sys.platform.startswith("win") else "spawn"
-            return SubprocVecEnv(env_fns, start_method=start_method)
+            return ChunkedSubprocVecEnv(env_fns, n_workers=min(2, resolved_envs))
         except Exception:
             return DummyVecEnv(env_fns)
 
