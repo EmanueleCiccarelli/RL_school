@@ -658,9 +658,15 @@ def get_optimal_vec_config(
     prefer_subproc: bool | None = None,
 ) -> tuple[int, bool]:
     cpu_count = os.cpu_count() or 2
-    is_linux = sys.platform.startswith("linux")
-    use_subproc = prefer_subproc if prefer_subproc is not None else (is_linux and cpu_count >= 2)
-    resolved_envs = 8 if n_envs is None else max(1, int(n_envs))
+    is_windows = sys.platform.startswith("win")
+    if prefer_subproc is not None:
+        use_subproc = prefer_subproc
+    else:
+        use_subproc = (not is_windows) and (cpu_count >= 6) and (total_timesteps >= 250_000)
+    if n_envs is None:
+        resolved_envs = 8 if use_subproc else 4
+    else:
+        resolved_envs = max(1, int(n_envs))
     if resolved_envs == 1:
         use_subproc = False
     return resolved_envs, use_subproc

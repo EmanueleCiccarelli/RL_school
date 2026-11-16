@@ -12,10 +12,6 @@ from typing import Callable, Any
 
 import torch
 
-from concurrent.futures import ThreadPoolExecutor
-
-_ARTIFACT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="p2l_artifact")
-
 try:
     import gymnasium as gym
     from stable_baselines3 import PPO
@@ -35,16 +31,10 @@ from play2learn_lunarlander.environment import (
     make_parallel_envs,
     wrap_vec_normalize,
     CustomRewardWrapper,
-    classify_lunar_lander_outcome,
 )
-from play2learn_lunarlander.agent import (
-    create_ppo_agent,
-    RewardTrackerCallback,
-    AdaptiveBatchSizeCallback,
-    attach_jit_rollout_forward,
-)
+from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
 from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
-from play2learn_lunarlander.evaluator import evaluate_and_record
+from play2learn_lunarlander.evaluator import evaluate_and_record, crea_gif_evoluzione_apprendimento
 from play2learn_lunarlander.storage import (
     create_run_directory,
     save_run_metadata,
@@ -58,7 +48,7 @@ def _configure_cpu_threads() -> None:
     """
     Su MLP piccoli (64x64) in CPU, 1 thread PyTorch evita l'overhead di
     sincronizzazione OpenMP/futex e accelera forward+backward di 2-4x rispetto a 8-16 thread.
-    Disattiva inoltre la validazione simplex di Categorical per +8-12% throughput CPU.
+    Disattiva inoltre la validazione simplex di Categorical per massimo throughput CPU.
     """
     try:
         torch.set_num_threads(1)
@@ -91,21 +81,6 @@ class LabResult(dict):
     def __setattr__(self, name: str, value: Any) -> None:
         self[name] = value
 
-    def wait_artifacts(self, timeout: float | None = None) -> None:
-        """Attende il completamento della generazione in background di video, timelapse e report."""
-        fut = self.get("_artifact_future")
-        if fut is not None and not fut.done():
-            try:
-                res = fut.result(timeout=timeout)
-                if isinstance(res, dict):
-                    if res.get("report_bundle"):
-                        self["report_bundle"] = res["report_bundle"]
-                        self["maturita_bundle"] = res["report_bundle"]
-                    if res.get("meta_path"):
-                        self["metadata_path"] = res["meta_path"]
-            except Exception as e:
-                print(f"[play2learn] Avviso completamento background: {e}")
-
     def salva_preferito(
         self,
         nome_personalizzato: str | None = None,
@@ -113,7 +88,6 @@ class LabResult(dict):
         tag: str = "Mio Preferito",
     ) -> dict[str, Any]:
         """Salva questo modello nell'archivio dei preferiti personali dell'utente."""
-        self.wait_artifacts()
         return salva_nei_preferiti(
             self,
             nome_personalizzato=nome_personalizzato,
@@ -128,7 +102,6 @@ class LabResult(dict):
         note: str = "",
     ) -> dict[str, Any]:
         """Salva un video specifico nei preferiti personali dell'utente."""
-        self.wait_artifacts()
         target_video = video
         if isinstance(video, int):
             v_list = self.get("success_videos", []) or self.get("recorded_videos", [])
@@ -150,7 +123,6 @@ class LabResult(dict):
         force: bool = False,
     ) -> dict[str, Path]:
         """Genera la scheda tecnica riassuntiva in PDF, HTML e Markdown."""
-        self.wait_artifacts()
         bundle = self.get("report_bundle")
         if not force and bundle and "rep_files" in bundle:
             if autore == "Studente" and not note and titolo == "Report Esperimento Lunar Lander":
@@ -168,7 +140,6 @@ class LabResult(dict):
 
     def mostra_volo(self, indice: int = 0) -> None:
         """Visualizza uno dei video di prova registrati."""
-        self.wait_artifacts()
         videos = self.get("recorded_videos", [])
         if videos and 0 <= indice < len(videos):
             display_notebook_summary(self.get("plot_path"), [videos[indice]])
@@ -180,7 +151,6 @@ class LabResult(dict):
         Visualizza (e genera su richiesta se non ancora presente) il timelapse video/GIF
         dell'evoluzione dell'agente nel corso del training.
         """
-        self.wait_artifacts()
         existing = self.get("gif_evoluzione_path")
         run_dir = Path(self.get("checkpoint_dir", self.get("run_dir", ".")))
 
@@ -202,12 +172,11 @@ class LabResult(dict):
         milestones = self.get("milestone_snapshots")
         model = self.get("model")
         if not milestones or model is None:
-            print("[play2learn] Nessun checkpoint o milestone di addestramento disponibile per generare l'evoluzione.")
+            print("[play2learn] Nessuna milestone di addestramento disponibile per generare l'evoluzione.")
             return None
 
         print("🎬 Generazione su richiesta del timelapse dell'evoluzione dell'apprendimento...")
         try:
-            from play2learn_lunarlander.evaluator import crea_gif_evoluzione_apprendimento
             target_path = run_dir / "evoluzione_apprendimento.mp4"
             out = crea_gif_evoluzione_apprendimento(
                 model=model,
@@ -269,6 +238,28 @@ class LabResult(dict):
         )
 
 
+def mostra_evoluzione(run_or_result: Any = None, force: bool = False) -> Any:
+    """
+    Visualizza (e genera se necessario) il timelapse dell'evoluzione dell'apprendimento.
+    Accetta un'istanza di LabResult o il timestamp/nome di una run.
+    """
+    if isinstance(run_or_result, LabResult):
+        return run_or_result.mostra_evoluzione(force=force)
+
+    from play2learn_lunarlander.storage import find_run_by_timestamp
+    query = str(run_or_result or "latest")
+    target_dir = find_run_by_timestamp(query)
+    if not target_dir:
+        print(f"[play2learn] Nessuna run trovata corrispondente a '{query}'.")
+        return None
+
+    res = LabResult({"checkpoint_dir": target_dir, "run_dir": target_dir})
+    return res.mostra_evoluzione(force=force)
+
+
+genera_evoluzione = mostra_evoluzione
+
+
 def run_lab(
     reward_fn: Callable,
     mission: str = "luna_standard",
@@ -324,7 +315,7 @@ def run_lab(
     )
     video_dir = run_dir / "videos"
 
-    # 3. Creazione degli ambienti paralleli ottimizzati + VecNormalize solo reward
+    # 3. Creazione degli ambienti paralleli ottimizzati (DummyVecEnv su Colab per zero IPC)
     raw_vec_env = make_parallel_envs(
         env_id=env_id,
         reward_fn=reward_fn,
@@ -333,67 +324,54 @@ def run_lab(
         env_kwargs=env_kwargs,
         total_timesteps=total_timesteps,
     )
-    vec_env = raw_vec_env
+    actual_n_envs = raw_vec_env.num_envs
+    vec_backend = raw_vec_env.__class__.__name__
+
+    vec_env = (
+        wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
+        if use_reward_norm
+        else raw_vec_env
+    )
+
+    print("=" * 76)
+    print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
+    print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
+    print(
+        f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
+        f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
+    )
+    print(
+        f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
+        f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
+    )
+    print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+    print("=" * 76)
+
+    # 4. Callback con checkpoint in RAM e progress bar leggera throttled (1.5s)
+    tracker = RewardTrackerCallback(
+        best_model_save_dir=run_dir,
+        total_timesteps=total_timesteps,
+        show_progress=True,
+        progress_interval_sec=1.5,
+        window_size=30,
+        capture_milestones=True,
+    )
+
+    # 5. Creazione modello PPO standard (verbose=0 per output pulito e veloce)
+    model = create_ppo_agent(
+        env=vec_env,
+        seed=seed,
+        device=device,
+        verbose=0,
+    )
+
+    # 6. Addestramento
+    print("\n[play2learn] Inizio addestramento dell'agente...")
     t_start = time.perf_counter()
-    model = None
-    tracker = None
-
     try:
-        actual_n_envs = raw_vec_env.num_envs
-        vec_backend = raw_vec_env.__class__.__name__
-
-        vec_env = (
-            wrap_vec_normalize(raw_vec_env, gamma=DEFAULT_PPO_PARAMS["gamma"])
-            if use_reward_norm
-            else raw_vec_env
-        )
-
-        print("=" * 76)
-        print(f"  🚀 MISSIONE: {mission_cfg['title'].upper()}")
-        print(f"  📋 OBIETTIVO: {mission_cfg['description']}")
-        print(
-            f"  ⚙️  FISICA: Gravità={env_kwargs['gravity']} | Vento={env_kwargs['enable_wind']} "
-            f"(Potenza={env_kwargs['wind_power']}, Turbolenza={env_kwargs['turbulence_power']})"
-        )
-        print(
-            f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
-            f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
-        )
-        print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
-        print("=" * 76)
-
-        # 4. Callback con checkpoint in RAM e progress bar leggera throttled
-        tracker = RewardTrackerCallback(
-            best_model_save_dir=run_dir,
-            total_timesteps=total_timesteps,
-            show_progress=True,
-            progress_interval_sec=1.0,
-            capture_milestones=True,
-        )
-
-        # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
-        model = create_ppo_agent(
-            env=vec_env,
-            seed=seed,
-            device=device,
-            verbose=0,
-        )
-        attach_jit_rollout_forward(model)
-
-        adaptive_cb = AdaptiveBatchSizeCallback(
-            total_timesteps=total_timesteps,
-            switch_fraction=0.40,
-            target_batch_size=512,
-            epoch_switch_fraction=0.65,
-            target_n_epochs=3,
-        )
-
-        # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
-        print("\n[play2learn] Inizio addestramento dell'agente...")
-        t_start = time.perf_counter()
         model.learn(
             total_timesteps=total_timesteps,
-            callback=[tracker, adaptive_cb],
+            callback=tracker,
             progress_bar=False,
         )
     except KeyboardInterrupt:
@@ -413,15 +391,21 @@ def run_lab(
         f"({fps_avg:,} step/sec)!"
     )
 
-    # 7. Applicazione istantanea in RAM del miglior modello se superiore (< 0.1 ms)
-    used_best_weights = tracker.apply_best_weights_if_superior(superiority_margin=5.0)
+    # 7. Salvataggio modello finale + flush su disco del miglior snapshot in RAM
+    final_model_path = run_dir / "ppo_lunar_lander.zip"
+    model.save(str(final_model_path))
+
+    used_best_weights = tracker.flush_best_model_to_disk(
+        keep_best_loaded_if_superior=True,
+        superiority_margin=5.0,
+    )
     if used_best_weights:
         print(
             f"[play2learn] Ripristinato per la valutazione il miglior checkpoint in corsa "
             f"(picco successo mobile: {tracker.best_moving_success_rate:.1f}%)."
         )
 
-    # 8. Generazione grafico telemetria con Figure template pre-allocata e OpenCV (< 100 ms)
+    # 8. Generazione grafico telemetria e diagnosi Flight Coach
     plot_path = run_dir / "reward_plot.png"
     diag_dict = plot_training_results(
         tracker=tracker,
@@ -429,34 +413,27 @@ def run_lab(
         save_path=plot_path,
     )
 
-    # 9. Valutazione rapida da RAM Episode Cache e Replay Video parallelo su 2 vCPU
+    # 9. Valutazione imparziale e registrazione video in 2 fasi
     eval_stats = evaluate_and_record(
         model=model,
         env_id=env_id,
         reward_fn=reward_fn,
         video_dir=video_dir,
-        episode_cache=None if used_best_weights else getattr(tracker, "episode_cache", None),
         target_successes=max(1, n_eval_episodes),
         target_failures=max(1, n_eval_episodes),
-        sweep_timeout_seconds=4.0,
+        sweep_timeout_seconds=6.0,
         min_eval_episodes=20,
-        max_eval_episodes=60,
+        max_eval_episodes=80,
         seed=seed + 1000,
         env_kwargs=env_kwargs,
-        create_gif=False,
-        fast_early_exit=True,
-        fast_solver=True,
+        create_gif=crea_gif,
     )
 
-    final_model_path = run_dir / "ppo_lunar_lander.zip"
-    best_model_path = run_dir / "best_model.zip"
-
-    # 9b. Generazione opzionale del timelapse GIF dell'evoluzione dell'apprendimento
+    # 9b. Generazione opzionale del timelapse dell'evoluzione dell'apprendimento
     gif_evoluzione_path = None
     if crea_gif_evoluzione and tracker.milestone_snapshots:
         try:
-            print("\n[play2learn] Generazione del timelapse GIF dell'evoluzione dell'apprendimento...")
-            from play2learn_lunarlander.evaluator import crea_gif_evoluzione_apprendimento
+            print("\n[play2learn] Generazione del timelapse dell'evoluzione dell'apprendimento...")
             gif_ev_target = run_dir / "evoluzione_apprendimento.mp4"
             gif_evoluzione_path = crea_gif_evoluzione_apprendimento(
                 model=model,
@@ -471,46 +448,21 @@ def run_lab(
         except Exception as e:
             print(f"[play2learn] Avviso generazione timelapse evoluzione: {e}")
 
-    # 10. Persistenza asincrona in background di modelli, metadati e archivio successi
-    succ_rate = eval_stats.get("eval_success_rate", 0.0)
-
-    def _background_persist() -> dict[str, Any]:
-        try:
-            model.save(str(final_model_path))
-            tracker.flush_best_model_to_disk()
-            meta = save_run_metadata(
-                run_dir=run_dir,
-                mission=mission,
-                mission_cfg=mission_cfg,
-                env_kwargs=env_kwargs,
-                total_timesteps=completed_steps,
-                elapsed_seconds=elapsed_time,
-                reward_fn=reward_fn,
-                eval_stats=eval_stats,
-                diagnostics=diag_dict,
-            )
-            rep_b = None
-            if succ_rate >= 80.0:
-                succ_info = archivia_esperimento_successo(
-                    run_dir=run_dir,
-                    nome_run=nome_run or mission,
-                    succ_rate=succ_rate,
-                    eval_stats=eval_stats,
-                )
-                rep_b = {
-                    "succ_entry": succ_info["entry"],
-                    "rep_files": succ_info["rep_files"],
-                    "dir_path": succ_info["dest_dir"],
-                }
-                _display_success_popup(succ_info["entry"], succ_info["rep_files"])
-            return {"meta_path": meta, "report_bundle": rep_b}
-        except Exception as err:
-            print(f"[play2learn] Avviso persistenza background: {err}")
-            return {"meta_path": None, "report_bundle": None}
-
-    artifact_future = _ARTIFACT_EXECUTOR.submit(_background_persist)
+    # 10. Salvataggio automatico metadati
+    meta_path = save_run_metadata(
+        run_dir=run_dir,
+        mission=mission,
+        mission_cfg=mission_cfg,
+        env_kwargs=env_kwargs,
+        total_timesteps=completed_steps,
+        elapsed_seconds=elapsed_time,
+        reward_fn=reward_fn,
+        eval_stats=eval_stats,
+        diagnostics=diag_dict,
+    )
 
     # 11. Stampa riassuntiva dei risultati
+    succ_rate = eval_stats.get("eval_success_rate", 0.0)
     n_succ = len(eval_stats.get("success_videos", []))
     n_fail = len(eval_stats.get("failure_videos", []))
 
@@ -536,12 +488,29 @@ def run_lab(
     print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
     print("=" * 76 + "\n")
 
-    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Notifica immediata
+    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Archiviazione in 'runs/successi/'
+    report_bundle = None
     if succ_rate >= 80.0:
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
         print("  Archiviazione automatica in 'runs/successi/' e generazione Scheda Tecnica...")
         print("=" * 76)
+
+        succ_info = archivia_esperimento_successo(
+            run_dir=run_dir,
+            nome_run=nome_run or mission,
+            succ_rate=succ_rate,
+            eval_stats=eval_stats,
+        )
+        succ_dir = succ_info["dest_dir"]
+        rep_files = succ_info["rep_files"]
+        report_bundle = {
+            "succ_entry": succ_info["entry"],
+            "rep_files": rep_files,
+            "dir_path": succ_dir,
+        }
+
+        _display_success_popup(succ_info["entry"], rep_files)
 
     # 13. Mostra dashboard e video nel Notebook
     if display_in_notebook:
@@ -550,7 +519,7 @@ def run_lab(
             videos=eval_stats.get("videos"),
             success_videos=eval_stats.get("success_videos"),
             failure_videos=eval_stats.get("failure_videos"),
-            gif_path=gif_evoluzione_path if (crea_gif_evoluzione and gif_evoluzione_path) else None,
+            gif_path=gif_evoluzione_path if (crea_gif_evoluzione and gif_evoluzione_path) else eval_stats.get("gif_path"),
         )
 
     return LabResult({
@@ -559,7 +528,7 @@ def run_lab(
         "checkpoint_dir": run_dir,
         "mission": mission,
         "model_path": final_model_path,
-        "best_model_path": best_model_path if tracker._best_policy_state is not None else final_model_path,
+        "best_model_path": tracker.best_model_path or final_model_path,
         "plot_path": plot_path,
         "recorded_videos": eval_stats.get("videos", []),
         "success_videos": eval_stats.get("success_videos", []),
@@ -575,14 +544,13 @@ def run_lab(
         "diagnosis": diag_dict.get("formatted_text", ""),
         "elapsed_seconds": elapsed_time,
         "total_timesteps": total_timesteps,
-        "metadata_path": run_dir / "run_metadata.json",
+        "metadata_path": meta_path,
         "model": model,
         "reward_fn": reward_fn,
         "env_id": env_id,
         "env_kwargs": env_kwargs,
-        "report_bundle": None,
-        "maturita_bundle": None,
-        "_artifact_future": artifact_future,
+        "report_bundle": report_bundle,
+        "maturita_bundle": report_bundle,
     })
 
 
@@ -655,77 +623,35 @@ def dimostrazione_live(
     print("  🎬 DIMOSTRAZIONE DI ALLUNAGGIO IN DIRETTA")
     print("=" * 65)
 
-    try:
-        for ep in range(n_episodi):
-            obs, _ = env.reset(seed=seed + ep)
-            done = False
-            step = 0
-            tot_fuel = 0.0
-            last_rew = 0.0
-            last_term = False
-            last_trunc = False
+    for ep in range(n_episodi):
+        obs, _ = env.reset(seed=seed + ep)
+        done = False
+        step = 0
+        tot_fuel = 0.0
 
-            while not done:
-                action, _ = model.predict(obs, deterministic=True)
-                obs, rew, term, trunc, info = env.step(action)
-                step += 1
-                done = term or trunc
-                last_rew = float(rew)
-                last_term = bool(term)
-                last_trunc = bool(trunc)
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rew, term, trunc, info = env.step(action)
+            step += 1
+            done = term or trunc
 
-                act_int = int(action)
-                if act_int == 2:
-                    tot_fuel += 1.0
-                elif act_int in (1, 3):
-                    tot_fuel += 0.3
+            act_int = int(action)
+            if act_int == 2:
+                tot_fuel += 1.0
+            elif act_int in (1, 3):
+                tot_fuel += 0.3
 
-                if step % 35 == 0 or done:
-                    x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
-                    print(
-                        f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
-                        f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
-                    )
-
-            if reward_fn is not None and isinstance(info, dict):
-                is_succ = bool(info.get("is_success", False))
-            else:
-                un = getattr(env, "unwrapped", env)
-                is_succ, _, _, _ = classify_lunar_lander_outcome(
-                    obs=obs,
-                    original_reward=last_rew,
-                    terminated=last_term,
-                    truncated=last_trunc,
-                    unwrapped=un,
+            if step % 35 == 0 or done:
+                x, y, vx, vy, angle = obs[0], obs[1], obs[2], obs[3], obs[4]
+                print(
+                    f"  Step {step:3d} | x={x:+.2f} | y={y:.2f} | vy={vy:+.2f} | "
+                    f"angolo={angle:+.2f} rad | fuel={tot_fuel:.1f}"
                 )
 
-            esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
-            print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
-            print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
-            print("-" * 65)
-    finally:
-        env.close()
+        is_succ = info.get("is_success", False) if isinstance(info, dict) else False
+        esito_str = "🎯 ALLUNAGGIO RIUSCITO CON SUCCESSO!" if is_succ else "💥 SCHIANTO / IMPATTO"
+        print(f"\n  ESITO VOLO #{ep + 1}: {esito_str}")
+        print(f"  Durata: {step} step ({step / 50:.1f} s) | Carburante totale speso: {tot_fuel:.1f} unità")
+        print("-" * 65)
 
-
-def mostra_evoluzione(risultati_o_path: Any = None, force: bool = False) -> Any:
-    """Funzione helper didattica per mostrare/generare il timelapse dell'evoluzione dell'apprendimento."""
-    if risultati_o_path is None:
-        print("[play2learn] Passa l'oggetto 'risultati' restituito da run_lab() per visualizzare l'evoluzione.")
-        return None
-    if isinstance(risultati_o_path, LabResult):
-        return risultati_o_path.mostra_evoluzione(force=force)
-    p = Path(risultati_o_path)
-    if p.is_dir():
-        cands = [p / "evoluzione_apprendimento.mp4", p / "evoluzione_apprendimento.gif"]
-        for c in cands:
-            if c.exists():
-                p = c
-                break
-    if p.is_file():
-        lr = LabResult({"checkpoint_dir": str(p.parent), "gif_evoluzione_path": p})
-        return lr._display_timelapse(p)
-    print(f"[play2learn] Nessun timelapse trovato per: {risultati_o_path}")
-    return None
-
-
-genera_evoluzione = mostra_evoluzione
+    env.close()

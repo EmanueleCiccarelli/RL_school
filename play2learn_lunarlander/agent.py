@@ -1,7 +1,6 @@
 """
-play2learn_lunarlander/agent.py (Optimized Architecture)
-- RolloutEpisodeCache: ring-buffer RAM (< 60 KB) per gli episodi finali di training
-- create_ppo_agent: istanzia FastPPO con collect_rollouts puro NumPy
+Modulo per la gestione dell'agente RL (PPO), learning rate schedule,
+telemetria O(1), best-model checkpointing in RAM e progress bar leggera per Colab/Jupyter.
 """
 
 from __future__ import annotations
@@ -11,24 +10,32 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
-from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import VecEnv
+
+try:
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.vec_env import VecEnv
+except ImportError:
+    PPO = Any  # type: ignore
+    BaseCallback = object  # type: ignore
+    VecEnv = Any  # type: ignore
 
 from play2learn_lunarlander.config import (
-    DEFAULT_LR_END,
-    DEFAULT_LR_START,
     DEFAULT_PPO_PARAMS,
+    DEFAULT_LR_START,
+    DEFAULT_LR_END,
     TARGET_ROLLOUT_SIZE,
-)
-from play2learn_core.agent import (
-    AdaptiveBatchSizeCallback,
-    FastPPO,
-    attach_jit_rollout_forward,
 )
 
 
 class LinearSchedule:
+    """
+    Schedule lineare top-level pienamente serializzabile da pickle/cloudpickle
+    per PPO.save() e PPO.load() senza warning.
+    """
+
     def __init__(self, initial_value: float, final_value: float):
         self.initial_value = float(initial_value)
         self.final_value = float(final_value)
@@ -37,30 +44,15 @@ class LinearSchedule:
         return self.final_value + progress_remaining * (self.initial_value - self.final_value)
 
 
-class RolloutEpisodeCache:
-    """
-    Ring-buffer in RAM degli episodi completati nella fase finale di training.
-    Conserva metriche + (seed, action_bytes) per bypassare lo sweep post-training.
-    """
-
-    def __init__(self, maxlen: int = 128):
-        self.episodes: deque[dict[str, Any]] = deque(maxlen=maxlen)
-
-    def add(self, record: dict[str, Any]) -> None:
-        self.episodes.append(record)
-
-    def __len__(self) -> int:
-        return len(self.episodes)
-
-    def get_recent(self, n: int = 40) -> list[dict[str, Any]]:
-        if n >= len(self.episodes):
-            return list(self.episodes)
-        return list(self.episodes)[-n:]
-
-
 class RewardTrackerCallback(BaseCallback):
     """
-    Callback O(1) con snapshot pesi in RAM + RolloutEpisodeCache per valutazione istantanea.
+    Callback ad alte prestazioni:
+    - Traccia telemetria completa per Diagnostics e Visualizer.
+    - Calcola la media mobile del successo in O(1) con deque.
+    - Salva i pesi migliori SOLO in RAM (~60 KB) durante il training, azzerando
+      l'I/O sincrono su disco; scrive best_model.zip una sola volta a fine run.
+    - Cattura snapshot milestone uniformi in RAM per la generazione on-demand del timelapse.
+    - Mostra una progress bar HTML/console throttled (ogni 1.5s) senza lag su Colab.
     """
 
     def __init__(
@@ -68,11 +60,10 @@ class RewardTrackerCallback(BaseCallback):
         best_model_save_dir: Path | str | None = None,
         total_timesteps: int = 0,
         show_progress: bool = True,
-        progress_interval_sec: float = 1.0,
+        progress_interval_sec: float = 1.5,
         window_size: int = 30,
-        capture_milestones: bool = True,
-        episode_cache_size: int = 128,
         verbose: int = 0,
+        capture_milestones: bool = True,
     ):
         super().__init__(verbose)
         self.best_model_save_dir = Path(best_model_save_dir) if best_model_save_dir else None
@@ -81,11 +72,6 @@ class RewardTrackerCallback(BaseCallback):
         self.progress_interval_sec = float(progress_interval_sec)
         self.window_size = int(window_size)
         self.capture_milestones = capture_milestones
-
-        self.episode_cache = RolloutEpisodeCache(maxlen=episode_cache_size)
-        self.milestone_snapshots: list[dict[str, Any]] = []
-        self._milestone_targets: list[float] = [0.20, 0.40, 0.60, 0.80]
-        self._next_milestone_idx: int = 0
 
         # Liste telemetriche pubbliche (contratto con diagnostics.py e visualizer.py)
         self.episode_rewards: list[float] = []
@@ -102,6 +88,7 @@ class RewardTrackerCallback(BaseCallback):
         self.crashes: int = 0
         self.timeouts: int = 0
 
+        # Finestra scorrevole O(1)
         self._window_outcomes: deque[int] = deque(maxlen=self.window_size)
         self._window_fuels: deque[float] = deque(maxlen=self.window_size)
         self._window_rewards: deque[float] = deque(maxlen=self.window_size)
@@ -109,11 +96,20 @@ class RewardTrackerCallback(BaseCallback):
         self._window_fuel_sum: float = 0.0
         self._window_reward_sum: float = 0.0
 
+        # Snapshot in RAM del miglior modello
         self.best_moving_success_rate: float = -1.0
         self._best_moving_fuel: float = float("inf")
         self._best_policy_state: dict[str, torch.Tensor] | None = None
         self.best_model_path: Path | None = None
 
+        # Milestone snapshots per timelapse evoluzione (RAM pura)
+        self.milestone_snapshots: list[tuple[int, dict[str, torch.Tensor]]] = []
+        self._milestone_targets: list[int] = []
+        if self.capture_milestones and self.total_timesteps > 0:
+            fractions = [0.05, 0.25, 0.50, 0.75, 1.00]
+            self._milestone_targets = [int(self.total_timesteps * f) for f in fractions]
+
+        # Stato UI throttled
         self._t_start: float = 0.0
         self._last_ui_update: float = 0.0
         self._display_handle: Any = None
@@ -123,23 +119,15 @@ class RewardTrackerCallback(BaseCallback):
         self._t_start = time.perf_counter()
         self._last_ui_update = self._t_start
 
-        if self.capture_milestones and hasattr(self, "model") and hasattr(self.model, "policy"):
-            self.milestone_snapshots.append({
-                "step": 0,
-                "percent": 0,
-                "success_rate": 0.0,
-                "state_dict": {
-                    k: v.detach().cpu().clone()
-                    for k, v in self.model.policy.state_dict().items()
-                },
-            })
-
         if self.show_progress and self.total_timesteps > 0:
             try:
                 from IPython import get_ipython
                 from IPython.display import HTML, display
                 shell = get_ipython()
-                if shell is not None and shell.__class__.__name__ in ("ZMQInteractiveShell", "Shell"):
+                if shell is not None and shell.__class__.__name__ in (
+                    "ZMQInteractiveShell",
+                    "Shell",  # Google Colab
+                ):
                     self._use_html_progress = True
                     self._display_handle = display(
                         HTML(self._render_html_progress(0, 0.0, 0.0)),
@@ -166,7 +154,6 @@ class RewardTrackerCallback(BaseCallback):
             is_succ = bool(info.get("is_success", False))
             is_crash = bool(info.get("is_crashed", False))
             is_tout = bool(info.get("is_timeout", False))
-            is_off = bool(info.get("is_off_target", False))
 
             if is_succ:
                 self.outcomes.append("success")
@@ -186,13 +173,13 @@ class RewardTrackerCallback(BaseCallback):
 
             tel = info.get("telemetry")
             if tel:
-                fuel = float(tel["fuel_used"])
+                fuel = float(tel.get("fuel_used", 0.0))
                 self.fuel_used_list.append(fuel)
-                self.air_steps_list.append(int(tel["air_steps"]))
-                self.ground_steps_list.append(int(tel["ground_steps"]))
-                self.final_x_list.append(float(tel["final_abs_x"]))
-                self.final_vy_list.append(float(tel["final_abs_vy"]))
-                self.final_angle_list.append(float(tel["final_abs_angle"]))
+                self.air_steps_list.append(int(tel.get("air_steps", ep_l)))
+                self.ground_steps_list.append(int(tel.get("ground_steps", 0)))
+                self.final_x_list.append(float(tel.get("final_abs_x", 0.0)))
+                self.final_vy_list.append(float(tel.get("final_abs_vy", 0.0)))
+                self.final_angle_list.append(float(tel.get("final_abs_angle", 0.0)))
             else:
                 fuel = 0.0
                 self.fuel_used_list.append(0.0)
@@ -202,7 +189,7 @@ class RewardTrackerCallback(BaseCallback):
                 self.final_vy_list.append(0.0)
                 self.final_angle_list.append(0.0)
 
-            # Aggiornamento O(1) finestra scorrevole
+            # Finestra scorrevole O(1)
             if len(self._window_outcomes) == self.window_size:
                 self._window_successes -= self._window_outcomes[0]
                 self._window_fuel_sum -= self._window_fuels[0]
@@ -214,140 +201,126 @@ class RewardTrackerCallback(BaseCallback):
             self._window_fuel_sum += fuel
             self._window_reward_sum += ep_r
 
-            # Inserimento nel RAM Episode Cache se presente payload replay (ultimo 20% training)
-            replay = info.get("replay")
-            if replay is not None:
-                ep_seed, act_bytes = replay
-                self.episode_cache.add({
-                    "seed": ep_seed,
-                    "actions": act_bytes,  # bytes compatti (1 byte/step)
-                    "is_success": is_succ,
-                    "is_crashed": is_crash,
-                    "is_timeout": is_tout,
-                    "is_off_target": is_off,
-                    "steps": ep_l,
-                    "fuel": fuel,
-                    "reward": ep_r,
-                    "deterministic": False,
-                })
+            # Aggiornamento miglior modello in RAM (minimo 15 episodi per stabilità statistica)
+            if len(self._window_outcomes) >= min(15, self.window_size):
+                curr_rate = (self._window_successes / len(self._window_outcomes)) * 100.0
+                curr_fuel = self._window_fuel_sum / len(self._window_fuels)
+                is_better = (
+                    curr_rate > self.best_moving_success_rate
+                    or (curr_rate == self.best_moving_success_rate and curr_fuel < self._best_moving_fuel)
+                )
+                if is_better and curr_rate > 0.0:
+                    self.best_moving_success_rate = curr_rate
+                    self._best_moving_fuel = curr_fuel
+                    model = getattr(self, "model", None)
+                    if model is not None and hasattr(model, "policy"):
+                        self._best_policy_state = {
+                            k: v.detach().cpu().clone()
+                            for k, v in model.policy.state_dict().items()
+                        }
 
-        if self.show_progress and self.total_timesteps > 0 and (self.n_calls & 63) == 0:
-            now = time.perf_counter()
-            if (now - self._last_ui_update) >= self.progress_interval_sec:
-                self._last_ui_update = now
-                self._update_progress_ui(now)
+        # Snapshot milestone periodici (per timelapse evoluzione su richiesta)
+        model = getattr(self, "model", None)
+        if model is not None and hasattr(model, "policy"):
+            if self._milestone_targets and self.num_timesteps >= self._milestone_targets[0]:
+                tgt = self._milestone_targets.pop(0)
+                self.milestone_snapshots.append((
+                    tgt,
+                    {k: v.detach().cpu().clone() for k, v in model.policy.state_dict().items()}
+                ))
+
+        # UI throttled a intervallo fisso (default 1.5s) per zero overhead
+        now = time.perf_counter()
+        if self.show_progress and (now - self._last_ui_update) >= self.progress_interval_sec:
+            self._last_ui_update = now
+            self._update_progress_ui(now)
 
         return True
 
-    def _on_rollout_end(self) -> None:
-        if self.best_model_save_dir and len(self._window_outcomes) == self.window_size:
-            curr_rate = (self._window_successes / self.window_size) * 100.0
-            curr_fuel = self._window_fuel_sum / self.window_size
-            is_better = curr_rate >= 40.0 and (
-                curr_rate > self.best_moving_success_rate
-                or (curr_rate == self.best_moving_success_rate and curr_fuel < self._best_moving_fuel - 2.0)
-            )
-            if is_better:
-                self.best_moving_success_rate = curr_rate
-                self._best_moving_fuel = curr_fuel
-                self._best_policy_state = {
-                    k: v.detach().cpu().clone()
-                    for k, v in self.model.policy.state_dict().items()
-                }
-
-        if self.capture_milestones and self.total_timesteps > 0 and self._next_milestone_idx < len(self._milestone_targets):
-            target_step = int(self._milestone_targets[self._next_milestone_idx] * self.total_timesteps)
-            if self.num_timesteps >= target_step:
-                pct = int(self._milestone_targets[self._next_milestone_idx] * 100)
-                self.milestone_snapshots.append({
-                    "step": self.num_timesteps,
-                    "percent": pct,
-                    "success_rate": self.current_moving_success_rate,
-                    "state_dict": {
-                        k: v.detach().cpu().clone()
-                        for k, v in self.model.policy.state_dict().items()
-                    },
-                })
-                self._next_milestone_idx += 1
-
     def _on_training_end(self) -> None:
-        if self.capture_milestones and hasattr(self, "model") and hasattr(self.model, "policy"):
-            self.milestone_snapshots.append({
-                "step": max(1, self.num_timesteps),
-                "percent": 100,
-                "success_rate": self.current_moving_success_rate,
-                "state_dict": {
-                    k: v.detach().cpu().clone()
-                    for k, v in self.model.policy.state_dict().items()
-                },
-            })
-        if self.show_progress and self.total_timesteps > 0:
+        # Se rimane l'ultimo snapshot del 100%, catturalo
+        if self._milestone_targets:
+            self.milestone_snapshots.append((
+                self.num_timesteps,
+                {k: v.detach().cpu().clone() for k, v in self.model.policy.state_dict().items()}
+            ))
+            self._milestone_targets.clear()
+
+        if self.show_progress:
             self._update_progress_ui(time.perf_counter(), finished=True)
 
     @property
     def current_moving_success_rate(self) -> float:
-        return (self._window_successes / len(self._window_outcomes)) * 100.0 if self._window_outcomes else 0.0
+        if not self._window_outcomes:
+            return 0.0
+        return (self._window_successes / len(self._window_outcomes)) * 100.0
 
     @property
     def current_moving_reward(self) -> float:
-        return (self._window_reward_sum / len(self._window_rewards)) if self._window_rewards else 0.0
+        if not self._window_rewards:
+            return 0.0
+        return self._window_reward_sum / len(self._window_rewards)
 
     @property
     def current_moving_fuel(self) -> float:
-        return (self._window_fuel_sum / len(self._window_fuels)) if self._window_fuels else 0.0
-
-    def apply_best_weights_if_superior(self, superiority_margin: float = 10.0) -> bool:
-        """
-        Controlla istantaneamente in RAM (< 0.1 ms, zero I/O disco) se i pesi migliori
-        superano la policy finale e li attiva subito in `self.model`.
-        """
-        if self._best_policy_state is None:
-            return False
-        if self.best_moving_success_rate >= self.current_moving_success_rate + superiority_margin:
-            self.model.policy.load_state_dict(self._best_policy_state)
-            np_fwd = getattr(self.model, "_numpy_rollout_fwd", None)
-            if np_fwd is not None:
-                np_fwd.invalidate()
-            return True
-        return False
+        if not self._window_fuels:
+            return 0.0
+        return self._window_fuel_sum / len(self._window_fuels)
 
     def flush_best_model_to_disk(
         self,
         keep_best_loaded_if_superior: bool = True,
-        superiority_margin: float = 10.0,
+        superiority_margin: float = 5.0,
     ) -> bool:
+        """
+        Scrive su disco `best_model.zip` una sola volta a fine training.
+        Se il miglior modello supera la policy finale di almeno `superiority_margin` %,
+        lo mantiene attivo in `self.model` per la successiva fase di valutazione.
+        Restituisce True se il miglior modello è stato caricato.
+        """
         if self._best_policy_state is None or self.best_model_save_dir is None:
             return False
 
         self.best_model_save_dir.mkdir(parents=True, exist_ok=True)
         save_p = self.best_model_save_dir / "best_model.zip"
 
-        final_state = {k: v.detach().cpu().clone() for k, v in self.model.policy.state_dict().items()}
+        final_state = {
+            k: v.detach().cpu().clone()
+            for k, v in self.model.policy.state_dict().items()
+        }
+
         self.model.policy.load_state_dict(self._best_policy_state)
         self.model.save(str(save_p))
         self.best_model_path = save_p
 
+        final_rate = self.current_moving_success_rate
         should_keep_best = (
             keep_best_loaded_if_superior
-            and (self.best_moving_success_rate >= self.current_moving_success_rate + superiority_margin)
+            and (self.best_moving_success_rate >= final_rate + superiority_margin)
         )
+
         if not should_keep_best:
             self.model.policy.load_state_dict(final_state)
             return False
 
-        np_fwd = getattr(self.model, "_numpy_rollout_fwd", None)
-        if np_fwd is not None:
-            np_fwd.invalidate()
         return True
 
-    def _render_html_progress(self, steps: int, fps: float, eta_sec: float, finished: bool = False) -> str:
+    def _render_html_progress(
+        self,
+        steps: int,
+        fps: float,
+        eta_sec: float,
+        finished: bool = False,
+    ) -> str:
         pct = min(100.0, (steps / max(1, self.total_timesteps)) * 100.0)
         succ_rate = self.current_moving_success_rate
-        mean_reward = self.current_moving_reward
-        mean_fuel = self.current_moving_fuel
+        mean_fuel = (
+            self._window_fuel_sum / len(self._window_fuels)
+            if self._window_fuels
+            else 0.0
+        )
         bar_color = "#2e7d32" if finished or succ_rate >= 80.0 else "#1976d2"
         status_txt = "Completato" if finished else f"ETA: {eta_sec:.0f}s"
-        n_fails = self.crashes + self.timeouts
 
         return (
             f'<div style="font-family:sans-serif; background:#f8f9fa; border:1px solid #dee2e6; '
@@ -360,22 +333,18 @@ class RewardTrackerCallback(BaseCallback):
             f'<div style="width:{pct:.1f}%; background:{bar_color}; height:100%; transition:width 0.25s;"></div>'
             f'</div>'
             f'<div style="display:flex; justify-content:space-between; font-size:12px; color:#495057; margin-top:6px;">'
-            f'<span>Episodi: <strong>{len(self.outcomes)}</strong> (<strong>{self.successes}</strong> 🟢 | <strong>{n_fails}</strong> 🔴)</span>'
-            f'<span>Successo recente ({self.window_size} ep): <strong style="color:{bar_color}; font-size:13px;">{succ_rate:.1f}%</strong> '
+            f'<span>Episodi: {len(self.outcomes)} | Successo recente: <strong>{succ_rate:.1f}%</strong> '
             f'(Picco: {max(0.0, self.best_moving_success_rate):.1f}%)</span>'
-            f'</div>'
-            f'<div style="display:flex; justify-content:space-between; font-size:12px; color:#495057; margin-top:4px;">'
-            f'<span>Current Reward ({self.window_size} ep): <strong style="color:#1565c0; font-size:13px;">{mean_reward:+.1f}</strong></span>'
-            f'<span>Carburante recente ({self.window_size} ep): <strong>{mean_fuel:.1f}</strong> un.</span>'
-            f'</div>'
-            f'</div>'
+            f'<span>Carburante recente: {mean_fuel:.1f} un.</span>'
+            f'</div></div>'
         )
 
     def _update_progress_ui(self, now: float, finished: bool = False) -> None:
         elapsed = max(1e-3, now - self._t_start)
         steps = self.num_timesteps
         fps = steps / elapsed
-        eta_sec = max(0, self.total_timesteps - steps) / max(1.0, fps)
+        remaining_steps = max(0, self.total_timesteps - steps)
+        eta_sec = remaining_steps / max(1.0, fps)
 
         if self._use_html_progress and self._display_handle is not None:
             from IPython.display import HTML
@@ -384,12 +353,12 @@ class RewardTrackerCallback(BaseCallback):
             )
         else:
             pct = min(100.0, (steps / max(1, self.total_timesteps)) * 100.0)
+            succ_rate = self.current_moving_success_rate
             end_char = "\n" if finished else ""
             print(
                 f"\r[play2learn] {pct:5.1f}% | {steps:,}/{self.total_timesteps:,} step | "
-                f"{fps:,.0f} st/s | Reward: {self.current_moving_reward:+7.1f} | "
-                f"Succ: {self.current_moving_success_rate:5.1f}% ({self.successes} succ) | "
-                f"Carb: {self.current_moving_fuel:5.1f} | ETA: {eta_sec:4.0f}s   ",
+                f"{fps:,.0f} step/s | Successo({self.window_size}ep): {succ_rate:5.1f}% | "
+                f"ETA: {eta_sec:4.0f}s   ",
                 end=end_char,
                 flush=True,
             )
@@ -402,23 +371,30 @@ def create_ppo_agent(
     custom_hyperparams: dict[str, Any] | None = None,
     verbose: int = 0,
     use_lr_schedule: bool = True,
-) -> FastPPO:
+) -> PPO:
+    """
+    Istanzia un agente PPO pre-configurato per convergenza rapida su LunarLander-v3.
+    Adatta automaticamente `n_steps` al numero di ambienti paralleli per mantenere
+    costante il rollout buffer target (2048 step, multiplo esatto di batch_size=64).
+    """
     params = dict(DEFAULT_PPO_PARAMS)
     if custom_hyperparams:
         params.update(custom_hyperparams)
 
+    # Adattamento automatico di n_steps a n_envs se non forzato manualmente
     if not (custom_hyperparams and "n_steps" in custom_hyperparams):
-        n_envs = max(1, getattr(env, "num_envs", 8))
-        batch_size = int(params.get("batch_size", 256))
+        n_envs = max(1, getattr(env, "num_envs", 4))
+        batch_size = int(params.get("batch_size", 64))
         raw_steps = max(batch_size, TARGET_ROLLOUT_SIZE // n_envs)
         params["n_steps"] = max(batch_size, (raw_steps // batch_size) * batch_size)
 
+    # Applicazione learning rate schedule lineare
     if use_lr_schedule and not callable(params.get("learning_rate")):
         lr_start = float(params.get("learning_rate", DEFAULT_LR_START))
         lr_end = min(DEFAULT_LR_END, lr_start * 0.1)
         params["learning_rate"] = LinearSchedule(lr_start, lr_end)
 
-    return FastPPO(
+    return PPO(
         env=env,
         seed=seed,
         device=device,
