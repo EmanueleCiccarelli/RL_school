@@ -85,12 +85,10 @@ class Head:
 
         sprite = getattr(hill_racing, "head_sprite", None)
         if sprite is not None:
-            scaled = pygame.transform.scale(sprite, (hill_racing.WHEEL_SIZE, hill_racing.WHEEL_SIZE))
+            scaled = pygame.transform.scale(sprite, (int(self.radius * 2), int(self.radius * 2)))
             rotated = pygame.transform.rotate(scaled, degrees_angle)
-            surface_screen.blit(
-                rotated,
-                (pos_x - hill_racing.panX - self.radius + 12, pos_y - hill_racing.panY - self.radius + 18),
-            )
+            rect = rotated.get_rect(center=(int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY)))
+            surface_screen.blit(rotated, rect.topleft)
         else:
             center = (int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY))
             pygame.draw.circle(surface_screen, (255, 204, 153), center, int(self.radius))
@@ -130,16 +128,14 @@ class Torso:
     def draw_torso(self, surface_screen: pygame.Surface) -> None:
         pos_x = self.body.position.x * hill_racing.SCALE
         pos_y = self.body.position.y * hill_racing.SCALE
-        degrees_angle = math.degrees(self.body.angle) * -1
+        degrees_angle = math.degrees(-self.body.angle) % 360
 
         sprite = getattr(hill_racing, "torso_sprite", None)
         if sprite is not None:
-            scaled = pygame.transform.scale(sprite, (hill_racing.PERSON_WIDTH, hill_racing.PERSON_HEIGHT))
+            scaled = pygame.transform.scale(sprite, (int(self.width), int(self.height)))
             rotated = pygame.transform.rotate(scaled, degrees_angle)
-            surface_screen.blit(
-                rotated,
-                (pos_x - hill_racing.panX, pos_y - hill_racing.panY),
-            )
+            rect = rotated.get_rect(center=(int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY)))
+            surface_screen.blit(rotated, rect.topleft)
         else:
             rect = pygame.Rect(
                 int(pos_x - hill_racing.panX - self.width / 2),

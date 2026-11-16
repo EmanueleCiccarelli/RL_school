@@ -110,12 +110,10 @@ class Wheel:
 
         sprite = getattr(hill_racing, "wheel_sprite", None)
         if sprite is not None:
-            scaled = pygame.transform.scale(sprite, (hill_racing.HEAD_SIZE, hill_racing.HEAD_SIZE))
+            scaled = pygame.transform.scale(sprite, (int(self.radius * 2), int(self.radius * 2)))
             rotated = pygame.transform.rotate(scaled, degrees_angle)
-            surface_screen.blit(
-                rotated,
-                (-self.radius + pos_x - hill_racing.panX, -self.radius + pos_y - hill_racing.panY),
-            )
+            rect = rotated.get_rect(center=(int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY)))
+            surface_screen.blit(rotated, rect.topleft)
         else:
             # Rendering procedurale vettoriale di fallback
             center = (int(pos_x - hill_racing.panX), int(pos_y - hill_racing.panY))

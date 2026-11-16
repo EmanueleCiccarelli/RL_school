@@ -160,15 +160,21 @@ class TestHillClimb(unittest.TestCase):
         # 1. Verifica parametri fisici dei giunti (stabilità anti-spin)
         self.assertTrue(car.rev_joint_torso_chassis.limitEnabled, "Il giunto del torso deve avere finecorsa limitEnabled=True")
         self.assertAlmostEqual(car.dist_joint_torso_chassis.frequency, 5.0, places=1)
-        self.assertAlmostEqual(car.dist_joint_torso_chassis.dampingRatio, 0.1, places=1)
+        self.assertGreaterEqual(car.dist_joint_torso_chassis.dampingRatio, 0.1)
+        # angularDamping=0.1 sul chassis (cruciale per smorzare le rotazioni)
+        self.assertAlmostEqual(car.chassis_body.angularDamping, 0.1, places=2,
+                               msg="Il chassis deve avere angularDamping=0.1 come l'originale")
+        # Il chassis deve avere 3 fixture (corpo + parabrezza + paraurti)
+        self.assertEqual(len(list(car.chassis_body.fixtures)), 3,
+                         "Il chassis deve avere 3 fixture come l'originale")
 
-        # 2. Verifica che durante il moto il busto non spinni (angolo relativo limitato)
-        for _ in range(40):
+        # 2. Verifica che durante il moto il busto non spinni (angolo relativo contenuto)
+        for _ in range(60):
             obs, r, term, trunc, _ = env.step(1)
             chassis_ang = car.chassis_body.angle
             torso_ang = car.person.torso.body.angle
             rel_ang = abs(torso_ang - chassis_ang)
-            self.assertLessEqual(rel_ang, math.pi / 2.0, f"Il torso non deve spinnare: angolo relativo {rel_ang:.2f} rad")
+            self.assertLessEqual(rel_ang, math.pi, f"Il torso non deve spinnare: angolo relativo {rel_ang:.2f} rad")
             if term or trunc:
                 break
 

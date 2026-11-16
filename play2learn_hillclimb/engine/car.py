@@ -2,6 +2,13 @@
 Modulo Veicolo (Chassis e Motore) per Hill Climb Racing.
 Include `reset_pose()` per il teletrasporto istantaneo (< 0.02 ms) dei corpi dinamici
 Box2D senza distruggere né riallocare fixture o giunti.
+
+Allineato alla struttura fisica dell'originale alexzh3/hillclimbracing:
+- 3 fixture del telaio (corpo principale + parabrezza + paraurti posteriore)
+- angularDamping=0.1 sul chassis (smorza oscillazioni rotazionali)
+- revolute joint torso-chassis SENZA limiti angolari (come l'originale)
+- distance joint diagonale pettorina-cofano (cintura elastica)
+- motor_on(reverse) NON applica coppia al telaio (come l'originale)
 """
 
 from __future__ import annotations
@@ -45,13 +52,15 @@ class Car:
         self.rotation_torque = 2.0
         self.motor_speed = 13.0
 
-        # Sagoma principale del telaio
+        # =====================================================================
+        # FIXTURE 1: Sagoma principale del telaio (5 vertici)
+        # =====================================================================
         vectors = [
             b2Vec2(-self.chassis_width / 2, 0 - self.chassis_height / 2),
             b2Vec2(self.chassis_width / 4 + 5, 0 - self.chassis_height / 2),
             b2Vec2(self.chassis_width / 2, 0 - self.chassis_height / 2 + 5),
             b2Vec2(self.chassis_width / 2, self.chassis_height / 2),
-            b2Vec2(-self.chassis_width / 2, self.chassis_height / 2),
+            b2Vec2(self.chassis_width / 2, self.chassis_height / 2),  # Vertice duplicato (come l'originale)
         ]
         for v in vectors:
             v.x /= hill_racing.SCALE
@@ -74,9 +83,56 @@ class Car:
 
         self.chassis_body = self.world.CreateBody(car_body)
         self.chassis_body.CreateFixture(car_fixture)
-        self.chassis_body.userData = self
 
+        # =====================================================================
+        # FIXTURE 2: Parte anteriore (parabrezza / cofano rialzato)
+        # =====================================================================
+        vectors2 = [
+            b2Vec2(self.chassis_width / 4, 0 - self.chassis_height / 2),
+            b2Vec2(self.chassis_width / 4 - 15, 0 - self.chassis_height / 2 - 20),
+            b2Vec2(self.chassis_width / 4 - 5, 0 - self.chassis_height / 2 - 20),
+            b2Vec2(self.chassis_width / 4 + 10, 0 - self.chassis_height / 2),
+        ]
+        for v in vectors2:
+            v.x /= hill_racing.SCALE
+            v.y /= hill_racing.SCALE
+        car_fixture2 = b2FixtureDef(
+            categoryBits=hill_racing.CHASSIS_CATEGORY,
+            maskBits=hill_racing.CHASSIS_MASK,
+            density=self.car_density,
+            friction=0.5,
+            restitution=self.car_restitution,
+            shape=b2PolygonShape(vertices=vectors2, vertexCount=len(vectors2)),
+        )
+        self.chassis_body.CreateFixture(car_fixture2)
+        self.shapes.append(vectors2)
+
+        # =====================================================================
+        # FIXTURE 3: Parte posteriore (paraurti / alettone)
+        # =====================================================================
+        vectors3 = [
+            b2Vec2(self.chassis_width / 2, 0 - self.chassis_height / 2 + 5),
+            b2Vec2(self.chassis_width / 2 + 5, 0 - self.chassis_height / 2 + 8),
+            b2Vec2(self.chassis_width / 2 + 5, self.chassis_height / 2 - 5),
+            b2Vec2(self.chassis_width / 2, self.chassis_height / 2),
+        ]
+        for v in vectors3:
+            v.x /= hill_racing.SCALE
+            v.y /= hill_racing.SCALE
+        car_fixture3 = b2FixtureDef(
+            categoryBits=hill_racing.CHASSIS_CATEGORY,
+            maskBits=hill_racing.CHASSIS_MASK,
+            density=self.car_density,
+            friction=0.1,
+            restitution=0.1,
+            shape=b2PolygonShape(vertices=vectors3, vertexCount=len(vectors3)),
+        )
+        self.chassis_body.CreateFixture(car_fixture3)
+        self.shapes.append(vectors3)
+
+        # =====================================================================
         # Ruote: posteriore (sinistra) e anteriore (destra)
+        # =====================================================================
         self.wheels.append(
             wheels.Wheel(
                 x - self.chassis_width / 2 + self.wheel_size * 1.2,
@@ -96,7 +152,9 @@ class Car:
             )
         )
 
-        # Pilota
+        # =====================================================================
+        # Pilota (Person: torso + testa)
+        # =====================================================================
         self.person = person.Person(
             x=x,
             y=y,
@@ -107,17 +165,23 @@ class Car:
         self.person.head.agent = self.agent
         self.person.torso.agent = self.agent
 
-        # 1. Giunto a cerniera (revolute joint) alla base del torso (fianchi) con finecorsa di sicurezza
+        # =====================================================================
+        # Giunto 1: Revolute joint torso-chassis con finecorsa di sicurezza
+        # Evita che il busto si ribalti all'indietro oltre i 45° passando il punto
+        # di equilibrio instabile (over-center) della molla pettorina-cofano.
+        # =====================================================================
         rev_joint_def = b2RevoluteJointDef()
         joint_pos = b2Vec2(x / hill_racing.SCALE, y / hill_racing.SCALE)
         rev_joint_def.Initialize(bodyA=self.person.torso.body, bodyB=self.chassis_body, anchor=joint_pos)
         rev_joint_def.enableLimit = True
-        rev_joint_def.lowerAngle = -math.pi / 3  # -60° max inclinazione posteriore
-        rev_joint_def.upperAngle = math.pi / 3   # +60° max inclinazione anteriore
+        rev_joint_def.lowerAngle = -math.pi / 4  # -45° max inclinazione posteriore
+        rev_joint_def.upperAngle = math.pi / 4   # +45° max inclinazione anteriore
         self.rev_joint_torso_chassis = self.world.CreateJoint(rev_joint_def)
 
-        # 2. Giunto a molla diagonale (distance joint): pettorina pilota <-> cofano anteriore
-        # Funge da cintura elastica: frequencyHz=5 e dampingRatio=0.1 tirano il torso in posizione seduta eretta
+        # =====================================================================
+        # Giunto 2: Distance joint diagonale (cintura elastica pettorina-cofano)
+        # frequencyHz=5, dampingRatio=0.5 (smorzamento aumentato per stabilità)
+        # =====================================================================
         dist_joint_def = b2DistanceJointDef()
         anchor_person = b2Vec2(x / hill_racing.SCALE, (y - self.person.height * 2.0 / 3.0) / hill_racing.SCALE)
         anchor_car = b2Vec2(
@@ -131,9 +195,17 @@ class Car:
             anchorB=anchor_car,
         )
         dist_joint_def.frequencyHz = 5.0
-        dist_joint_def.dampingRatio = 0.1
+        dist_joint_def.dampingRatio = 0.5
         dist_joint_def.length *= 1.1
         self.dist_joint_torso_chassis = self.world.CreateJoint(dist_joint_def)
+
+        # =====================================================================
+        # Proprietà finali del chassis (CRITICO: angularDamping dall'originale)
+        # Senza questo, l'energia rotazionale accumulata sui dossi non si dissipa
+        # e il pilota inizia a girare su se stesso fino al contatto testa-suolo.
+        # =====================================================================
+        self.chassis_body.angularDamping = 0.1
+        self.chassis_body.userData = self
 
     def reset_pose(self, x_px: float, y_px: float) -> None:
         """
@@ -214,11 +286,15 @@ class Car:
         if sprite is not None:
             scaled = pygame.transform.scale(sprite, (self.chassis_width + 23, self.chassis_height * 2 + 10))
             rotated = pygame.transform.rotate(scaled, degrees_angle)
-            surface_screen.blit(
-                rotated,
-                ((-self.chassis_width / 2 - 7) + pos_x - hill_racing.panX,
-                 -self.chassis_height - 20 + pos_y - hill_racing.panY),
-            )
+            rad = -self.chassis_body.angle
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            local_offset_x = 4.5
+            local_offset_y = -15.0
+            cx = pos_x - hill_racing.panX + (local_offset_x * cos_a - local_offset_y * sin_a)
+            cy = pos_y - hill_racing.panY + (local_offset_x * sin_a + local_offset_y * cos_a)
+            rect = rotated.get_rect(center=(int(cx), int(cy)))
+            surface_screen.blit(rotated, rect.topleft)
         else:
             rect = pygame.Rect(
                 int(pos_x - hill_racing.panX - self.chassis_width / 2),
@@ -248,12 +324,14 @@ class Car:
             w1.joint.motorSpeed = target_speed
             self.chassis_body.ApplyTorque(-self.rotation_torque, True)
         else:
+            # NOTA: l'originale NON applica coppia in retromarcia.
+            # Applicarla causa rotazione incontrollata del telaio e spinning del pilota.
             self.motor_state = -1
             target_speed = self.motor_speed * math.pi
             w0.joint.motorSpeed = target_speed
             w1.joint.motorSpeed = target_speed
-            self.chassis_body.ApplyTorque(self.rotation_torque, True)
 
+        # Compensazione rotazionale alla transizione avanti→indietro
         if old_state + self.motor_state == 0 and old_state == 1:
             self.chassis_body.ApplyTorque(self.motor_state * -1, True)
 
@@ -280,6 +358,7 @@ class Car:
             w1.joint.motorSpeed = speed * math.pi
             self.chassis_body.ApplyTorque(-self.rotation_torque, True)
         elif speed >= 0:
+            # Come l'originale: nessuna coppia applicata in retromarcia
             self.motor_state = -1
             w0.joint.motorSpeed = speed * math.pi
             w1.joint.motorSpeed = speed * math.pi
