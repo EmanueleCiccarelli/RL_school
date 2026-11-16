@@ -206,6 +206,9 @@ class HillRacingEnv(gym.Env):
             dtype=np.float32,
         )
 
+        # Buffer di osservazione riutilizzabile per eliminare ~150.000 allocazioni NumPy per run
+        self._obs_buf = np.zeros(8, dtype=np.float32)
+
         self.screen: Optional[pygame.Surface] = None
         self.clock = None
 
@@ -276,26 +279,32 @@ class HillRacingEnv(gym.Env):
                 self.agent.car.motor_off()
 
     def _get_obs(self) -> np.ndarray:
+        buf = getattr(self, "_obs_buf", None)
+        if buf is None:
+            buf = np.zeros(8, dtype=np.float32)
+            self._obs_buf = buf
+
         if self.agent is None or self.agent.car is None:
-            return np.zeros(8, dtype=np.float32)
+            buf.fill(0.0)
+            return buf
 
         car_body = self.agent.car.chassis_body
-        pos_x = float(self.agent.car.pos_x)
-        pos_y = float(self.agent.car.pos_y)
         vel = car_body.linearVelocity
-        ang_vel = float(car_body.angularVelocity)
 
         # Angolo normalizzato tra -pi e pi
         angle = float(-car_body.angle)
         norm_angle = (angle + math.pi) % (2 * math.pi) - math.pi
 
-        rear_on = 1.0 if getattr(self.agent.car.wheels[0], "on_ground", False) else 0.0
-        front_on = 1.0 if getattr(self.agent.car.wheels[1], "on_ground", False) else 0.0
+        buf[0] = float(self.agent.car.pos_x)
+        buf[1] = float(self.agent.car.pos_y)
+        buf[2] = float(vel.x)
+        buf[3] = float(vel.y)
+        buf[4] = norm_angle
+        buf[5] = float(car_body.angularVelocity)
+        buf[6] = 1.0 if getattr(self.agent.car.wheels[0], "on_ground", False) else 0.0
+        buf[7] = 1.0 if getattr(self.agent.car.wheels[1], "on_ground", False) else 0.0
 
-        return np.array(
-            [pos_x, pos_y, float(vel.x), float(vel.y), norm_angle, ang_vel, rear_on, front_on],
-            dtype=np.float32,
-        )
+        return buf.copy()
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)

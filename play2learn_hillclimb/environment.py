@@ -67,13 +67,23 @@ def classify_hill_climb_outcome(
 class HillClimbRewardWrapper(BaseRewardWrapper):
     """Wrapper didattico ad alte prestazioni con fast-path non terminale e guardia NaN/Inf."""
 
+    __slots__ = (
+        "_unwrapped",
+        "_isfinite",
+        "episode_steps",
+        "cumulative_distance",
+        "airtime_steps",
+        "max_speed_reached",
+    )
+
     def __init__(self, env: gym.Env, reward_fn: Callable | None = None):
         super().__init__(env, reward_fn=reward_fn)
         self._unwrapped = getattr(env, "unwrapped", env)
-        self.episode_steps = 0
-        self.cumulative_distance = 0.0
-        self.airtime_steps = 0
-        self.max_speed_reached = 0.0
+        self._isfinite = math.isfinite
+        self.episode_steps: int = 0
+        self.cumulative_distance: float = 0.0
+        self.airtime_steps: int = 0
+        self.max_speed_reached: float = 0.0
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
         self.episode_steps = 0
@@ -83,43 +93,39 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
         return super().reset(**kwargs)
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        act_int = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
+        act_int = int(action)
         obs, original_reward, terminated, truncated, info = self.env.step(act_int)
         self.episode_steps += 1
 
-        # Protegge VecNormalize e PPO da eventuali glitch numerici Box2D
-        if isinstance(obs, np.ndarray) and not np.all(np.isfinite(obs)):
+        # Guardia NaN/Inf rapida tramite riduzione scalare float (zero allocazioni bool array)
+        if not self._isfinite(float(obs.sum())):
             obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-        try:
-            x_dist = float(obs.item(0))
-            vx = float(obs.item(2))
-            in_air = (obs.item(6) <= 0.5) and (obs.item(7) <= 0.5)
-        except (AttributeError, ValueError):
-            x_dist = float(obs[0])
-            vx = float(obs[2])
-            in_air = (obs[6] <= 0.5) and (obs[7] <= 0.5)
-
+        x_dist = float(obs[0])
+        abs_vx = abs(float(obs[2]))
         if x_dist > self.cumulative_distance:
             self.cumulative_distance = x_dist
-        abs_vx = abs(vx)
         if abs_vx > self.max_speed_reached:
             self.max_speed_reached = abs_vx
-        if in_air:
+        if obs[6] <= 0.5 and obs[7] <= 0.5:
             self.airtime_steps += 1
 
-        # Fast-path per step non terminali (zero chiamate a classify_outcome)
+        # Fast-path (>99.5% step): zero chiamate a classify_outcome, zero allocazioni dict telemetry
         if not (terminated or truncated):
-            if self.reward_fn is not None:
-                reward = self.call_student_reward(obs, act_int, False, False, False)
+            caller = self._caller
+            if caller is not None:
+                try:
+                    reward = float(caller(obs, act_int, False, False, False))
+                    if not self._isfinite(reward):
+                        raise ValueError(f"Valore non finito restituito: {reward}")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"[Play2Learn Error] Errore nella tua 'custom_reward': {exc}"
+                    ) from exc
             else:
-                reward = self.validate_reward_value(original_reward)
-            info["telemetry"] = {
-                "max_distance": self.cumulative_distance,
-                "airtime_steps": self.airtime_steps,
-                "max_speed": self.max_speed_reached,
-                "flight_steps": self.episode_steps,
-            }
+                reward = float(original_reward)
+                if not self._isfinite(reward):
+                    reward = 0.0
             return obs, reward, False, False, info
 
         is_success, is_crashed, is_timeout, is_flipped = classify_hill_climb_outcome(
@@ -130,7 +136,7 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             unwrapped=self._unwrapped,
         )
 
-        if self.reward_fn is not None:
+        if self._caller is not None:
             reward = self.call_student_reward(obs, act_int, is_success, is_crashed, is_timeout)
         else:
             reward = self.validate_reward_value(original_reward)

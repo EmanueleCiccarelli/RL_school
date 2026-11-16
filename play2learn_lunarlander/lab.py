@@ -33,7 +33,12 @@ from play2learn_lunarlander.environment import (
     CustomRewardWrapper,
     classify_lunar_lander_outcome,
 )
-from play2learn_lunarlander.agent import create_ppo_agent, RewardTrackerCallback
+from play2learn_lunarlander.agent import (
+    create_ppo_agent,
+    RewardTrackerCallback,
+    AdaptiveBatchSizeCallback,
+    attach_jit_rollout_forward,
+)
 from play2learn_lunarlander.visualizer import plot_training_results, display_notebook_summary
 from play2learn_lunarlander.evaluator import evaluate_and_record
 from play2learn_lunarlander.storage import (
@@ -49,6 +54,7 @@ def _configure_cpu_threads() -> None:
     """
     Su MLP piccoli (64x64) in CPU, 1 thread PyTorch evita l'overhead di
     sincronizzazione OpenMP/futex e accelera forward+backward di 2-4x rispetto a 8-16 thread.
+    Disattiva inoltre la validazione simplex di Categorical per +8-12% throughput CPU.
     """
     try:
         torch.set_num_threads(1)
@@ -56,6 +62,10 @@ def _configure_cpu_threads() -> None:
         pass
     try:
         torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+    try:
+        torch.distributions.Distribution.set_default_validate_args(False)
     except Exception:
         pass
 
@@ -77,6 +87,15 @@ class LabResult(dict):
     def __setattr__(self, name: str, value: Any) -> None:
         self[name] = value
 
+    def wait_artifacts(self, timeout: float | None = None) -> None:
+        """Attende il completamento della generazione in background di video, timelapse e report."""
+        fut = self.get("_artifact_future")
+        if fut is not None and not fut.done():
+            try:
+                fut.result(timeout=timeout)
+            except Exception as e:
+                print(f"[play2learn] Avviso completamento background: {e}")
+
     def salva_preferito(
         self,
         nome_personalizzato: str | None = None,
@@ -84,6 +103,7 @@ class LabResult(dict):
         tag: str = "Mio Preferito",
     ) -> dict[str, Any]:
         """Salva questo modello nell'archivio dei preferiti personali dell'utente."""
+        self.wait_artifacts()
         return salva_nei_preferiti(
             self,
             nome_personalizzato=nome_personalizzato,
@@ -98,6 +118,7 @@ class LabResult(dict):
         note: str = "",
     ) -> dict[str, Any]:
         """Salva un video specifico nei preferiti personali dell'utente."""
+        self.wait_artifacts()
         target_video = video
         if isinstance(video, int):
             v_list = self.get("success_videos", []) or self.get("recorded_videos", [])
@@ -116,17 +137,28 @@ class LabResult(dict):
         autore: str = "Studente",
         titolo: str = "Report Esperimento Lunar Lander",
         note: str = "",
+        force: bool = False,
     ) -> dict[str, Path]:
         """Genera la scheda tecnica riassuntiva in PDF, HTML e Markdown."""
-        return genera_report_maturita(
+        self.wait_artifacts()
+        bundle = self.get("report_bundle")
+        if not force and bundle and "rep_files" in bundle:
+            if autore == "Studente" and not note and titolo == "Report Esperimento Lunar Lander":
+                print("ℹ️ Scheda tecnica già pronta (generata durante l'archiviazione automatica).")
+                return bundle["rep_files"]
+
+        rep = genera_report_maturita(
             self,
             autore=autore,
             titolo=titolo,
             note=note,
         )
+        self["report_bundle"] = {"rep_files": rep}
+        return rep
 
     def mostra_volo(self, indice: int = 0) -> None:
         """Visualizza uno dei video di prova registrati."""
+        self.wait_artifacts()
         videos = self.get("recorded_videos", [])
         if videos and 0 <= indice < len(videos):
             display_notebook_summary(self.get("plot_path"), [videos[indice]])
@@ -135,6 +167,7 @@ class LabResult(dict):
 
     def mostra_evoluzione(self) -> None:
         """Visualizza il timelapse GIF dell'evoluzione dell'agente nel corso del training."""
+        self.wait_artifacts()
         p = self.get("gif_evoluzione_path") or (Path(self.get("checkpoint_dir", "")) / "evoluzione_apprendimento.gif")
         if p and Path(p).exists():
             try:
@@ -284,13 +317,20 @@ def run_lab(
             device=device,
             verbose=0,
         )
+        attach_jit_rollout_forward(model)
+
+        adaptive_cb = AdaptiveBatchSizeCallback(
+            total_timesteps=total_timesteps,
+            switch_fraction=0.5,
+            target_batch_size=256,
+        )
 
         # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
         print("\n[play2learn] Inizio addestramento dell'agente...")
         t_start = time.perf_counter()
         model.learn(
             total_timesteps=total_timesteps,
-            callback=tracker,
+            callback=[tracker, adaptive_cb],
             progress_bar=False,
         )
     except KeyboardInterrupt:

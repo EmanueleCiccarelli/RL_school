@@ -32,8 +32,8 @@ class TestConfig(unittest.TestCase):
             self.assertIn("gravity", m["env_kwargs"])
 
     def test_ppo_hyperparameters(self):
-        self.assertEqual(DEFAULT_PPO_PARAMS["batch_size"], 64)
-        self.assertEqual(DEFAULT_PPO_PARAMS["n_epochs"], 8)
+        self.assertEqual(DEFAULT_PPO_PARAMS["batch_size"], 128)
+        self.assertEqual(DEFAULT_PPO_PARAMS["n_epochs"], 4)
         self.assertEqual(DEFAULT_PPO_PARAMS["gamma"], 0.995)
         self.assertEqual(DEFAULT_PPO_PARAMS["gae_lambda"], 0.98)
         self.assertEqual(DEFAULT_PPO_PARAMS["target_kl"], 0.03)
@@ -45,7 +45,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(VECNORM_PARAMS["clip_reward"], 10.0)
 
     def test_defaults(self):
-        self.assertEqual(DEFAULT_N_ENVS, 4)
+        self.assertEqual(DEFAULT_N_ENVS, 8)
         self.assertEqual(DEFAULT_TIMESTEPS, 300_000)
         self.assertEqual(HELIPAD_X_MIN, -0.20)
         self.assertEqual(HELIPAD_X_MAX, 0.20)

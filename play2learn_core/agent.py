@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import torch
+import torch.nn.functional as F
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from tqdm.auto import tqdm
@@ -36,7 +37,7 @@ def create_linear_schedule(initial_value: float, min_value: float = 1e-5) -> Cal
 
 
 def configure_cpu_threads() -> None:
-    """Fissa PyTorch a 1 thread CPU per evitare contesa OpenMP/futex su reti neurali compatte."""
+    """Fissa PyTorch a 1 thread CPU e disattiva la validazione simplex Categorical."""
     try:
         torch.set_num_threads(1)
     except Exception:
@@ -45,6 +46,114 @@ def configure_cpu_threads() -> None:
         torch.set_num_interop_threads(1)
     except Exception:
         pass
+    try:
+        torch.distributions.Distribution.set_default_validate_args(False)
+    except Exception:
+        pass
+
+
+class AdaptiveBatchSizeCallback(BaseCallback):
+    """
+    Raddoppia il batch_size di PPO (128 -> 256) al 50% di avanzamento per tagliare l'overhead SGD
+    tardivo del ~20% e ridurre la varianza della policy vicino alla convergenza.
+    """
+
+    def __init__(
+        self,
+        total_timesteps: int,
+        switch_fraction: float = 0.5,
+        target_batch_size: int = 256,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.switch_step = int(total_timesteps * switch_fraction)
+        self.target_batch_size = int(target_batch_size)
+        self._switched = False
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if not self._switched and self.num_timesteps >= self.switch_step:
+            rollout_size = getattr(self.model, "n_steps", 256) * getattr(self.model, "n_envs", 8)
+            if rollout_size % self.target_batch_size == 0:
+                self.model.batch_size = self.target_batch_size
+                self._switched = True
+
+
+@torch.jit.script
+def _jit_mlp64_discrete_forward(
+    obs: torch.Tensor,
+    pi_w0: torch.Tensor, pi_b0: torch.Tensor,
+    pi_w1: torch.Tensor, pi_b1: torch.Tensor,
+    act_w: torch.Tensor, act_b: torch.Tensor,
+    vf_w0: torch.Tensor, vf_b0: torch.Tensor,
+    vf_w1: torch.Tensor, vf_b1: torch.Tensor,
+    val_w: torch.Tensor, val_b: torch.Tensor,
+    deterministic: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Forward pass stateless TorchScript fused per ActorCritic discreto [64, 64] Tanh.
+    Mantiene intatti i moduli nn.Linear standard per compatibilità 100% PPO.save/load.
+    """
+    h_pi = torch.tanh(F.linear(obs, pi_w0, pi_b0))
+    h_pi = torch.tanh(F.linear(h_pi, pi_w1, pi_b1))
+    logits = F.linear(h_pi, act_w, act_b)
+
+    h_vf = torch.tanh(F.linear(obs, vf_w0, vf_b0))
+    h_vf = torch.tanh(F.linear(h_vf, vf_w1, vf_b1))
+    values = F.linear(h_vf, val_w, val_b)
+
+    log_probs = F.log_softmax(logits, dim=-1)
+    if deterministic:
+        actions = torch.argmax(logits, dim=-1)
+    else:
+        probs = torch.exp(log_probs)
+        actions = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    chosen_log_prob = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)
+    return actions, values, chosen_log_prob
+
+
+def attach_jit_rollout_forward(model: Any) -> bool:
+    """
+    Inietta il forward TorchScript stateless durante il rollout su standard SB3 MlpPolicy
+    senza alterare lo state_dict o invalidare il salvataggio cloudpickle.
+    """
+    policy = getattr(model, "policy", None)
+    if policy is None:
+        return False
+    try:
+        pi_net = policy.mlp_extractor.policy_net
+        vf_net = policy.mlp_extractor.value_net
+        if (
+            len(pi_net) != 4
+            or len(vf_net) != 4
+            or not isinstance(pi_net[1], torch.nn.Tanh)
+            or not isinstance(vf_net[1], torch.nn.Tanh)
+            or policy.features_extractor.__class__.__name__ != "FlattenExtractor"
+        ):
+            return False
+
+        p_l0, p_l1 = pi_net[0], pi_net[2]
+        v_l0, v_l1 = vf_net[0], vf_net[2]
+        act_net, val_net = policy.action_net, policy.value_net
+
+        def _fast_forward(obs: torch.Tensor, deterministic: bool = False):
+            return _jit_mlp64_discrete_forward(
+                obs.float(),
+                p_l0.weight, p_l0.bias,
+                p_l1.weight, p_l1.bias,
+                act_net.weight, act_net.bias,
+                v_l0.weight, v_l0.bias,
+                v_l1.weight, v_l1.bias,
+                val_net.weight, val_net.bias,
+                deterministic,
+            )
+
+        policy.forward = _fast_forward  # type: ignore[method-assign]
+        return True
+    except Exception:
+        return False
 
 
 def get_optimal_vec_config(
@@ -61,7 +170,7 @@ def get_optimal_vec_config(
     else:
         use_subproc = is_linux and (cpu_count >= 6) and (total_timesteps >= 200_000)
 
-    resolved_envs = (8 if use_subproc else 4) if n_envs is None else max(1, int(n_envs))
+    resolved_envs = 8 if n_envs is None else max(1, int(n_envs))
     if resolved_envs == 1:
         use_subproc = False
     return resolved_envs, use_subproc

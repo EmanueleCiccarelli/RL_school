@@ -18,6 +18,8 @@ from play2learn_core.agent import (
     configure_cpu_threads,
     get_optimal_vec_config,
     make_parallel_envs,
+    AdaptiveBatchSizeCallback,
+    attach_jit_rollout_forward,
 )
 from play2learn_hillclimb.agent import HillClimbRewardTrackerCallback, build_hill_agent
 from play2learn_hillclimb.config import (
@@ -147,10 +149,17 @@ def run_lab(
         learning_rate=learning_rate,
         seed=seed,
     )
+    attach_jit_rollout_forward(model)
+
+    adaptive_cb = AdaptiveBatchSizeCallback(
+        total_timesteps=total_timesteps,
+        switch_fraction=0.5,
+        target_batch_size=256,
+    )
 
     t0 = time.time()
     try:
-        model.learn(total_timesteps=total_timesteps, callback=callback)
+        model.learn(total_timesteps=total_timesteps, callback=[callback, adaptive_cb])
     finally:
         vec_env.close()
 

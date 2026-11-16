@@ -31,6 +31,10 @@ from play2learn_lunarlander.config import (
     DEFAULT_LR_END,
     TARGET_ROLLOUT_SIZE,
 )
+from play2learn_core.agent import (
+    AdaptiveBatchSizeCallback,
+    attach_jit_rollout_forward,
+)
 
 
 class LinearSchedule:

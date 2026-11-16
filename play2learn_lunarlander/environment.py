@@ -159,6 +159,17 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
     Popola il dizionario `info` solo a fine episodio per minimizzare allocazioni e IPC.
     """
 
+    __slots__ = (
+        "reward_fn",
+        "_call_reward",
+        "_unwrapped",
+        "ep_fuel_used",
+        "ep_main_engine_steps",
+        "ep_side_engine_steps",
+        "ep_air_steps",
+        "ep_ground_steps",
+    )
+
     def __init__(self, env: gym.Env, reward_fn: Callable):
         super().__init__(env)
         self.reward_fn = reward_fn
@@ -191,11 +202,7 @@ class CustomRewardWrapper(gym.Wrapper if _GYM_AVAILABLE else object):
             self.ep_fuel_used += FUEL_SIDE_ENGINE
             self.ep_side_engine_steps += 1
 
-        # Accesso scalare diretto (.item) evita allocazione di np.float32
-        try:
-            contact = (obs.item(6) > 0.5) or (obs.item(7) > 0.5)
-        except (AttributeError, ValueError):
-            contact = (obs[6] > 0.5) or (obs[7] > 0.5)
+        contact = (obs[6] > 0.5) or (obs[7] > 0.5)
 
         if contact:
             self.ep_ground_steps += 1
@@ -298,8 +305,8 @@ def get_optimal_vec_config(
 ) -> tuple[int, bool]:
     """
     Determina la combinazione ottimale (n_envs, use_subproc) per l'hardware corrente:
-    - Colab / CPU <= 4 thread: DummyVecEnv con 4 env (massimo FPS, zero IPC).
-    - Windows (spawn lento e fragile in Jupyter): DummyVecEnv con 4 env di default.
+    - Colab / CPU <= 4 thread: DummyVecEnv con 8 env (massimo throughput, zero IPC).
+    - Windows (spawn lento e fragile in Jupyter): DummyVecEnv con 8 env di default.
     - Linux multi-core (>= 6 thread) su run >= 250k step: SubprocVecEnv con 8 env.
     """
     cpu_count = os.cpu_count() or 2
@@ -311,7 +318,7 @@ def get_optimal_vec_config(
         use_subproc = (not is_windows) and (cpu_count >= 6) and (total_timesteps >= 250_000)
 
     if n_envs is None:
-        resolved_envs = 8 if use_subproc else 4
+        resolved_envs = 8
     else:
         resolved_envs = max(1, int(n_envs))
 

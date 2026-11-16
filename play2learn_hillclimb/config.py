@@ -62,9 +62,9 @@ MISSIONS = {
 
 # Iperparametri ottimali PPO per Hill Climb Racing
 DEFAULT_PPO_PARAMS = {
-    "n_steps": 512,
-    "batch_size": 64,
-    "n_epochs": 8,
+    "n_steps": 256,
+    "batch_size": 128,
+    "n_epochs": 4,
     "gamma": 0.995,
     "gae_lambda": 0.98,
     "clip_range": 0.2,
@@ -82,7 +82,7 @@ VECNORM_PARAMS = {
     "gamma": 0.995,
 }
 
-DEFAULT_N_ENVS = 4
+DEFAULT_N_ENVS = 8
 DEFAULT_TIMESTEPS = 150_000
 MIN_EVAL_EPISODES = 20
 EVAL_SEEDS = [100 + i * 37 for i in range(MIN_EVAL_EPISODES)]

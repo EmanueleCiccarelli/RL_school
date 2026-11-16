@@ -70,6 +70,10 @@ class TestHillClimb(unittest.TestCase):
         obs, _ = wrapped.reset(seed=42)
         obs, rew, term, trunc, info = wrapped.step(1)
         self.assertIsInstance(rew, float)
+        # Verifica popolamento telemetria a fine episodio (allineato a Lunar Lander)
+        wrapped.unwrapped.agent.dead = True
+        obs, rew, term, trunc, info = wrapped.step(0)
+        self.assertTrue(term or trunc)
         self.assertIn("telemetry", info)
         self.assertIn("max_distance", info["telemetry"])
         wrapped.close()
