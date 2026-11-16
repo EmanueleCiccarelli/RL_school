@@ -37,3 +37,9 @@ Thumbs.db
 
 # Cartella locale di lavoro legacy
 Lunar Lander/
+
+# File di review generati per modelli LLM (usati solo localmente per interrogare modelli AI)
+PROMPT_CODE_REVIEW*.txt
+codice_completo_repo*.txt
+review_*.txt
+*.review.txt

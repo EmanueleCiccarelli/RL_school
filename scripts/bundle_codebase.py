@@ -1,4 +1,79 @@
-================================================================================
+#!/usr/bin/env python3
+"""
+Script di utilita per generare il bundle completo del codice sorgente della repository
+e il prompt di code review per modelli linguistici avanzati.
+
+I file generati (es. PROMPT_CODE_REVIEW.txt e codice_completo_repo.txt) sono esclusi
+dal versionamento git (presenti in .gitignore) e servono unicamente come strumenti locali
+per interrogare modelli AI esterni.
+
+Uso:
+    python scripts/bundle_codebase.py [--root DIR] [--code-out FILE] [--prompt-out FILE]
+"""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+DEFAULT_FILES_TO_BUNDLE = [
+    "README.md",
+    "pyproject.toml",
+    "requirements.txt",
+    "play2learn_core/__init__.py",
+    "play2learn_core/storage.py",
+    "play2learn_core/base_env.py",
+    "play2learn_core/agent.py",
+    "play2learn_core/evaluator.py",
+    "play2learn_core/favorites.py",
+    "play2learn_core/reporting.py",
+    "play2learn_core/base_interactive.py",
+    "play2learn_lunarlander/__init__.py",
+    "play2learn_lunarlander/config.py",
+    "play2learn_lunarlander/environment.py",
+    "play2learn_lunarlander/agent.py",
+    "play2learn_lunarlander/evaluator.py",
+    "play2learn_lunarlander/diagnostics.py",
+    "play2learn_lunarlander/visualizer.py",
+    "play2learn_lunarlander/storage.py",
+    "play2learn_lunarlander/favorites.py",
+    "play2learn_lunarlander/reporting.py",
+    "play2learn_lunarlander/interactive.py",
+    "play2learn_lunarlander/reset.py",
+    "play2learn_lunarlander/lab.py",
+    "play2learn_hillclimb/__init__.py",
+    "play2learn_hillclimb/config.py",
+    "play2learn_hillclimb/environment.py",
+    "play2learn_hillclimb/agent.py",
+    "play2learn_hillclimb/evaluator.py",
+    "play2learn_hillclimb/diagnostics.py",
+    "play2learn_hillclimb/visualizer.py",
+    "play2learn_hillclimb/storage.py",
+    "play2learn_hillclimb/favorites.py",
+    "play2learn_hillclimb/reporting.py",
+    "play2learn_hillclimb/interactive.py",
+    "play2learn_hillclimb/reset.py",
+    "play2learn_hillclimb/lab.py",
+    "play2learn_hillclimb/engine/__init__.py",
+    "play2learn_hillclimb/engine/hill_racing.py",
+    "play2learn_hillclimb/engine/car.py",
+    "play2learn_hillclimb/engine/wheels.py",
+    "play2learn_hillclimb/engine/person.py",
+    "play2learn_hillclimb/engine/ground.py",
+    "play2learn_hillclimb/engine/agent.py",
+    "play2learn_hillclimb/engine/perlin.py",
+    "tests/__init__.py",
+    "tests/test_config.py",
+    "tests/test_environment.py",
+    "tests/test_agent.py",
+    "tests/test_storage_favorites.py",
+    "tests/test_interactive.py",
+    "tests/test_reporting.py",
+    "tests/test_reset.py",
+    "tests/test_hillclimb.py",
+]
+
+REVIEW_PROMPT_TEMPLATE = """================================================================================
 ROLE & OBJECTIVE:
 You are an elite Principal AI / Reinforcement Learning Research Engineer, Senior Systems
 Architect, and High-Performance Python Specialist.
@@ -92,3 +167,66 @@ Please structure your review into the following sections:
 5. CONCRETE DROP-IN CODE REPLACEMENTS: Provide complete, ready-to-use drop-in code
    snippets for any suggested changes, with zero regressions on existing student APIs.
 ================================================================================
+"""
+
+CODE_HEADER = """# ==============================================================================
+# RL_SCHOOL - CODICE SORGENTE COMPLETO DELLA REPOSITORY
+# Progetti: Lunar Lander (LunarLander-v3) & Hill Climb Racing (HillClimbRacing-v0)
+# Architettura: play2learn_core + play2learn_lunarlander + play2learn_hillclimb
+# ==============================================================================
+
+"""
+
+
+def bundle_repository(root_dir: Path, code_out: Path, prompt_out: Path) -> None:
+    print(f"📦 Avvio bundling repository da: {root_dir}")
+    
+    # 1. Scrivi il prompt di review separato
+    prompt_out.write_text(REVIEW_PROMPT_TEMPLATE.strip() + "\n", encoding="utf-8")
+    print(f"  ✅ Prompt salvato in: {prompt_out.name} ({prompt_out.stat().st_size:,} bytes)")
+    
+    # 2. Raccogli e scrivi tutto il codice sorgente
+    chunks = [CODE_HEADER]
+    bundled_count = 0
+    missing_count = 0
+    
+    for rel_path in DEFAULT_FILES_TO_BUNDLE:
+        file_path = root_dir / rel_path
+        if file_path.exists():
+            chunks.append("#" * 80)
+            chunks.append(f"### FILE: {rel_path}")
+            chunks.append("#" * 80 + "\n")
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = file_path.read_text(encoding="latin-1")
+            chunks.append(content)
+            chunks.append("\n\n")
+            bundled_count += 1
+        else:
+            print(f"  ⚠️  File non trovato: {rel_path}")
+            missing_count += 1
+            
+    full_code = "\n".join(chunks)
+    code_out.write_text(full_code, encoding="utf-8")
+    print(f"  ✅ Codice sorgente salvato in: {code_out.name} ({code_out.stat().st_size:,} bytes, {bundled_count} file inclusi)")
+    if missing_count > 0:
+        print(f"  ⚠️  {missing_count} file mancanti.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Genera il bundle del codice e il prompt di review.")
+    parser.add_argument("--root", type=str, default=".", help="Directory radice del repository (default: .)")
+    parser.add_argument("--code-out", type=str, default="codice_completo_repo.txt", help="Nome file di output per il codice")
+    parser.add_argument("--prompt-out", type=str, default="PROMPT_CODE_REVIEW.txt", help="Nome file di output per il prompt")
+    args = parser.parse_args()
+
+    root_path = Path(args.root).resolve()
+    code_out_path = root_path / args.code_out
+    prompt_out_path = root_path / args.prompt_out
+
+    bundle_repository(root_path, code_out_path, prompt_out_path)
+
+
+if __name__ == "__main__":
+    main()
