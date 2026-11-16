@@ -270,7 +270,7 @@ def mostra_preferiti() -> None:
                 f"</tr>"
             )
 
-        html = f"""
+        html_str = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
             <h3 style="color:#1b5e20; margin-bottom:8px;">⭐ I Tuoi Preferiti (Modelli e Video Salvati dall'Utente)</h3>
             <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
@@ -291,7 +291,7 @@ def mostra_preferiti() -> None:
             </table>
         </div>
         """
-        display(HTML(html))
+        display(HTML(html_str))
     except Exception:
         print("\n" + "=" * 80)
         print("  ⭐ I TUOI PREFERITI (MODELLI E VIDEO SALVATI DALL'UTENTE)")

@@ -308,7 +308,7 @@ def mostra_successi() -> None:
                 f"</tr>"
             )
 
-        html = f"""
+        html_str = f"""
         <div style="font-family:sans-serif; margin:16px 0;">
             <h3 style="color:#2e7d32; margin-bottom:8px;">🎯 Archivio Esperimenti Riusciti (Successo &ge; 80%)</h3>
             <p style="color:#555; margin-bottom:12px; font-size:13px;">Tutti i modelli che hanno superato l'80% di allunaggio con le relative Schede Tecniche PDF vettoriali.</p>
@@ -330,7 +330,7 @@ def mostra_successi() -> None:
             </table>
         </div>
         """
-        display(HTML(html))
+        display(HTML(html_str))
     except Exception:
         print("\n" + "=" * 80)
         print("  🎯 ARCHIVIO ESPERIMENTI RIUSCITI (SUCCESSO >= 80%)")
@@ -535,7 +535,7 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
                 f"</tr>"
             )
 
-        html = f"""
+        html_str = f"""
         <div style="font-family:'Segoe UI', sans-serif; margin:16px 0;">
             <h3 style="color:#1a237e; margin-bottom:6px;">🕒 Cronologia Esperimenti e Timestamp Disponibili</h3>
             <p style="color:#555; margin-bottom:12px; font-size:13px;">
@@ -557,7 +557,7 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
             </table>
         </div>
         """
-        display(HTML(html))
+        display(HTML(html_str))
     except Exception:
         print("\n" + "=" * 80)
         print("  🕒 CRONOLOGIA ESPERIMENTI PASSATI (TIMESTAMP DISPONIBILI)")

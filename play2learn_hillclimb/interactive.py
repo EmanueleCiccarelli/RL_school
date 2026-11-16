@@ -33,7 +33,7 @@ def registra_traiettoria_agente(
     from play2learn_hillclimb.environment import HillClimbRewardWrapper
 
     final_kwargs = dict(env_kwargs or {})
-    env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+    env = gym.make(ENV_ID, render_mode=None, **final_kwargs)
     env = HillClimbRewardWrapper(env)
     obs, _ = env.reset(seed=seed)
 
