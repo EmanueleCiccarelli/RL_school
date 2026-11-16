@@ -205,16 +205,16 @@ class LabResult(dict):
     preferito = salva_preferito
 
     def mostra_evoluzione(self) -> None:
-        """Visualizza il timelapse (MP4 o GIF) dell'evoluzione dell'agente nel corso del training."""
-        p = self.get("gif_evoluzione_path")
+        """Visualizza il timelapse (GIF o MP4) dell'evoluzione dell'agente nel corso del training."""
+        p = self.get("gif_evoluzione_path") or self.get("gif_path")
         if not p:
             ck_dir = Path(self.get("checkpoint_dir", "."))
-            p_mp4 = ck_dir / "evoluzione_apprendimento.mp4"
             p_gif = ck_dir / "evoluzione_apprendimento.gif"
-            if p_mp4.exists():
-                p = str(p_mp4)
-            elif p_gif.exists():
+            p_mp4 = ck_dir / "evoluzione_apprendimento.mp4"
+            if p_gif.exists():
                 p = str(p_gif)
+            elif p_mp4.exists():
+                p = str(p_mp4)
 
         if p and Path(p).exists():
             path_obj = Path(p)
@@ -222,11 +222,11 @@ class LabResult(dict):
                 from IPython.display import HTML, Image, display
                 import base64
                 print("🎞️ Evoluzione dell'Agente durante il Training (Milestone nel tempo):")
-                if path_obj.suffix.lower() == ".mp4":
-                    b64 = base64.b64encode(path_obj.read_bytes()).decode("ascii")
-                    display(HTML(f'<video width="560" controls autoplay loop muted style="border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.3);"><source src="data:video/mp4;base64,{b64}" type="video/mp4"></video>'))
-                else:
+                if path_obj.suffix.lower() == ".gif":
                     display(Image(filename=str(path_obj)))
+                else:
+                    b64 = base64.b64encode(path_obj.read_bytes()).decode("ascii")
+                    display(HTML(f'<video width="560" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.3);"><source src="data:video/mp4;base64,{b64}" type="video/mp4"></video>'))
             except Exception:
                 print(f"Evoluzione salvata in: {p}")
         else:
@@ -310,7 +310,7 @@ def run_lab(
         show_progress=show_progress,
         save_checkpoints=True,
         checkpoint_dir=checkpoints_dir,
-        milestone_freq=max(10_000, total_timesteps // 4),
+        milestone_freq=max(500, total_timesteps // 4),
     )
 
     # 2. Creazione modello PPO con rollout buffer ampio (n_steps=512 -> 4.096 step/rollout)
@@ -354,10 +354,10 @@ def run_lab(
     # 4. GIF/MP4 evoluzione apprendimento
     gif_path = None
     if crea_gif_evoluzione and callback.milestone_snapshots:
-        print("🎬 Generazione timelapse MP4 dell'evoluzione dell'apprendimento...")
+        print("🎬 Generazione timelapse GIF dell'evoluzione dell'apprendimento...")
         gif_path = crea_gif_evoluzione_apprendimento(
             checkpoints=callback.milestone_snapshots,
-            output_gif_path=run_dir / "evoluzione_apprendimento.mp4",
+            output_gif_path=run_dir / "evoluzione_apprendimento.gif",
             env_kwargs=env_kwargs,
             reward_fn=reward_fn,
             base_model=model,
@@ -401,6 +401,7 @@ def run_lab(
         "failure_videos": eval_stats.get("failure_videos", []),
         "recorded_videos": eval_stats.get("videos", []),
         "best_video_path": str(eval_stats["best_video_path"]) if eval_stats.get("best_video_path") else None,
+        "gif_path": str(eval_stats["gif_path"]) if eval_stats.get("gif_path") else (str(gif_path) if gif_path else None),
         "gif_evoluzione_path": str(gif_path) if gif_path else None,
         "mission": mission,
         "env_kwargs": env_kwargs,
@@ -408,20 +409,32 @@ def run_lab(
         "diagnostics": diagnostics,
     }
 
-    print("\n🏆 Riepilogo Finale:")
-    print(f"   • Distanza Massima: {eval_stats['max_distance_achieved']:.1f} m")
-    print(f"   • Distanza Media:   {eval_stats['mean_distance']:.1f} m")
-    print(f"   • Tasso Successo:   {eval_stats['eval_success_rate']:.1f}%")
-    print(f"   • Cartella Run:     play2learn_hillclimb/runs/{run_dir.name}\n")
+    n_succ = len(eval_stats.get("success_videos", []))
+    n_fail = len(eval_stats.get("failure_videos", []))
+
+    print("\n" + "=" * 76)
+    print("  📊 RISULTATI DELLE CORSE DI VERIFICA (VALUTAZIONE DETERMINISTICA):")
+    print(
+        f"  • Tasso di Successo (>=800m):  {eval_stats['eval_success_rate']:.1f}% "
+        f"({eval_stats.get('eval_successes', 0)} su {len(eval_stats.get('history', []))} prove)"
+    )
+    print(f"  • Video registrati:            {n_succ} salite riuscite 🟢 | {n_fail} fallimenti 🔴")
+    print(f"  • Distanza Massima Raggiunta:  {eval_stats['max_distance_achieved']:.1f} m")
+    print(f"  • Distanza Media Percorsa:     {eval_stats['mean_distance']:.1f} m")
+    print(f"  • Velocità Media:              {eval_stats['mean_speed']:.1f} m/s")
+    print(f"  💾 Tutti i checkpoint e i video sono archiviati in: play2learn_hillclimb/runs/{run_dir.name}")
+    print("=" * 76 + "\n")
 
     # 8. Visualizzazione automatica nel Notebook
+    effective_gif = gif_path or eval_stats.get("gif_path")
     if display_in_notebook:
         display_notebook_summary(
             plot_path=plot_path,
             videos=eval_stats.get("videos"),
             success_videos=eval_stats.get("success_videos"),
             failure_videos=eval_stats.get("failure_videos"),
-            gif_path=gif_path,
+            max_videos=3,
+            gif_path=effective_gif,
         )
 
     return LabResult(result_data)

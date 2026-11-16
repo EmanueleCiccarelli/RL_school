@@ -175,6 +175,24 @@ def evaluate_and_record(
     finally:
         render_env.close()
 
+    # Generazione GIF animata della miglior prova (come in Lunar Lander)
+    best_vid = success_videos[0] if success_videos else (all_videos[0] if all_videos else None)
+    best_gif_path: Path | None = None
+    if best_vid and best_vid.exists():
+        try:
+            import subprocess
+            g_cand = best_vid.with_suffix(".gif")
+            cmd = [
+                "ffmpeg", "-y", "-i", str(best_vid),
+                "-vf", "fps=12,scale=360:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer",
+                str(g_cand),
+            ]
+            res = subprocess.run(cmd, capture_output=True)
+            if res.returncode == 0 and g_cand.exists():
+                best_gif_path = g_cand
+        except Exception:
+            best_gif_path = None
+
     ep_count = max(1, len(history))
     succ_count = sum(1 for h in history if h["is_success"])
     succ_rate = (succ_count / ep_count) * 100.0
@@ -200,30 +218,33 @@ def evaluate_and_record(
         "success_videos": success_videos,
         "failure_videos": failure_videos,
         "best_video_path": (success_videos[0] if success_videos else (all_videos[0] if all_videos else None)),
+        "gif_path": best_gif_path,
     }
 
 
 def crea_gif_evoluzione_apprendimento(
-    checkpoints: list[tuple[int, Any]],
+    checkpoints: list[tuple[int, Any]] | list[dict[str, Any]],
     output_gif_path: Path | str,
     env_kwargs: dict[str, Any] | None = None,
     reward_fn: Callable | None = None,
     base_model: Any = None,
     seed: int = 142,
-    max_steps_per_ckpt: int = 1000,
+    max_steps_per_ckpt: int = 600,
+    stride: int = 4,
+    fps: int = 12,
 ) -> Path | None:
     """
-    Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline,
-    ricostruendo correttamente i pesi dai checkpoint state_dict (con ripristino dei pesi originali).
+    Genera la GIF timelapse e l'MP4 che illustrano visivamente l'avanzamento dell'auto nelle colline
+    attraverso le diverse fasi di addestramento (milestones), con ripristino sicuro dei pesi originali.
     """
     if not checkpoints:
         return None
 
     import imageio
 
-    gif_path = Path(output_gif_path)
-    if gif_path.suffix.lower() == ".gif":
-        gif_path = gif_path.with_suffix(".mp4")
+    p_out = Path(output_gif_path)
+    gif_path = p_out.with_suffix(".gif")
+    mp4_path = p_out.with_suffix(".mp4")
     gif_path.parent.mkdir(parents=True, exist_ok=True)
 
     orig_state = None
@@ -239,11 +260,20 @@ def crea_gif_evoluzione_apprendimento(
         env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
 
     frames_written = 0
+    total_stages = len(checkpoints)
+
+    gif_writer = None
+    mp4_writer = None
     try:
         try:
-            writer = imageio.get_writer(
-                str(gif_path),
-                fps=12,
+            gif_writer = imageio.get_writer(str(gif_path), mode="I", fps=fps, loop=0)
+        except Exception as e:
+            print(f"[play2learn] Avviso writer GIF: {e}")
+
+        try:
+            mp4_writer = imageio.get_writer(
+                str(mp4_path),
+                fps=fps,
                 macro_block_size=1,
                 ffmpeg_params=[
                     "-preset", "ultrafast",
@@ -253,57 +283,90 @@ def crea_gif_evoluzione_apprendimento(
                 ],
             )
         except Exception:
-            writer = imageio.get_writer(str(gif_path), fps=12, macro_block_size=1)
+            mp4_writer = None
 
-        with writer:
-            for timesteps, ckpt_or_model in checkpoints:
-                # Ripristina i pesi se e uno state_dict salvato in RAM
-                if isinstance(ckpt_or_model, dict) and base_model is not None:
-                    try:
-                        base_model.policy.load_state_dict(ckpt_or_model)
-                        active_model = base_model
-                    except Exception:
-                        continue
-                else:
-                    active_model = ckpt_or_model
+        for idx, item in enumerate(checkpoints):
+            if isinstance(item, tuple):
+                timesteps, ckpt_state = item
+            elif isinstance(item, dict):
+                timesteps = item.get("step", 0)
+                ckpt_state = item.get("state_dict", item)
+            else:
+                timesteps = idx * 1000
+                ckpt_state = item
 
-                pred_fn = make_fast_predictor(active_model)
-                obs, _ = env.reset(seed=seed)
-                step_count = 0
-                terminated = False
-                truncated = False
+            # Ripristina i pesi se è uno state_dict salvato in RAM
+            if isinstance(ckpt_state, dict) and base_model is not None:
+                try:
+                    base_model.policy.load_state_dict(ckpt_state)
+                    active_model = base_model
+                except Exception:
+                    continue
+            else:
+                active_model = ckpt_state
 
-                while not (terminated or truncated) and step_count < max_steps_per_ckpt:
-                    act_item = pred_fn(obs, True)
-                    obs, reward, terminated, truncated, info = env.step(act_item)
-                    step_count += 1
+            pred_fn = make_fast_predictor(active_model)
+            obs, _ = env.reset(seed=seed)
+            step_count = 0
+            terminated = False
+            truncated = False
+            last_frame_arr = None
 
-                    if step_count % 3 == 0 or terminated or truncated:
-                        frame = env.render()
-                        if frame is not None:
-                            img = Image.fromarray(frame)
-                            w, h = img.size
-                            new_w = 480
-                            new_h = int(h * (new_w / w))
-                            img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+            while not (terminated or truncated) and step_count < max_steps_per_ckpt:
+                act_item = pred_fn(obs, True)
+                obs, reward, terminated, truncated, info = env.step(act_item)
+                step_count += 1
 
-                            draw = ImageDraw.Draw(img)
-                            dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
-                            txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
-                            draw.rectangle([10, 10, 260, 32], fill=(15, 23, 42, 220))
-                            draw.text((16, 14), txt, fill=(56, 189, 248))
-                            frame_arr = np.asarray(img)
-                            writer.append_data(frame_arr)
-                            frames_written += 1
+                if step_count % stride == 0 or terminated or truncated:
+                    frame = env.render()
+                    if frame is not None:
+                        img = Image.fromarray(frame)
+                        w, h = img.size
+                        new_w = 400
+                        new_h = int(h * (new_w / w))
+                        if new_h % 2 != 0:
+                            new_h -= 1
+                        img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
-                # Congela l'ultimo frame per 8 frame (~0.6s) per apprezzare il risultato raggiunto
-                if 'frame_arr' in locals() and frame_arr is not None:
-                    for _ in range(8):
-                        writer.append_data(frame_arr)
+                        draw = ImageDraw.Draw(img)
+                        dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
+                        pct = int((idx + 1) / max(1, total_stages) * 100)
+                        txt = f"Fase {idx+1}/{total_stages} • Step {timesteps:,} ({pct}%) | Distanza: {dist:.1f} m"
+                        draw.rectangle([8, 8, 384, 28], fill=(15, 23, 42, 220))
+                        draw.text((12, 11), txt, fill=(56, 189, 248))
+                        last_frame_arr = np.asarray(img)
+
+                        if gif_writer is not None:
+                            gif_writer.append_data(last_frame_arr)
+                        if mp4_writer is not None:
+                            mp4_writer.append_data(last_frame_arr)
                         frames_written += 1
+
+            # Congela l'ultimo frame per 6 frame (~0.5s) per mostrare chiaramente l'esito della fase
+            if last_frame_arr is not None:
+                for _ in range(6):
+                    if gif_writer is not None:
+                        gif_writer.append_data(last_frame_arr)
+                    if mp4_writer is not None:
+                        mp4_writer.append_data(last_frame_arr)
+                    frames_written += 1
     finally:
+        if gif_writer is not None:
+            try:
+                gif_writer.close()
+            except Exception:
+                pass
+        if mp4_writer is not None:
+            try:
+                mp4_writer.close()
+            except Exception:
+                pass
         env.close()
         if orig_state is not None and base_model is not None and hasattr(base_model, "policy"):
             base_model.policy.load_state_dict(orig_state)
 
-    return gif_path if frames_written > 0 else None
+    if gif_path.exists() and frames_written > 0:
+        return gif_path
+    if mp4_path.exists() and frames_written > 0:
+        return mp4_path
+    return None

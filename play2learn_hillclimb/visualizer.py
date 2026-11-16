@@ -161,7 +161,7 @@ def display_notebook_summary(
     videos: list[Path | str] | None = None,
     success_videos: list[Path | str] | None = None,
     failure_videos: list[Path | str] | None = None,
-    max_videos: int = 2,
+    max_videos: int = 3,
     gif_path: Path | str | None = None,
 ) -> None:
     """
@@ -191,22 +191,31 @@ def display_notebook_summary(
 
         sections = []
 
-        # Card timelapse (MP4 looping o GIF) dell'evoluzione dell'apprendimento
+        # Card timelapse (GIF animata o MP4 looping) dell'evoluzione dell'apprendimento
         if gif_path:
             p_media = Path(gif_path)
+            # Preferisci il formato GIF se presente per massima compatibilità e riproduzione continua
+            if p_media.suffix.lower() == ".mp4" and p_media.with_suffix(".gif").exists():
+                p_media = p_media.with_suffix(".gif")
+            elif p_media.suffix.lower() == ".gif" and not p_media.exists() and p_media.with_suffix(".mp4").exists():
+                p_media = p_media.with_suffix(".mp4")
+
             if p_media.exists():
                 b64_media = base64.b64encode(p_media.read_bytes()).decode("ascii")
-                if p_media.suffix.lower() == ".mp4":
+                if p_media.suffix.lower() == ".gif":
                     media_tag = (
-                        f'<video width="440" controls autoplay loop muted style="border-radius:6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);">'
+                        f'<img src="data:image/gif;base64,{b64_media}" '
+                        f'style="max-width: 480px; width: 100%; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);" />'
+                    )
+                else:
+                    media_tag = (
+                        f'<video width="480" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);">'
                         f'<source src="data:video/mp4;base64,{b64_media}" type="video/mp4">'
                         f'</video>'
                     )
-                else:
-                    media_tag = f'<img src="data:image/gif;base64,{b64_media}" style="max-width: 460px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);" />'
 
                 sections.append(
-                    f'<div style="margin-top: 18px; text-align: center; background: #f3e5f5; padding: 12px; border-radius: 8px; border: 1.5px solid #ab47bc;">'
+                    f'<div style="margin-top: 18px; text-align: center; background: #f3e5f5; padding: 14px; border-radius: 8px; border: 1.5px solid #ab47bc;">'
                     f'<h4 style="color:#6a1b9a; margin-top:2px; margin-bottom:6px;">🎞️ Evoluzione dell\'Apprendimento nel Tempo (Timelapse delle Fasi di Training)</h4>'
                     f'<p style="color:#4a148c; font-size:12px; margin-bottom:10px;">Confronto della guida sullo stesso tracciato attraverso le diverse fasi di addestramento:</p>'
                     f'{media_tag}'
@@ -222,7 +231,7 @@ def display_notebook_summary(
                 cards.append(
                     f'<div style="margin: 8px; text-align: center; background: #e8f5e9; padding: 10px; border-radius: 8px; border: 1.5px solid #4caf50;">'
                     f'<div style="font-weight:bold; margin-bottom:6px; color:#1b5e20;">🟢 Salita Riuscita #{idx+1}</div>'
-                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<video width="300" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">'
                     f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
                     f'</video></div>'
                 )
@@ -233,6 +242,13 @@ def display_notebook_summary(
                     f'<div style="display:flex; flex-wrap:wrap; justify-content:center;">{"".join(cards)}</div>'
                     f'</div>'
                 )
+        elif fail_list:
+            sections.append(
+                f'<div style="margin-top: 14px; background: #fff8e1; padding: 12px 16px; border-radius: 8px; border-left: 4px solid #ffb300;">'
+                f'<strong style="color: #f57f17;">🧗 Nessuna salita completata al traguardo (>=800m) in questa run:</strong> '
+                f'<span style="color: #333;">L\'auto non ha ancora superato la vetta negli scenari di test. Analizza i video di fallimento qui sotto per capire dove perde aderenza o si ribalta!</span>'
+                f'</div>'
+            )
 
         if fail_list:
             cards = []
@@ -243,7 +259,7 @@ def display_notebook_summary(
                 cards.append(
                     f'<div style="margin: 8px; text-align: center; background: #ffebee; padding: 10px; border-radius: 8px; border: 1.5px solid #e53935;">'
                     f'<div style="font-weight:bold; margin-bottom:6px; color:#b71c1c;">🔴 Fallimento / Schianto #{idx+1}</div>'
-                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<video width="300" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">'
                     f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
                     f'</video></div>'
                 )

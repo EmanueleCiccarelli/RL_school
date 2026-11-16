@@ -211,7 +211,7 @@ def display_notebook_summary(
     videos: list[Path] | None = None,
     success_videos: list[Path] | None = None,
     failure_videos: list[Path] | None = None,
-    max_videos: int = 2,
+    max_videos: int = 3,
     gif_path: Path | str | None = None,
 ) -> None:
     """
@@ -271,7 +271,7 @@ def display_notebook_summary(
                 cards.append(
                     f'<div style="margin: 8px; text-align: center; background: #e8f5e9; padding: 10px; border-radius: 8px; border: 1.5px solid #4caf50;">'
                     f'<div style="font-weight:bold; margin-bottom:6px; color:#1b5e20;">🟢 Allunaggio Riuscito #{idx+1}</div>'
-                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<video width="300" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">'
                     f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
                     f'</video></div>'
                 )
@@ -292,7 +292,7 @@ def display_notebook_summary(
                 cards.append(
                     f'<div style="margin: 8px; text-align: center; background: #ffebee; padding: 10px; border-radius: 8px; border: 1.5px solid #e53935;">'
                     f'<div style="font-weight:bold; margin-bottom:6px; color:#b71c1c;">🔴 Fallimento / Schianto #{idx+1}</div>'
-                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<video width="300" controls autoplay loop muted playsinline style="border-radius:6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">'
                     f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
                     f'</video></div>'
                 )
