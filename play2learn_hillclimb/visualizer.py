@@ -74,9 +74,21 @@ def mostra_mappa_ambiente() -> None:
         pass
 
 
-def plot_hill_telemetry(eval_history: list[dict[str, Any]], output_path: Path | str | None = None) -> Path | None:
-    """Genera il grafico 2x2 usando Figure/FigureCanvasAgg (zero leak pyplot, safe su conteggi 0)."""
-    fig = Figure(figsize=(12, 7), dpi=110)
+def plot_hill_telemetry(
+    eval_history: list[dict[str, Any]],
+    output_path: Path | str | None = None,
+    training_rewards: list[float] | None = None,
+    success_rate: float | None = None,
+) -> Path | None:
+    """
+    Genera una dashboard 2x2 con:
+    1. Distanza percorsa per episodio (m)
+    2. Velocità massima registrata (m/s)
+    3. Percentuale tempo in volo (Airtime %)
+    4. Ricompensa cumulata nel tempo (Custom Reward di training o verifica)
+    La percentuale di successo viene mostrata numericamente nel titolo e nell'header.
+    """
+    fig = Figure(figsize=(12, 7.5), dpi=110)
     FigureCanvasAgg(fig)
     fig.patch.set_facecolor("#ffffff")
     axes = fig.subplots(2, 2)
@@ -85,59 +97,74 @@ def plot_hill_telemetry(eval_history: list[dict[str, Any]], output_path: Path | 
     speeds = [float(ep.get("max_speed", 0.0)) for ep in eval_history]
     airtimes = [float(ep.get("airtime_pct", 0.0)) for ep in eval_history]
     ep_indices = list(range(1, len(eval_history) + 1))
+    ep_count = max(1, len(eval_history))
+
+    successes = sum(1 for ep in eval_history if ep.get("is_success", False))
+    if success_rate is None:
+        succ_rate_val = (successes / ep_count) * 100.0
+    else:
+        succ_rate_val = float(success_rate)
+
+    fig.suptitle(
+        f"Telemetria di Guida — Tasso di Successo: {succ_rate_val:.1f}% ({successes} su {ep_count} prove completate)",
+        fontweight="bold",
+        fontsize=13,
+        color="#1e293b",
+        y=0.98,
+    )
 
     # 1. Distanza percorsa
     ax1 = axes[0, 0]
     ax1.bar(ep_indices, distances, color="#3b82f6", alpha=0.85, edgecolor="#1d4ed8")
     ax1.axhline(800.0, color="#10b981", linestyle="--", lw=1.8, label="Obiettivo (800 m)")
-    ax1.set_title("Distanza Raggiunta per Episodio", fontweight="bold", fontsize=11, color="#1e293b")
+    ax1.set_title("1. Distanza Raggiunta per Episodio", fontweight="bold", fontsize=11, color="#1e293b")
     ax1.set_xlabel("Episodio di Verifica", fontsize=9)
     ax1.set_ylabel("Distanza (metri)", fontsize=9)
     ax1.grid(True, linestyle=":", alpha=0.6)
     ax1.legend(loc="upper left", fontsize=8.5)
 
-    # 2. Velocita massima
+    # 2. Velocità massima
     ax2 = axes[0, 1]
     ax2.plot(ep_indices, speeds, marker="o", color="#f59e0b", lw=2.0)
-    ax2.set_title("Velocita Massima Registrata (m/s)", fontweight="bold", fontsize=11, color="#1e293b")
+    ax2.set_title("2. Velocità Massima Registrata (m/s)", fontweight="bold", fontsize=11, color="#1e293b")
     ax2.set_xlabel("Episodio di Verifica", fontsize=9)
-    ax2.set_ylabel("Velocita (m/s)", fontsize=9)
+    ax2.set_ylabel("Velocità (m/s)", fontsize=9)
     ax2.grid(True, linestyle=":", alpha=0.6)
 
     # 3. Percentuale tempo in volo
     ax3 = axes[1, 0]
     ax3.plot(ep_indices, airtimes, marker="s", color="#8b5cf6", lw=2.0)
-    ax3.set_title("Percentuale Tempo in Volo (Airtime %)", fontweight="bold", fontsize=11, color="#1e293b")
+    ax3.set_title("3. Percentuale Tempo in Volo (Airtime %)", fontweight="bold", fontsize=11, color="#1e293b")
     ax3.set_xlabel("Episodio di Verifica", fontsize=9)
     ax3.set_ylabel("Airtime (%)", fontsize=9)
     ax3.grid(True, linestyle=":", alpha=0.6)
 
-    # 4. Distribuzione esiti (protetta da ZeroDivisionError)
+    # 4. Ricompensa Cumulata nel Tempo (Custom Reward)
     ax4 = axes[1, 1]
-    successes = sum(1 for ep in eval_history if ep.get("is_success", False))
-    crashes = sum(1 for ep in eval_history if ep.get("is_crashed", False))
-    timeouts = sum(1 for ep in eval_history if ep.get("is_timeout", False))
-    raw_items = [
-        ("Successo (>=800m)", successes, "#10b981"),
-        ("Schianto/Ribaltamento", crashes, "#ef4444"),
-        ("Blocco/Timeout", timeouts, "#f59e0b"),
-    ]
-    non_zero = [(lbl, cnt, col) for lbl, cnt, col in raw_items if cnt > 0]
-    if non_zero:
-        ax4.pie(
-            [c for _, c, _ in non_zero],
-            labels=[l for l, _, _ in non_zero],
-            colors=[col for _, _, col in non_zero],
-            autopct="%1.1f%%",
-            startangle=140,
-            textprops={"fontsize": 9, "color": "#1e293b"},
-        )
+    if training_rewards and len(training_rewards) > 0:
+        ep_train = np.arange(1, len(training_rewards) + 1)
+        ax4.plot(ep_train, training_rewards, color="#93c5fd", alpha=0.45, label="Reward Episodio", rasterized=True)
+        w = min(40, max(5, len(training_rewards) // 10))
+        if len(training_rewards) >= w:
+            mov_rew = np.convolve(training_rewards, np.ones(w) / w, mode="valid")
+            ax4.plot(range(w, len(training_rewards) + 1), mov_rew, color="#1d4ed8", lw=2.0, label=f"Media Mobile ({w} ep)")
+        ax4.set_title("4. Ricompensa Cumulata nel Tempo (Reward)", fontweight="bold", fontsize=11, color="#1e293b")
+        ax4.set_xlabel("Episodio di Addestramento", fontsize=9)
     else:
-        ax4.text(0.5, 0.5, "Nessun esito classificato", ha="center", va="center", color="#64748b")
-        ax4.axis("off")
-    ax4.set_title(f"Distribuzione Esiti su {len(eval_history)} Verifiche", fontweight="bold", fontsize=11, color="#1e293b")
+        eval_rewards = [float(ep.get("reward", 0.0)) for ep in eval_history]
+        if eval_rewards:
+            ax4.plot(ep_indices, eval_rewards, marker="o", color="#2563eb", lw=2.0, label="Reward Episodio")
+            mean_r = float(np.mean(eval_rewards))
+            ax4.axhline(mean_r, color="#1d4ed8", linestyle="--", lw=1.5, label=f"Media: {mean_r:.1f}")
+        else:
+            ax4.text(0.5, 0.5, "Nessun dato reward", ha="center", va="center", color="#64748b")
+        ax4.set_title("4. Ricompensa Cumulata nel Tempo (Reward)", fontweight="bold", fontsize=11, color="#1e293b")
+        ax4.set_xlabel("Episodio di Verifica", fontsize=9)
+    ax4.set_ylabel("Custom Reward", fontsize=9)
+    ax4.grid(True, linestyle=":", alpha=0.6)
+    ax4.legend(loc="upper left", fontsize=8.5)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     if output_path:
         p = Path(output_path)
         p.parent.mkdir(parents=True, exist_ok=True)

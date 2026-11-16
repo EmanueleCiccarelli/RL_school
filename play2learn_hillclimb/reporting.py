@@ -88,7 +88,7 @@ def genera_report_esperimento(
     history = meta.get("eval_metrics", {}).get("history", [])
     if not history:
         history = [{"distance": mean_dist, "max_speed": mean_speed, "airtime_pct": airtime_pct, "is_success": success_rate >= 80}] * 20
-    plot_hill_telemetry(history, plot_path)
+    plot_hill_telemetry(history, plot_path, success_rate=success_rate)
 
     # 1. Generazione PDF multipagina (senza entita HTML escape)
     pdf_path = target_dir / "scheda_esperimento.pdf"

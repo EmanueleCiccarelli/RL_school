@@ -410,7 +410,7 @@ def run_lab(
     n_fail = len(eval_stats.get("failure_videos", []))
 
     print("\n" + "=" * 76)
-    print("  📊 RISULTATI DEI VOLI DI VERIFICA (VALUTAZIONE DETERMINISTICA):")
+    print("  📊 RISULTATI DEI VOLI DI VERIFICA:")
     print(
         f"  • Tasso di Allunaggio Riuscito: {succ_rate:.1f}% "
         f"({eval_stats.get('eval_successes', 0)} su {eval_stats.get('total_evaluated_episodes', 0)} prove)"

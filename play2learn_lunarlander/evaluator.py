@@ -319,7 +319,7 @@ def evaluate_and_record(
 
     print(
         f"[play2learn] Sweep completato in {sweep_duration:.2f}s "
-        f"({total_evaluated} episodi deterministici + {stoch_ep} ricerca video): "
+        f"({total_evaluated} episodi di verifica + {stoch_ep} ricerca video): "
         f"{len(success_candidates)} successi, {len(failure_candidates)} fallimenti pronti."
     )
 

@@ -342,8 +342,8 @@ def run_lab(
     elapsed = time.time() - t0
     print(f"\n✅ Addestramento completato in {elapsed:.1f} s ({total_timesteps/max(0.1, elapsed):.0f} step/s)!")
 
-    # 3. Valutazione deterministica e registrazione video streaming
-    print("\n🎥 Avvio sessione di verifica deterministica su 20 scenari collinari...")
+    # 3. Valutazione e registrazione video streaming
+    print("\n🎥 Avvio sessione di verifica su 20 scenari collinari...")
     eval_stats = evaluate_and_record(
         model=model,
         output_dir=run_dir,
@@ -369,7 +369,12 @@ def run_lab(
 
     # 6. Generazione grafico telemetria
     plot_path = run_dir / "telemetria_plot.png"
-    plot_hill_telemetry(eval_stats.get("history", []), output_path=plot_path)
+    plot_hill_telemetry(
+        eval_history=eval_stats.get("history", []),
+        output_path=plot_path,
+        training_rewards=callback.episode_rewards,
+        success_rate=eval_stats.get("eval_success_rate", 0.0),
+    )
 
     # 7. Salvataggio metadati
     save_run_metadata(
@@ -413,7 +418,7 @@ def run_lab(
     n_fail = len(eval_stats.get("failure_videos", []))
 
     print("\n" + "=" * 76)
-    print("  📊 RISULTATI DELLE CORSE DI VERIFICA (VALUTAZIONE DETERMINISTICA):")
+    print("  📊 RISULTATI DELLE CORSE DI VERIFICA:")
     print(
         f"  • Tasso di Successo (>=800m):  {eval_stats['eval_success_rate']:.1f}% "
         f"({eval_stats.get('eval_successes', 0)} su {len(eval_stats.get('history', []))} prove)"
