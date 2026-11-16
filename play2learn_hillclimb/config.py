@@ -63,7 +63,7 @@ MISSIONS = {
 # Iperparametri ottimali PPO per Hill Climb Racing
 DEFAULT_PPO_PARAMS = {
     "n_steps": 256,
-    "batch_size": 128,
+    "batch_size": 256,
     "n_epochs": 4,
     "gamma": 0.995,
     "gae_lambda": 0.98,

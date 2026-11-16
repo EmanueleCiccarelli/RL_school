@@ -121,14 +121,14 @@ MISSIONS: dict[str, dict[str, Any]] = {
 TARGET_ROLLOUT_SIZE: int = 2048
 
 # Schedule lineare del learning rate (evita oscillazioni tardive e fissa la policy)
-DEFAULT_LR_START: float = 5e-4
+DEFAULT_LR_START: float = 6e-4
 DEFAULT_LR_END: float = 5e-5
 
 DEFAULT_PPO_PARAMS: dict[str, Any] = {
     "policy": "MlpPolicy",
     "n_steps": 256,            # Con n_envs=8 -> 2048 step per rollout
-    "batch_size": 128,         # 16 minibatch/epoca -> equilibrio ottimale gradienti/CPU throughput
-    "n_epochs": 4,             # 64 update SGD per rollout (2.2x-2.7x piu veloce su Colab 2 vCPU)
+    "batch_size": 256,         # 8 minibatch/epoca -> dimezza dispatches autograd su CPU
+    "n_epochs": 4,             # 32 update SGD per rollout
     "gamma": 0.995,            # Orizzonte ~200 step: propaga +100/-100 senza esplosione di varianza
     "gae_lambda": 0.98,        # Riduce bias su ricompense terminali sparse
     "clip_range": 0.2,         # Trust region PPO standard

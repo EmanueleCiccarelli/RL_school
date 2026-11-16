@@ -26,6 +26,7 @@ runs/*
 !runs/favorites/index.json
 !runs/successi/
 !runs/successi/index.json
+runs_hillclimb/
 
 # File temporanei di sistema e IDE
 .DS_Store
