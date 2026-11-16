@@ -23,6 +23,7 @@ from play2learn_hillclimb.favorites import (
 from play2learn_hillclimb.lab import (
     LabResult,
     dimostrazione_live,
+    mostra_evoluzione,
     run_lab,
 )
 from play2learn_hillclimb.reporting import (
@@ -30,7 +31,7 @@ from play2learn_hillclimb.reporting import (
     genera_report_da_timestamp,
     genera_report_esperimento,
 )
-from play2learn_hillclimb.storage import comprimi_runs
+from play2learn_hillclimb.storage import comprimi_runs, elenca_cronologia_run, mostra_cronologia_run
 from play2learn_hillclimb.visualizer import mostra_mappa_ambiente
 
 __all__ = [
@@ -45,6 +46,8 @@ __all__ = [
     "genera_report_da_timestamp",
     "genera_report_esperimento",
     "comprimi_runs",
+    "mostra_cronologia_run",
+    "mostra_evoluzione",
     "mostra_mappa_ambiente",
     "classify_hill_climb_outcome",
     "HillClimbRewardWrapper",

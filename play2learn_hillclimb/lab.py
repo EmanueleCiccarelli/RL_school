@@ -78,6 +78,42 @@ class LabResult(dict):
 
     preferito = salva_preferito
 
+    def mostra_evoluzione(self) -> None:
+        """Visualizza il timelapse (MP4 o GIF) dell'evoluzione dell'agente nel corso del training."""
+        p = self.get("gif_evoluzione_path")
+        if not p:
+            ck_dir = Path(self.get("checkpoint_dir", "."))
+            p_mp4 = ck_dir / "evoluzione_apprendimento.mp4"
+            p_gif = ck_dir / "evoluzione_apprendimento.gif"
+            if p_mp4.exists():
+                p = str(p_mp4)
+            elif p_gif.exists():
+                p = str(p_gif)
+
+        if p and Path(p).exists():
+            path_obj = Path(p)
+            try:
+                from IPython.display import HTML, Image, display
+                import base64
+                print("🎞️ Evoluzione dell'Agente durante il Training (Milestone nel tempo):")
+                if path_obj.suffix.lower() == ".mp4":
+                    b64 = base64.b64encode(path_obj.read_bytes()).decode("ascii")
+                    display(HTML(f'<video width="560" controls autoplay loop muted style="border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.3);"><source src="data:video/mp4;base64,{b64}" type="video/mp4"></video>'))
+                else:
+                    display(Image(filename=str(path_obj)))
+            except Exception:
+                print(f"Evoluzione salvata in: {p}")
+        else:
+            print("[play2learn] Nessun timelapse di evoluzione disponibile per questa run.")
+
+
+def mostra_evoluzione(run_or_result: Any) -> None:
+    """Mostra l'evoluzione dell'agente per l'oggetto LabResult o dizionario passato."""
+    if hasattr(run_or_result, "mostra_evoluzione"):
+        run_or_result.mostra_evoluzione()
+    elif isinstance(run_or_result, dict):
+        LabResult(run_or_result).mostra_evoluzione()
+
 
 def run_lab(
     reward_fn: Callable | None = None,

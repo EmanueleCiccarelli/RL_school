@@ -91,7 +91,7 @@ La repository mette a disposizione **due percorsi didattici completamente separa
   - Simulatore fisico con radar di telemetria (quota, velocità di discesa, assetto).
   - Video streaming H.264 (fino a 3 allunaggi riusciti 🟢 e 3 schianti 🔴) e GIF evolutive dei checkpoint.
   - 6 Missioni speciali di collaudo estremo (vento laterale, gravità ridotta o gioviana, tempesta lunare).
-  - Mini-gioco interattivo HTML5 Canvas: **Single Player** (guida manuale da tastiera) e **Tu vs Agente AI**.
+  - Sistema di diagnostica intelligente, cataloghi successi (≥80%) e reportistica esportabile.
 
 ---
 
@@ -106,7 +106,7 @@ La repository mette a disposizione **due percorsi didattici completamente separa
   - Motore fisico Box2D con carrozzeria, ruote a sospensione dinamica e ragdoll driver.
   - `HillClimbFeaturesExtractor`: architettura neurale invariante alla coordinata orizzontale e scalata per evitare la saturazione delle attivazioni.
   - 4 Tracciati speciali con profili altimetrici e attriti dedicati: *Campagna*, *Deserto*, *Montagna*, *Luna*.
-  - Mini-gioco interattivo HTML5 Canvas: **Guida manuale** e **Gara Tu vs Agente AI** su collina identica con cronometro e telemetria live.
+  - Telemetria live su 20 scenari procedurali, streaming video e catalogazione corse.
 
 ---
 
@@ -171,7 +171,7 @@ I notebook di **Lunar Lander** e **Hill Climb Racing** condividono la medesima s
 | **7. Sfide Speciali** | 6 Scenari: vento, gravità variabile, tempesta lunare, motore debole | 4 Tracciati: Campagna, Deserto, Montagna ripida, Luna a bassa gravità |
 | **8. Archivio Preferiti** | Gestione cataloghi `runs/successi/` (≥80%) e preferiti con note | Gestione cataloghi `runs/successi/` (≥80%) e preferiti con note |
 | **9. Report da Timestamp** | Generatore istantaneo schede PDF/HTML/MD e confronto run | Generatore istantaneo schede PDF/HTML/MD con telemetria avanzata |
-| **10. Sfida Interattiva** | **Single Player** (allunaggio manuale) & **Tu vs Agente AI** | **Guida Manuale** & **Gara Tu vs Agente AI** su collina sincronizzata |
+| **10. Esportazione & Download** | Download archivio ZIP completo esperimenti per Colab | Download archivio ZIP completo esperimenti per Colab |
 
 ---
 

@@ -573,16 +573,23 @@ def confronta_run(runs_or_favs: Any) -> dict[str, Any]:
 
 
 def genera_report_da_timestamp(
-    timestamp_or_id: str = "latest",
-    livello_report: str = "Base",
+    timestamp: str = "latest",
+    tipo: str = "Base",
     autore: str = "Studente",
     note: str = "",
+    timestamp_or_id: str | None = None,
+    livello_report: str | None = None,
 ) -> dict[str, Path]:
     """Risolve la run da timestamp e genera il report tecnico."""
+    ts = timestamp_or_id if timestamp_or_id is not None else timestamp
     runs_dir = get_default_runs_dir()
-    run_path = find_run_by_timestamp(timestamp_or_id, runs_dir)
+    run_path = find_run_by_timestamp(ts, runs_dir)
     if not run_path:
-        raise ValueError(f"[Play2Learn] Nessuna run trovata per: {timestamp_or_id}")
+        from play2learn_hillclimb.storage import mostra_cronologia_run
+        print(f"❌ Nessuna run trovata corrispondente a: '{ts}'")
+        print("💡 Ecco l'elenco delle run disponibili con i relativi timestamp da copiare:\n")
+        mostra_cronologia_run()
+        return {}
 
     return genera_report_esperimento(
         run_or_fav=run_path,

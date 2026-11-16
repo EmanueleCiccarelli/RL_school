@@ -42,6 +42,79 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
     return _core_elenca(runs_dir=actual_dir)
 
 
+def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
+    """
+    Visualizza la tabella della cronologia di tutte le run passate per Hill Climb,
+    evidenziando chiaramente il timestamp da inserire nella cella di reportistica.
+    """
+    import html
+    entries = elenca_cronologia_run(runs_dir)
+    if not entries:
+        print("\n[play2learn] Nessuna run attualmente presente nella cartella delle run. Esegui prima un addestramento!\n")
+        return
+
+    try:
+        from IPython.display import HTML, display
+        rows = []
+        for e in entries:
+            succ = float(e.get("success_rate", 0.0))
+            badge_color = "#2e7d32" if succ >= 80.0 else ("#f57c00" if succ >= 50.0 else "#c62828")
+            bg_badge = "#e8f5e9" if succ >= 80.0 else ("#fff3e0" if succ >= 50.0 else "#ffebee")
+            has_mod = Path(e.get("dir_path", "")).joinpath("final_model.zip").exists()
+            has_mod_str = "✅ Sì" if has_mod else "❌ No"
+
+            safe_ts = html.escape(str(e.get("timestamp", "")))
+            safe_name = html.escape(str(e.get("mission_title", e.get("dir_name", ""))))
+            safe_dir = html.escape(str(e.get("dir_name", "")))
+            vid_count = int(e.get("videos_count", 0))
+
+            rows.append(
+                f"<tr>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#0284c7; background:#f0f9ff;'>{safe_ts}</td>"
+                f"<td style='padding:8px 12px;'><b>{safe_name}</b></td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ:.1f}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{vid_count} video</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{has_mod_str}</td>"
+                f"<td style='padding:8px 12px; font-size:11.5px; color:#666;'><code>{safe_dir}</code></td>"
+                f"</tr>"
+            )
+
+        html_str = f"""
+        <div style="font-family:'Segoe UI', sans-serif; margin:16px 0;">
+            <h3 style="color:#0369a1; margin-bottom:6px;">🕒 Cronologia Esperimenti e Timestamp Disponibili</h3>
+            <p style="color:#555; margin-bottom:12px; font-size:13px;">
+                💡 <b>Come usare:</b> copia uno dei <b>Timestamp</b> della prima colonna (o scrivi <code>latest</code>) nella cella di generazione report sottostante.
+            </p>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #bae6fd; text-align:left; font-size:13px;">
+                <thead style="background:#e0f2fe; color:#0369a1;">
+                    <tr>
+                        <th style="padding:10px 12px;">Timestamp (da copiare)</th>
+                        <th style="padding:10px 12px;">Tracciato / Percorso</th>
+                        <th style="padding:10px 12px; text-align:center;">Tasso Successo (≥800m)</th>
+                        <th style="padding:10px 12px; text-align:center;">Video</th>
+                        <th style="padding:10px 12px; text-align:center;">Modello salvato</th>
+                        <th style="padding:10px 12px;">Cartella Run</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+        display(HTML(html_str))
+    except Exception:
+        print("\n" + "=" * 80)
+        print("  🕒 CRONOLOGIA ESPERIMENTI PASSATI (TIMESTAMP DISPONIBILI)")
+        print("=" * 80)
+        print(f"{'TIMESTAMP':<18} | {'TRACCIATO':<25} | {'SUCCESSO':<10} | {'MODELLO':<8}")
+        print("-" * 80)
+        for e in entries:
+            has_mod = Path(e.get("dir_path", "")).joinpath("final_model.zip").exists()
+            mod_str = "Sì" if has_mod else "No"
+            print(f"{e.get('timestamp',''):<18} | {str(e.get('mission_title',''))[:24]:<25} | {float(e.get('success_rate',0)):<9.1f}% | {mod_str:<8}")
+        print("=" * 80)
+        print("💡 Copia il Timestamp desiderato nella cella di reportistica per rigenerare la scheda tecnica!\n")
+
+
 def create_run_directory(mission: str = "campagna_standard", base_dir: Path | str | None = None) -> Path:
     """Crea una nuova directory univoca per la sessione di addestramento."""
     parent = Path(base_dir) if base_dir else get_default_runs_dir()
