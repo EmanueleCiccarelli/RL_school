@@ -1,7 +1,7 @@
 # 🚀 RL_school - Laboratorio di Reinforcement Learning: Lunar Lander & Hill Climb Racing
 
 [![Open In Colab (Lunar Lander)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
-[![Open In Colab (Hill Climb Racing)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
+[![Open In Colab (Hill Climb Racing)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb.ipynb)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-Box2D-green.svg)](https://gymnasium.farama.org/environments/box2d/lunar_lander/)
 [![Stable Baselines3](https://img.shields.io/badge/Algorithm-PPO-orange.svg)](https://stable-baselines3.readthedocs.io/)
@@ -22,11 +22,14 @@ RL_school/
 │
 ├── pyproject.toml                          # 📦 Metadata packaging PEP 517 / PEP 621 & tool config
 ├── requirements.txt                        # 📋 Dipendenze pip del laboratorio (incluso Pygame)
-├── laboratorio_lunar_lander.ipynb          # 🚀 Notebook Google Colab: Lunar Lander
-├── laboratorio_hill_climb_colab.ipynb      # 🏎️ Notebook Google Colab: Hill Climb Racing
-├── laboratorio_hill_climb_locale.ipynb     # 💻 Notebook locale offline: Hill Climb Racing
+├── laboratorio_lunar_lander.ipynb          # 🚀 Notebook didattico: Lunar Lander (Colab & Locale)
+├── laboratorio_hill_climb.ipynb            # 🏎️ Notebook didattico: Hill Climb Racing (Colab & Locale)
 ├── README.md                               # 📖 Documentazione completa del laboratorio
 ├── .gitignore                              # 🙈 Esclusioni Git per artefatti pesanti e checkpoint
+│
+├── hill_racing_env/                        # 🏎️ Motore fisico Gymnasium Box2D + Pygame (alexzh3/hillclimbracing)
+│   ├── envs/                               # Ambiente HillRacing-v0, telaio, ruote, pilota e terreno
+│   └── pictures/                           # Sprite originali vettura, ruote, pilota ed erba
 │
 ├── play2learn_core/                        # 🧠 Core comune (Design Pattern & Orchestrazione)
 │   ├── base_env.py                         # BaseRewardWrapper con ispezione firma & guardie NaN/Inf
@@ -46,17 +49,13 @@ RL_school/
 │   └── lab.py                              # run_lab() didattico
 │
 ├── play2learn_hillclimb/                   # 🏎️ Pacchetto specializzato Hill Climb Racing
-│   ├── engine/                             # Motore fisico Box2D + Pygame (human + rgb_array headless)
-│   │   ├── hill_racing.py                  # Gymnasium Env HillClimbRacing-v0
-│   │   ├── car.py, wheels.py, person.py    # Chassis, ruote a sospensione & ragdoll driver
-│   │   ├── ground.py, perlin.py            # Terreno procedurale Perlin Noise (100% pure Python fallback)
-│   │   └── pictures/                       # Sprite originali vettura, ruote, pilota ed erba
-│   ├── config.py                           # Tracciati speciali: Campagna, Deserto, Montagna, Luna
-│   ├── environment.py                      # HillClimbRewardWrapper & classificazione ribaltamenti/fossi
-│   ├── diagnostics.py                      # Diagnostica guida: distanza, velocità, airtime, ribaltamenti
-│   ├── visualizer.py                       # Mappa veicolo e dashboard telemetrica colline
-│   ├── evaluator.py                        # Streaming mp4 ad alta fedeltà & GIF evoluzione
-│   ├── reporting.py                        # Scheda tecnica (Distanza max, velocità, airtime, ribaltamenti)
+│   ├── config.py                           # Missioni: Campagna, Deserto, Montagna, Colline, Autostrada
+│   ├── environment.py                      # HillClimbRewardWrapper & adattatore Box 8D
+│   ├── agent.py                            # HillClimbFeaturesExtractor & PPO
+│   ├── diagnostics.py                      # Flight Coach: distanza, velocità, assetto, ribaltamenti
+│   ├── visualizer.py                       # Mappa sensori e dashboard telemetrica colline
+│   ├── evaluator.py                        # Streaming video H.264 & GIF evoluzione
+│   ├── reporting.py                        # Scheda tecnica (PDF vettoriale, HTML5, Markdown)
 │   └── lab.py                              # run_lab() didattico per Hill Climb
 │
 └── tests/                                  # 🧪 Suite di test unitari automatizzati
@@ -99,14 +98,14 @@ La repository mette a disposizione **due percorsi didattici completamente separa
 
 * **Obiettivo**: Progettare la funzione di reward per un veicolo fuoristrada su colline procedurali infinite generate con Perlin Noise, massimizzando la distanza percorsa e la velocità senza capovolgersi o incastrarsi nei fossi.
 * **Avvia subito su Google Colab:**  
-  [![Open Hill Climb Racing In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
-* **File notebook nel repository:** [`laboratorio_hill_climb_colab.ipynb`](file:///c:/Users/delop/Desktop/RL%20MATTEUCCI/laboratorio_hill_climb_colab.ipynb)
+  [![Open Hill Climb Racing In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb.ipynb)
+* **File notebook nel repository:** [`laboratorio_hill_climb.ipynb`](file:///c:/Users/delop/Desktop/RL%20MATTEUCCI/laboratorio_hill_climb.ipynb)
 * **Cosa include:**
   - Setup automatico (~30 secondi): installazione Box2D, Pygame headless e pacchetto `play2learn_hillclimb`.
-  - Motore fisico Box2D con carrozzeria, ruote a sospensione dinamica e ragdoll driver.
+  - Motore fisico Box2D con carrozzeria, ruote a sospensione dinamica e pilota su colline Perlin Noise.
   - `HillClimbFeaturesExtractor`: architettura neurale invariante alla coordinata orizzontale e scalata per evitare la saturazione delle attivazioni.
-  - 4 Tracciati speciali con profili altimetrici e attriti dedicati: *Campagna*, *Deserto*, *Montagna*, *Luna*.
-  - Telemetria live su 20 scenari procedurali, streaming video e catalogazione corse.
+  - 5 Tracciati speciali con profili altimetrici e difficoltà calibrate: *Campagna standard*, *Deserto dune*, *Montagna estrema*, *Colline ripide*, *Autostrada veloce*.
+  - Telemetria live su 20 scenari di collaudo, streaming video H.264 e catalogazione corse.
 
 ---
 
@@ -151,8 +150,8 @@ La repository mette a disposizione **due percorsi didattici completamente separa
    ```
 
 5. **Apri il notebook dedicato al laboratorio desiderato:**  
-   * 🚀 **Per Lunar Lander:** apri `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb` (oppure `laboratorio_lunar_lander.ipynb`).
-   * 🏎️ **Per Hill Climb Racing:** apri `laboratorio_hill_climb_locale.ipynb`.
+   * 🚀 **Per Lunar Lander:** apri `laboratorio_lunar_lander.ipynb`.
+   * 🏎️ **Per Hill Climb Racing:** apri `laboratorio_hill_climb.ipynb`.
 
 ---
 

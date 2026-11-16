@@ -6,6 +6,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+.pytest_cache/
+report_*/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

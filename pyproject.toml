@@ -59,10 +59,10 @@ Repository = "https://github.com/EmanueleCiccarelli/RL_school.git"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["play2learn_core*", "play2learn_lunarlander*", "play2learn_hillclimb*"]
+include = ["play2learn_core*", "play2learn_lunarlander*", "play2learn_hillclimb*", "hill_racing_env*"]
 
 [tool.setuptools.package-data]
-"play2learn_hillclimb.engine" = ["pictures/*.png"]
+"hill_racing_env" = ["pictures/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
