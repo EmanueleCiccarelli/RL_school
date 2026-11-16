@@ -178,10 +178,10 @@ def run_lab(
     # 4. GIF evoluzione apprendimento
     gif_path = None
     if crea_gif_evoluzione and callback.milestone_snapshots:
-        print("🎬 Generazione timelapse GIF dell'evoluzione dell'apprendimento...")
+        print("🎬 Generazione timelapse MP4 dell'evoluzione dell'apprendimento...")
         gif_path = crea_gif_evoluzione_apprendimento(
             checkpoints=callback.milestone_snapshots,
-            output_gif_path=run_dir / "evoluzione_apprendimento.gif",
+            output_gif_path=run_dir / "evoluzione_apprendimento.mp4",
             env_kwargs=env_kwargs,
             reward_fn=reward_fn,
             base_model=model,

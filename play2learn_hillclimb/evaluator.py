@@ -219,6 +219,8 @@ def crea_gif_evoluzione_apprendimento(
     import imageio
 
     gif_path = Path(output_gif_path)
+    if gif_path.suffix.lower() == ".gif":
+        gif_path = gif_path.with_suffix(".mp4")
     gif_path.parent.mkdir(parents=True, exist_ok=True)
 
     orig_state = None
@@ -235,7 +237,22 @@ def crea_gif_evoluzione_apprendimento(
 
     frames_written = 0
     try:
-        with imageio.get_writer(str(gif_path), mode="I", fps=12, loop=0) as writer:
+        try:
+            writer = imageio.get_writer(
+                str(gif_path),
+                fps=12,
+                macro_block_size=1,
+                ffmpeg_params=[
+                    "-preset", "ultrafast",
+                    "-crf", "28",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                ],
+            )
+        except Exception:
+            writer = imageio.get_writer(str(gif_path), fps=12, macro_block_size=1)
+
+        with writer:
             for timesteps, ckpt_or_model in checkpoints:
                 # Ripristina i pesi se e uno state_dict salvato in RAM
                 if isinstance(ckpt_or_model, dict) and base_model is not None:

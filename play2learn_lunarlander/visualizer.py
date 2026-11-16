@@ -125,7 +125,7 @@ def plot_training_results(
     episodes = np.arange(1, n_episodes + 1)
     window = min(40, max(5, n_episodes // 12))
 
-    fig = Figure(figsize=(14, 8.8), dpi=150)
+    fig = Figure(figsize=(14, 8.8), dpi=110)
     FigureCanvasAgg(fig)
     fig.suptitle(f"Telemetria di Addestramento RL — {mission_title}", fontsize=14, fontweight="bold")
     axes = fig.subplots(2, 2)

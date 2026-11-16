@@ -394,7 +394,7 @@ def run_lab(
         try:
             print("\n[play2learn] Generazione del timelapse GIF dell'evoluzione dell'apprendimento...")
             from play2learn_lunarlander.evaluator import crea_gif_evoluzione_apprendimento
-            gif_ev_target = run_dir / "evoluzione_apprendimento.gif"
+            gif_ev_target = run_dir / "evoluzione_apprendimento.mp4"
             gif_evoluzione_path = crea_gif_evoluzione_apprendimento(
                 model=model,
                 milestones=tracker.milestone_snapshots,

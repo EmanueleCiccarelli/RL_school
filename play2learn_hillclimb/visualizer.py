@@ -76,7 +76,7 @@ def mostra_mappa_ambiente() -> None:
 
 def plot_hill_telemetry(eval_history: list[dict[str, Any]], output_path: Path | str | None = None) -> Path | None:
     """Genera il grafico 2x2 usando Figure/FigureCanvasAgg (zero leak pyplot, safe su conteggi 0)."""
-    fig = Figure(figsize=(12, 7), dpi=160)
+    fig = Figure(figsize=(12, 7), dpi=110)
     FigureCanvasAgg(fig)
     fig.patch.set_facecolor("#ffffff")
     axes = fig.subplots(2, 2)
