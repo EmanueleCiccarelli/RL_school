@@ -1,11 +1,12 @@
 """
 Modulo Core di Gestione Esperimenti Preferiti (Play2Learn).
-Archiviazione, indicizzazione e caricamento portabile tra Colab e Windows.
+Archiviazione, indicizzazione, sanitizzazione HTML e caricamento portabile tra Colab e Windows.
 """
 
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import shutil
 from pathlib import Path
@@ -42,7 +43,14 @@ class BaseFavoritesManager:
     ) -> dict[str, Any]:
         """Salva una run nei preferiti copiando i file necessari e aggiornando index.json."""
         entries = self.read_index()
-        new_id = len(entries) + 1
+        # Genera ID progressivo sicuro senza collisioni anche se sono state rimosse entry precedenti
+        existing_ids = [
+            int(e.get("id"))
+            for e in entries
+            if isinstance(e.get("id"), (int, str)) and str(e.get("id")).isdigit()
+        ]
+        new_id = (max(existing_ids) + 1) if existing_ids else 1
+
         safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in nome)[:40]
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_dir_name = f"fav_{new_id:03d}_{safe_name}_{timestamp}"
@@ -81,6 +89,7 @@ class BaseFavoritesManager:
             "mission": meta.get("mission", {}).get("title", "Missione"),
             "success_rate": meta.get("eval_metrics", {}).get("eval_success_rate", 0.0),
             "mean_reward": meta.get("eval_metrics", {}).get("mean_reward", 0.0),
+            "max_distance": meta.get("eval_metrics", {}).get("max_distance", 0.0),
         }
 
         entries.append(fav_entry)

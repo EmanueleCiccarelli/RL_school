@@ -1,6 +1,7 @@
 """
 Modulo di Valutazione Deterministica e Generazione Video per Hill Climb Racing.
-Scrittura streaming diretta con impatto memoria trascurabile (~1 MB).
+Architettura a 2 fasi (sweep rapido headless + replay streaming dei video migliori e peggiori)
+e generazione GIF timelapse con caricamento fedele degli state_dict dei checkpoint.
 """
 
 from __future__ import annotations
@@ -12,11 +13,62 @@ from typing import Any, Callable
 
 import gymnasium as gym
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+import torch
+from PIL import Image, ImageDraw
 
 from play2learn_core.evaluator import create_milestone_gif, record_episode_streaming
 from play2learn_hillclimb.config import ENV_ID, EVAL_SEEDS, MIN_EVAL_EPISODES
 from play2learn_hillclimb.environment import HillClimbRewardWrapper, classify_hill_climb_outcome
+
+
+def _evaluate_single_episode_fast(
+    env: gym.Env,
+    model: Any,
+    seed: int,
+    max_steps: int = 1200,
+    reward_fn: Callable | None = None,
+) -> dict[str, Any]:
+    """Valuta un episodio in modalita puramente headless senza rendering Pygame."""
+    obs, info = env.reset(seed=seed)
+    tot_rew = 0.0
+    steps = 0
+    terminated = False
+    truncated = False
+    is_success = False
+
+    while not (terminated or truncated) and steps < max_steps:
+        action, _ = model.predict(obs, deterministic=True)
+        act_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
+        obs, reward, terminated, truncated, info = env.step(act_item)
+        tot_rew += float(reward)
+        steps += 1
+
+    unwrapped = getattr(env, "unwrapped", env)
+    succ, crash, tout, flip = classify_hill_climb_outcome(
+        obs=obs,
+        original_reward=tot_rew,
+        terminated=terminated,
+        truncated=truncated,
+        unwrapped=unwrapped,
+    )
+
+    telemetry = info.get("telemetry", {})
+    dist = float(telemetry.get("max_distance", info.get("score", 0.0)))
+    airtime = int(telemetry.get("airtime_steps", 0))
+    air_pct = (airtime / max(1, steps)) * 100.0
+
+    return {
+        "seed": seed,
+        "distance": dist,
+        "reward": tot_rew,
+        "steps": steps,
+        "max_speed": float(telemetry.get("max_speed", 0.0)),
+        "airtime_pct": air_pct,
+        "is_success": succ,
+        "is_crashed": crash,
+        "is_timeout": tout,
+        "is_flipped": flip,
+    }
 
 
 def evaluate_and_record(
@@ -28,8 +80,13 @@ def evaluate_and_record(
     reward_fn: Callable | None = None,
     sweep_timeout_seconds: float = 60.0,
     max_steps_per_episode: int = 1200,
+    max_videos_to_record: int = 6,
 ) -> dict[str, Any]:
-    """Valuta l'agente su 20 scenari collinari deterministici e salva video ad alta fedeltà."""
+    """
+    Valuta l'agente con architettura a 2 fasi:
+    1. Sweep rapido headless (render_mode=None) su tutti gli scenari deterministici (1-2s).
+    2. Registrazione video in streaming (H.264 O(1) RAM) solo per i migliori successi e fallimenti.
+    """
     out_dir = Path(output_dir)
     videos_dir = out_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
@@ -37,63 +94,75 @@ def evaluate_and_record(
     actual_seeds = list(seeds or EVAL_SEEDS)[:n_episodes]
     final_kwargs = dict(env_kwargs or {})
 
+    # FASE 1: Sweep rapido deterministico headless
     history: list[dict[str, Any]] = []
+    fast_env = gym.make(ENV_ID, render_mode=None, **final_kwargs)
+    if reward_fn is not None:
+        fast_env = HillClimbRewardWrapper(fast_env, reward_fn=reward_fn)
+
+    try:
+        for idx, s in enumerate(actual_seeds):
+            ep_res = _evaluate_single_episode_fast(
+                env=fast_env,
+                model=model,
+                seed=s,
+                max_steps=max_steps_per_episode,
+                reward_fn=reward_fn,
+            )
+            ep_res["episode"] = idx + 1
+            ep_res["video_path"] = None
+            history.append(ep_res)
+    finally:
+        fast_env.close()
+
+    # Selezione episodi da registrare (es. fino a 3 successi e 3 fallimenti)
+    succ_eps = [h for h in history if h["is_success"]]
+    fail_eps = [h for h in history if not h["is_success"]]
+
+    # Ordina per distanza decrescente
+    succ_eps.sort(key=lambda x: x["distance"], reverse=True)
+    fail_eps.sort(key=lambda x: x["distance"], reverse=True)
+
+    vids_to_record: list[dict[str, Any]] = []
+    vids_to_record.extend(succ_eps[:3])
+    vids_to_record.extend(fail_eps[:3])
+    if len(vids_to_record) < max_videos_to_record and history:
+        for h in history:
+            if h not in vids_to_record and len(vids_to_record) < max_videos_to_record:
+                vids_to_record.append(h)
+
+    # FASE 2: Registrazione video in streaming H.264
     success_videos: list[Path] = []
     failure_videos: list[Path] = []
     all_videos: list[Path] = []
 
-    start_time = time.time()
-    hard_timeout = max(sweep_timeout_seconds * 2.5, 20.0)
+    render_env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+    if reward_fn is not None:
+        render_env = HillClimbRewardWrapper(render_env, reward_fn=reward_fn)
 
-    for idx, s in enumerate(actual_seeds):
-        if time.time() - start_time > hard_timeout:
-            print(f"[play2learn] Timeout di sicurezza raggiunto dopo {idx} episodi di verifica.")
-            break
+    try:
+        for ep_info in vids_to_record:
+            s = ep_info["seed"]
+            idx = ep_info["episode"]
+            vid_path = videos_dir / f"episodio_{idx:02d}_seed_{s}.mp4"
 
-        vid_path = videos_dir / f"episodio_{idx+1:02d}_seed_{s}.mp4"
-
-        env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
-        if reward_fn is not None:
-            env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
-
-        env.reset(seed=s)
-
-        try:
             tot_rew, steps, is_succ, info = record_episode_streaming(
-                env=env,
+                env=render_env,
                 model=model,
                 video_path=vid_path,
                 fps=50,
                 max_steps=max_steps_per_episode,
+                seed=s,
                 outcome_fn=classify_hill_climb_outcome,
             )
-        finally:
-            env.close()
-
-        all_videos.append(vid_path)
-        if is_succ:
-            success_videos.append(vid_path)
-        else:
-            failure_videos.append(vid_path)
-
-        telemetry = info.get("telemetry", {})
-        dist = float(telemetry.get("max_distance", info.get("score", 0.0)))
-        airtime = int(telemetry.get("airtime_steps", 0))
-        air_pct = (airtime / max(1, steps)) * 100.0
-
-        history.append({
-            "episode": idx + 1,
-            "seed": s,
-            "distance": dist,
-            "reward": tot_rew,
-            "steps": steps,
-            "max_speed": float(telemetry.get("max_speed", 0.0)),
-            "airtime_pct": air_pct,
-            "is_success": is_succ,
-            "is_crashed": bool(info.get("is_crashed", False)),
-            "is_timeout": bool(info.get("is_timeout", False)),
-            "video_path": str(vid_path),
-        })
+            ep_info["video_path"] = str(vid_path)
+            all_videos.append(vid_path)
+            if is_succ:
+                success_videos.append(vid_path)
+            else:
+                failure_videos.append(vid_path)
+    finally:
+        render_env.close()
 
     ep_count = max(1, len(history))
     succ_count = sum(1 for h in history if h["is_success"])
@@ -128,10 +197,14 @@ def crea_gif_evoluzione_apprendimento(
     output_gif_path: Path | str,
     env_kwargs: dict[str, Any] | None = None,
     reward_fn: Callable | None = None,
+    base_model: Any = None,
     seed: int = 142,
-    max_frames_per_ckpt: int = 40,
+    max_steps_per_ckpt: int = 180,
 ) -> Path | None:
-    """Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline."""
+    """
+    Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline,
+    ricostruendo correttamente i pesi dai checkpoint state_dict (senza mutazione di riferimento).
+    """
     if not checkpoints:
         return None
 
@@ -140,37 +213,53 @@ def crea_gif_evoluzione_apprendimento(
     frames_all: list[np.ndarray] = []
 
     final_kwargs = dict(env_kwargs or {})
+    env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
+    if reward_fn is not None:
+        env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
 
-    for timesteps, model in checkpoints:
-        env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
-        if reward_fn is not None:
-            env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
+    try:
+        for timesteps, ckpt_or_model in checkpoints:
+            # Ripristina i pesi se e uno state_dict salvato in RAM
+            if isinstance(ckpt_or_model, dict) and base_model is not None:
+                try:
+                    base_model.policy.load_state_dict(ckpt_or_model)
+                    active_model = base_model
+                except Exception:
+                    continue
+            else:
+                active_model = ckpt_or_model
 
-        obs, _ = env.reset(seed=seed)
-        step_count = 0
-        terminated = False
-        truncated = False
+            obs, _ = env.reset(seed=seed)
+            step_count = 0
+            terminated = False
+            truncated = False
 
-        while not (terminated or truncated) and step_count < max_frames_per_ckpt:
-            action, _ = model.predict(obs, deterministic=True)
-            act_item = action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action
-            obs, reward, terminated, truncated, info = env.step(act_item)
-            step_count += 1
+            while not (terminated or truncated) and step_count < max_steps_per_ckpt:
+                action, _ = active_model.predict(obs, deterministic=True)
+                act_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
+                obs, reward, terminated, truncated, info = env.step(act_item)
+                step_count += 1
 
-            if step_count % 3 == 0:
-                frame = env.render()
-                if frame is not None:
-                    # Sovraimpressione didattica del checkpoint
-                    img = Image.fromarray(frame)
-                    draw = ImageDraw.Draw(img)
-                    dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
-                    txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
-                    draw.rectangle([10, 10, 360, 40], fill=(15, 23, 42, 220))
-                    draw.text((18, 16), txt, fill=(56, 189, 248))
-                    frames_all.append(np.array(img))
+                if step_count % 3 == 0:
+                    frame = env.render()
+                    if frame is not None:
+                        # Ridimensiona il frame a 480px di larghezza per footprint O(1)
+                        img = Image.fromarray(frame)
+                        w, h = img.size
+                        new_w = 480
+                        new_h = int(h * (new_w / w))
+                        img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
+                        draw = ImageDraw.Draw(img)
+                        dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
+                        txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
+                        draw.rectangle([10, 10, 260, 32], fill=(15, 23, 42, 220))
+                        draw.text((16, 14), txt, fill=(56, 189, 248))
+                        frames_all.append(np.array(img))
+
+    finally:
         env.close()
 
     if frames_all:
-        return create_milestone_gif(frames_all, gif_path, fps=10)
+        return create_milestone_gif(frames_all, gif_path, fps=12)
     return None

@@ -1,14 +1,23 @@
+import math
+import tempfile
 import unittest
-import numpy as np
+from pathlib import Path
+
 import gymnasium as gym
+import numpy as np
+import torch
 
 import play2learn_hillclimb
+from play2learn_hillclimb.agent import HillClimbFeaturesExtractor
 from play2learn_hillclimb.config import ENV_ID, MISSIONS
 from play2learn_hillclimb.environment import (
     HillClimbRewardWrapper,
     classify_hill_climb_outcome,
+    _wrap_angle,
 )
+from play2learn_hillclimb.favorites import LoadedFavorite
 from play2learn_hillclimb.interactive import gioca_single_player, gioca_vs_agente
+from play2learn_hillclimb.visualizer import plot_hill_telemetry
 
 
 class TestHillClimb(unittest.TestCase):
@@ -34,6 +43,21 @@ class TestHillClimb(unittest.TestCase):
         self.assertIsNotNone(frame)
         self.assertEqual(frame.shape[2], 3)
         env.close()
+
+    def test_features_extractor_translation_invariance(self):
+        box_space = gym.spaces.Box(low=-1000.0, high=1000.0, shape=(8,), dtype=np.float32)
+        extractor = HillClimbFeaturesExtractor(box_space)
+
+        # Due stati identici eccetto per le coordinate assolute x e y
+        t1 = torch.tensor([[100.0, 50.0, 10.0, -2.0, 0.3, 0.5, 1.0, 1.0]], dtype=torch.float32)
+        t2 = torch.tensor([[950.0, 350.0, 10.0, -2.0, 0.3, 0.5, 1.0, 1.0]], dtype=torch.float32)
+
+        feat1 = extractor(t1)
+        feat2 = extractor(t2)
+
+        self.assertEqual(feat1.shape, (1, 7))
+        self.assertEqual(feat2.shape, (1, 7))
+        self.assertTrue(torch.allclose(feat1, feat2, atol=1e-5))
 
     def test_reward_wrapper_custom_reward(self):
         def my_reward(obs, action, is_success, is_crashed, is_timeout):
@@ -61,28 +85,69 @@ class TestHillClimb(unittest.TestCase):
             wrapped.step(0)
         wrapped.close()
 
-    def test_classify_outcome(self):
-        # 1. Successo: distanza >= 800m
-        obs_succ = np.array([850.0, 10.0, 5.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+    def test_classify_outcome_edge_cases(self):
+        # 1. Distanza >= 800m su timeout (max_steps raggiunto senza morte) -> SUCCESSO
+        obs_goal_timeout = np.array([850.0, 10.0, 2.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
         succ, crash, tout, _ = classify_hill_climb_outcome(
-            obs=obs_succ,
-            original_reward=100.0,
-            terminated=True,
-            truncated=False,
-        )
-        self.assertTrue(succ)
-        self.assertFalse(crash)
-
-        # 2. Timeout: bloccato nel fosso
-        obs_tout = np.array([120.0, 10.0, 0.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
-        succ_t, crash_t, tout_t, _ = classify_hill_climb_outcome(
-            obs=obs_tout,
-            original_reward=-100.0,
+            obs=obs_goal_timeout,
+            original_reward=0.0,
             terminated=False,
             truncated=True,
         )
-        self.assertFalse(succ_t)
-        self.assertTrue(tout_t)
+        self.assertTrue(succ, "Un agente che supera 800m allo scadere del tempo deve essere classificato come successo!")
+        self.assertFalse(crash)
+        self.assertFalse(tout)
+
+        # 2. Blocco in salita / fosso (step_stuck_counter -> terminated=True, is_dead=False) -> TIMEOUT, NON CRASH
+        obs_stuck = np.array([250.0, 10.0, 0.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+        succ_s, crash_s, tout_s, _ = classify_hill_climb_outcome(
+            obs=obs_stuck,
+            original_reward=-100.0,
+            terminated=True,
+            truncated=False,
+        )
+        self.assertFalse(succ_s)
+        self.assertFalse(crash_s, "Un blocco in salita senza morte non deve essere classificato come schianto!")
+        self.assertTrue(tout_s)
+
+        # 3. Angle wrapping su giro completo a 360 gradi
+        full_circle_angle = float(2 * math.pi + 0.1)
+        wrapped_ang = _wrap_angle(full_circle_angle)
+        self.assertAlmostEqual(wrapped_ang, 0.1, places=5)
+
+    def test_plot_hill_telemetry_zero_division_guard(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_img = Path(td) / "telemetria_zero.png"
+            # Simulazione di run dove tutti i conteggi esiti sono 0
+            history_zeros = [
+                {"distance": 100.0, "max_speed": 4.0, "airtime_pct": 5.0, "is_success": False, "is_crashed": False, "is_timeout": False}
+                for _ in range(20)
+            ]
+            saved = plot_hill_telemetry(history_zeros, output_path=out_img)
+            self.assertIsNotNone(saved)
+            self.assertTrue(out_img.exists())
+
+    def test_loaded_favorite_hybrid_access(self):
+        fake_model = "fake_ppo_model"
+        fake_meta = {"mission": "Test", "eval_metrics": {"eval_success_rate": 85.0}}
+        fake_dir = Path("/fake/dir")
+        fake_entry = {"id": 1, "nome": "Mio Test"}
+
+        fav = LoadedFavorite(model=fake_model, metadata=fake_meta, dir_path=fake_dir, entry=fake_entry)
+
+        # 1. Unpacking a 2 tuple (compatibile con Lunar Lander)
+        m, meta = fav
+        self.assertEqual(m, fake_model)
+        self.assertEqual(meta["mission"], "Test")
+
+        # 2. Accesso ad attributi
+        self.assertEqual(fav.model, fake_model)
+        self.assertEqual(fav.metadata, fake_meta)
+        self.assertEqual(fav.dir_path, fake_dir)
+
+        # 3. Accesso a dizionario
+        self.assertEqual(fav["metadata"], fake_meta)
+        self.assertEqual(fav.get("mission"), "Test")
 
     def test_interactive_smoke(self):
         ui = gioca_single_player(seed=42)

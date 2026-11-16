@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from play2learn_lunarlander.agent import RewardTrackerCallback
+from play2learn_lunarlander.config import HELIPAD_X_MAX
 
 
 def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
@@ -93,10 +94,10 @@ def diagnose_agent_behavior(tracker: RewardTrackerCallback) -> dict[str, Any]:
         title = "IMPATTO TROPPO VIOLENTO 🏎️"
         msg = "L'agente scende dritto sulla piazzola ma con una velocità verticale eccessiva (|vy| > 0.35), distruggendo le zampe."
         sugg = "Aumenta la penalità sulla velocità di discesa abs(vy), specialmente alle quote basse (ad esempio quando y < 0.5 moltiplica la penalità per 1.5 - y)."
-    elif crash_rate >= 50.0 and mean_x > 0.25:
+    elif crash_rate >= 50.0 and mean_x > HELIPAD_X_MAX:
         status = "fuori_bersaglio"
         title = "ATTERRAGGIO FUORI BERSAGLIO 📍"
-        msg = "L'agente tocca il terreno roccioso fuori dalle bandierine di segnalazione (|x| > 0.20)."
+        msg = f"L'agente tocca il terreno roccioso fuori dalle bandierine di segnalazione (|x| > {HELIPAD_X_MAX:.2f})."
         sugg = "Aumenta la penalità sulla distanza orizzontale abs(x) e sulla velocità orizzontale abs(vx) per forzare il modulo verso il centro x = 0.0."
     elif crash_rate >= 50.0 and mean_angle > 0.25:
         status = "assetto_inclinato"

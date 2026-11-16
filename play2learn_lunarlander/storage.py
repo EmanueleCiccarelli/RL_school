@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import html
 import json
 import inspect
 import datetime
@@ -294,9 +295,10 @@ def mostra_successi() -> None:
         rows = []
         for e in entries:
             pdf_link = f"<a href='{e.get('pdf_report', '')}' target='_blank' style='color:#1565c0; font-weight:bold;'>📄 Scarica PDF</a>" if e.get("pdf_report") else "-"
+            safe_name = html.escape(str(e.get('name', '')))
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>🏆 {e.get('name')}</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>🏆 {safe_name}</td>"
                 f"<td style='padding:8px 12px; text-align:center;'><span style='background:#e8f5e9; color:#2e7d32; padding:3px 8px; border-radius:12px; font-weight:bold;'>{e.get('success_rate', 0)}%</span></td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_fuel', 0)} un.</td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{e.get('mean_length', 0)} step</td>"
@@ -357,10 +359,15 @@ def find_run_by_timestamp(timestamp_query: str, runs_dir: Path | str | None = No
     query = timestamp_query.strip()
     all_dirs: list[Path] = []
 
+    # Separa run standard da archivi per evitare che un salvataggio in favorites falsi "latest"
+    standard_dirs: list[Path] = []
+    all_dirs: list[Path] = []
+
     # 1. Cartelle dirette in runs/
     for sub in base.iterdir():
         if sub.is_dir() and sub.name not in ("favorites", "successi"):
             if (sub / "run_metadata.json").exists():
+                standard_dirs.append(sub)
                 all_dirs.append(sub)
 
     # 2. Cartelle in runs/successi/
@@ -380,12 +387,19 @@ def find_run_by_timestamp(timestamp_query: str, runs_dir: Path | str | None = No
     if not all_dirs:
         return None
 
-    # Ordina per data di modifica decrescente
-    all_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # Ordina cronologicamente per nome della directory (formato run_YYYYMMDD_HHMMSS_...)
+    standard_dirs.sort(key=lambda p: p.name, reverse=True)
+    all_dirs.sort(key=lambda p: p.name, reverse=True)
 
+    q_low = query.lower()
     # Caso speciale: latest / ultima
-    if query.lower() in ("latest", "ultima", "ultimo", "last", "recents", "recente"):
-        return all_dirs[0]
+    if q_low in ("latest", "ultima", "ultimo", "last", "recents", "recente"):
+        return standard_dirs[0] if standard_dirs else all_dirs[0]
+
+    # Caso speciale: previous / precedente
+    if q_low in ("previous", "precedente", "penultima", "penultimo", "prev"):
+        pool = standard_dirs if len(standard_dirs) >= 2 else all_dirs
+        return pool[1] if len(pool) >= 2 else None
 
     clean_query = query.lower().replace("-", "").replace(":", "").replace(" ", "_")
 
@@ -504,15 +518,20 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
             bg_badge = "#e8f5e9" if succ >= 80.0 else ("#fff3e0" if succ >= 50.0 else "#ffebee")
             has_mod_str = "✅ Sì" if e["has_model"] else "❌ No"
 
+            safe_ts = html.escape(str(e.get('timestamp', '')))
+            safe_name = html.escape(str(e.get('name', '')))
+            safe_cat = html.escape(str(e.get('category', '')))
+            safe_id = html.escape(str(e.get('run_id', '')))
+
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f5f5f5;'>{e['timestamp']}</td>"
-                f"<td style='padding:8px 12px;'><b>{e['name']}</b> <span style='font-size:11px; color:#666;'>({e['category']})</span></td>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f5f5f5;'>{safe_ts}</td>"
+                f"<td style='padding:8px 12px;'><b>{safe_name}</b> <span style='font-size:11px; color:#666;'>({safe_cat})</span></td>"
                 f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ:.1f}%</span></td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{e['mean_fuel']:.1f} un.</td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{e['video_count']} video</td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{has_mod_str}</td>"
-                f"<td style='padding:8px 12px; font-size:11.5px; color:#666;'><code>{e['run_id']}</code></td>"
+                f"<td style='padding:8px 12px; font-size:11.5px; color:#666;'><code>{safe_id}</code></td>"
                 f"</tr>"
             )
 

@@ -693,11 +693,14 @@ def confronta_run(
             succ = r.get("eval_success_rate", 0.0)
             badge_color = "#2e7d32" if succ >= 80.0 else ("#f57c00" if succ >= 50.0 else "#c62828")
             bg_badge = "#e8f5e9" if succ >= 80.0 else ("#fff3e0" if succ >= 50.0 else "#ffebee")
+            safe_r_name = html.escape(str(r.get('name', '')))
+            safe_r_mission = html.escape(str(r.get('mission', '')))
+            safe_r_ts = html.escape(str(r.get('timestamp', '')))
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f8f9fa;'>{r.get('timestamp', '')}</td>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{r.get('name')}</td>"
-                f"<td style='padding:8px 12px;'>{r.get('mission', '')}</td>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f8f9fa;'>{safe_r_ts}</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{safe_r_name}</td>"
+                f"<td style='padding:8px 12px;'>{safe_r_mission}</td>"
                 f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ:.1f}%</span></td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{r.get('eval_mean_fuel', 0):.1f} un.</td>"
                 f"<td style='padding:8px 12px; text-align:center;'>{r.get('eval_mean_length', 0):.0f} step</td>"

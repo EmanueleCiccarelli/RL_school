@@ -11,8 +11,8 @@ from typing import Any, Callable
 from play2learn_core.storage import (
     atomic_write_json,
     atomic_write_text,
-    elenca_cronologia_run,
-    find_run_by_timestamp,
+    elenca_cronologia_run as _core_elenca,
+    find_run_by_timestamp as _core_find,
     save_generic_run_metadata,
     unique_dir,
 )
@@ -28,6 +28,18 @@ def get_default_runs_dir() -> Path:
     p = base / "runs_hillclimb"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def find_run_by_timestamp(identifier: str, runs_dir: Path | str | None = None) -> Path | None:
+    """Risolve un identificatore nella cartella runs_hillclimb."""
+    actual_dir = Path(runs_dir) if runs_dir else get_default_runs_dir()
+    return _core_find(identifier=identifier, runs_dir=actual_dir)
+
+
+def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """Restituisce la cronologia delle run per Hill Climb."""
+    actual_dir = Path(runs_dir) if runs_dir else get_default_runs_dir()
+    return _core_elenca(runs_dir=actual_dir)
 
 
 def create_run_directory(mission: str = "campagna_standard", base_dir: Path | str | None = None) -> Path:

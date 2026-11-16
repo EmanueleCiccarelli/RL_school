@@ -241,6 +241,8 @@ def run_lab(
     )
     vec_env = raw_vec_env
     t_start = time.perf_counter()
+    model = None
+    tracker = None
 
     try:
         actual_n_envs = raw_vec_env.num_envs
@@ -296,8 +298,12 @@ def run_lab(
     finally:
         vec_env.close()
 
+    if model is None:
+        print("[play2learn] Nessun modello inizializzato prima dell'interruzione.")
+        return LabResult({"run_dir": str(run_dir), "model": None, "eval_metrics": {}})
+
     elapsed_time = time.perf_counter() - t_start
-    completed_steps = max(1, model.num_timesteps)
+    completed_steps = max(1, getattr(model, "num_timesteps", 0))
     fps_avg = int(completed_steps / max(0.1, elapsed_time))
     print(
         f"[play2learn] Addestramento concluso in {elapsed_time:.1f} secondi "
@@ -470,8 +476,9 @@ def _display_success_popup(succ_entry: dict[str, Any], rep_files: dict[str, Path
     """Mostra un box notifica interattivo nel Notebook per il report e i file generati."""
     try:
         from IPython.display import HTML, display
-        pdf_name = rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name
-        succ_dir_name = Path(succ_entry.get("dir_path", "")).name
+        import html
+        pdf_name = html.escape(rep_files.get("pdf_path", Path("scheda_esperimento.pdf")).name)
+        succ_dir_name = html.escape(Path(succ_entry.get("dir_path", "")).name)
 
         box_html = f"""
         <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);

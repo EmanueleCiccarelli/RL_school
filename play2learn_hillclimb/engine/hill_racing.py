@@ -1,12 +1,14 @@
 """
 Ambiente Principale Gymnasium per Hill Climb Racing.
-Supporta modalità headless 'rgb_array' per registrazione video in streaming e Pygame 'human'.
+Supporta modalita headless 'rgb_array' per registrazione video in streaming e Pygame 'human'.
+Include gestione difensiva dei contatti Box2D con contatori anti-flicker e cleanup completo della memoria.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -61,28 +63,30 @@ car_sprite = None
 torso_sprite = None
 
 
-def _load_sprites() -> None:
+def _ensure_sdl_driver(render_mode: Optional[str]) -> None:
+    """Imposta SDL_VIDEODRIVER=dummy SOLO se headless o in modalita non-human."""
+    if pygame.display.get_init():
+        return
+    is_linux_headless = (os.name != "nt") and (not os.environ.get("DISPLAY")) and (sys.platform != "darwin")
+    if render_mode != "human" or is_linux_headless:
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+
+def _load_sprites(render_mode: Optional[str] = None) -> None:
     global wheel_sprite, head_sprite, car_sprite, torso_sprite
     if wheel_sprite is not None:
         return
     try:
-        if not pygame.display.get_init():
-            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-            pygame.display.init()
-
-        w_p = _ASSET_DIR / "wheel.png"
-        h_p = _ASSET_DIR / "headLarge2.png"
-        c_p = _ASSET_DIR / "car.png"
-        t_p = _ASSET_DIR / "torsoLarge.png"
-
-        if w_p.exists():
-            wheel_sprite = pygame.image.load(str(w_p))
-        if h_p.exists():
-            head_sprite = pygame.image.load(str(h_p))
-        if c_p.exists():
-            car_sprite = pygame.image.load(str(c_p))
-        if t_p.exists():
-            torso_sprite = pygame.image.load(str(t_p))
+        _ensure_sdl_driver(render_mode)
+        for attr, fname in (
+            ("wheel_sprite", "wheel.png"),
+            ("head_sprite", "headLarge2.png"),
+            ("car_sprite", "car.png"),
+            ("torso_sprite", "torsoLarge.png"),
+        ):
+            p = _ASSET_DIR / fname
+            if p.exists():
+                globals()[attr] = pygame.image.load(str(p))
     except Exception:
         pass
 
@@ -92,50 +96,56 @@ class ContactListener(b2ContactListener):
         super().__init__()
 
     def BeginContact(self, contact: b2Contact) -> None:
-        fixture_a = contact.fixtureA
-        fixture_b = contact.fixtureB
-        if not fixture_a.body.userData or not fixture_b.body.userData:
+        ud_a = contact.fixtureA.body.userData
+        ud_b = contact.fixtureB.body.userData
+        if not ud_a or not ud_b:
             return
+        id_a = getattr(ud_a, "id", None)
+        id_b = getattr(ud_b, "id", None)
 
-        id_a = getattr(fixture_a.body.userData, "id", None)
-        id_b = getattr(fixture_b.body.userData, "id", None)
+        # 1. Contatto testa-terreno (riferimento diretto, con fallback sui giunti)
+        head_ud = ud_a if (id_a == "head" and id_b == "ground") else (
+            ud_b if (id_b == "head" and id_a == "ground") else None
+        )
+        if head_ud is not None:
+            owner_agent = getattr(head_ud, "agent", None)
+            if owner_agent is not None:
+                owner_agent.dead = True
+            else:
+                head_body = contact.fixtureA.body if head_ud is ud_a else contact.fixtureB.body
+                for j_edge in getattr(head_body, "joints", ()):
+                    torso = j_edge.other
+                    for tj in getattr(torso, "joints", ()):
+                        car_ud = getattr(tj.other, "userData", None)
+                        if getattr(car_ud, "agent", None) is not None:
+                            car_ud.agent.dead = True
+                            car_ud.dead = True
+                            break
 
-        # Collisione testa del pilota con il terreno
-        head_fix = None
-        if id_a == "head" and id_b == "ground":
-            head_fix = fixture_a
-        elif id_b == "head" and id_a == "ground":
-            head_fix = fixture_b
-
-        if head_fix and head_fix.body.joints:
-            try:
-                torso = head_fix.body.joints[0].other
-                car_obj = torso.joints[3].other.userData
-                if hasattr(car_obj, "agent") and car_obj.agent:
-                    car_obj.agent.dead = True
-                car_obj.dead = True
-            except Exception:
-                pass
-
-        # Contatto ruota con il terreno
-        if id_a == "wheel" and id_b == "ground":
-            fixture_a.body.userData.on_ground = True
-        elif id_b == "wheel" and id_a == "ground":
-            fixture_b.body.userData.on_ground = True
+        # 2. Contatore contatti ruota-terreno (elimina il flickering su bordi adiacenti)
+        wheel_ud = ud_a if (id_a == "wheel" and id_b == "ground") else (
+            ud_b if (id_b == "wheel" and id_a == "ground") else None
+        )
+        if wheel_ud is not None:
+            cnt = getattr(wheel_ud, "_ground_contacts", 0) + 1
+            wheel_ud._ground_contacts = cnt
+            wheel_ud.on_ground = True
 
     def EndContact(self, contact: b2Contact) -> None:
-        fixture_a = contact.fixtureA
-        fixture_b = contact.fixtureB
-        if not fixture_a.body.userData or not fixture_b.body.userData:
+        ud_a = contact.fixtureA.body.userData
+        ud_b = contact.fixtureB.body.userData
+        if not ud_a or not ud_b:
             return
+        id_a = getattr(ud_a, "id", None)
+        id_b = getattr(ud_b, "id", None)
 
-        id_a = getattr(fixture_a.body.userData, "id", None)
-        id_b = getattr(fixture_b.body.userData, "id", None)
-
-        if id_a == "wheel" and id_b == "ground":
-            fixture_a.body.userData.on_ground = False
-        elif id_b == "wheel" and id_a == "ground":
-            fixture_b.body.userData.on_ground = False
+        wheel_ud = ud_a if (id_a == "wheel" and id_b == "ground") else (
+            ud_b if (id_b == "wheel" and id_a == "ground") else None
+        )
+        if wheel_ud is not None:
+            cnt = max(0, getattr(wheel_ud, "_ground_contacts", 1) - 1)
+            wheel_ud._ground_contacts = cnt
+            wheel_ud.on_ground = (cnt > 0)
 
 
 class HillRacingEnv(gym.Env):
@@ -156,8 +166,8 @@ class HillRacingEnv(gym.Env):
         gravity: float = GRAVITY,
     ):
         super().__init__()
-        _load_sprites()
         self.render_mode = render_mode
+        _load_sprites(render_mode=render_mode)
         self.gravity = gravity
         self.world = b2World(gravity=(0, self.gravity), doSleep=True)
         self.ground: Optional[ground.Ground] = None
@@ -184,8 +194,8 @@ class HillRacingEnv(gym.Env):
         # Spazio di osservazione didattico (vettore 8D continuo, ideale per SB3 MlpPolicy):
         # [0]: x_distanza (m)
         # [1]: y_quota (m)
-        # [2]: vx (velocità orizzontale)
-        # [3]: vy (velocità verticale)
+        # [2]: vx (velocita orizzontale)
+        # [3]: vy (velocita verticale)
         # [4]: angolo_inclinazione (radianti [-pi, pi])
         # [5]: velocita_angolare
         # [6]: contatto_ruota_posteriore (0 o 1)
@@ -200,27 +210,46 @@ class HillRacingEnv(gym.Env):
         self.clock = None
 
     def _destroy_world(self) -> None:
-        if self.ground:
-            self.world.contactListener = None
+        self.world.contactListener = None
+        if self.agent:
             try:
-                self.world.DestroyBody(self.ground.grassBody)
-                self.world.DestroyBody(self.ground.dirtBody)
+                self.agent.destroy_agent()
             except Exception:
                 pass
+            self.agent = None
+
+        if self.ground:
+            for b in (getattr(self.ground, "grassBody", None), getattr(self.ground, "dirtBody", None)):
+                if b is not None:
+                    try:
+                        b.userData = None
+                        self.world.DestroyBody(b)
+                    except Exception:
+                        pass
             self.ground = None
 
-        if self.agent:
-            self.agent.destroy_agent()
-            self.agent = None
+        # Sweep difensivo: garantisce zero body/joint leak in Box2D
+        for joint in list(self.world.joints):
+            try:
+                self.world.DestroyJoint(joint)
+            except Exception:
+                pass
+        for body in list(self.world.bodies):
+            try:
+                body.userData = None
+                self.world.DestroyBody(body)
+            except Exception:
+                pass
 
     def _generate_ground(self, seed: Optional[int] = None) -> None:
         ground_template = ground.Ground(original_noise=self.original_noise)
         ground_template.randomize_ground(seed=seed)
         tries = 0
         while ground_template.groundTooSteep() and tries < 5:
-            ground_template = ground.Ground(original_noise=self.original_noise)
-            ground_template.randomize_ground(seed=seed)
             tries += 1
+            retry_seed = None if seed is None else (int(seed) + tries * 997)
+            ground_template = ground.Ground(original_noise=self.original_noise)
+            ground_template.randomize_ground(seed=retry_seed)
 
         self.ground = ground.Ground(self.world)
         self.ground.cloneFrom(ground_template)
@@ -236,7 +265,6 @@ class HillRacingEnv(gym.Env):
 
         if self.action_space_type == "continuous":
             val = float(action[0] if hasattr(action, "__len__") else action)
-            # Scala val da [-1, 1] a [-13, 13]
             self.agent.car.set_motor_wheel_speed(-val * 13.0)
         else:
             act_int = int(action)
@@ -261,8 +289,8 @@ class HillRacingEnv(gym.Env):
         angle = float(-car_body.angle)
         norm_angle = (angle + math.pi) % (2 * math.pi) - math.pi
 
-        rear_on = 1.0 if self.agent.car.wheels[0].on_ground else 0.0
-        front_on = 1.0 if self.agent.car.wheels[1].on_ground else 0.0
+        rear_on = 1.0 if getattr(self.agent.car.wheels[0], "on_ground", False) else 0.0
+        front_on = 1.0 if getattr(self.agent.car.wheels[1], "on_ground", False) else 0.0
 
         return np.array(
             [pos_x, pos_y, float(vel.x), float(vel.y), norm_angle, ang_vel, rear_on, front_on],
@@ -350,8 +378,7 @@ class HillRacingEnv(gym.Env):
 
         if self.screen is None:
             if not pygame.display.get_init():
-                if self.render_mode == "rgb_array":
-                    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+                _ensure_sdl_driver(self.render_mode)
                 pygame.init()
                 pygame.display.init()
 
@@ -377,7 +404,6 @@ class HillRacingEnv(gym.Env):
                 self.clock.tick(FPS)
             return None
         elif self.render_mode == "rgb_array":
-            # Estrae l'array di pixel RGB (H, W, 3) compatibile con imageio
             return np.transpose(pygame.surfarray.array3d(self.screen), (1, 0, 2))
 
     def close(self) -> None:

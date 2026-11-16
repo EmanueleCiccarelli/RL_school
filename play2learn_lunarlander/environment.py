@@ -106,7 +106,7 @@ def classify_lunar_lander_outcome(
     on_helipad = (final_x <= HELIPAD_X_MAX) and (final_y <= 0.15)
     upright = final_angle <= SAFE_LANDING_ANGLE
     settled = (not is_awake) or (final_vx <= SAFE_MAX_VX and final_vy <= SAFE_MAX_VY)
-    gym_ok = (not is_awake) or (original_reward >= 100.0) or (original_reward > 0.0)
+    gym_ok = (not is_awake) or (original_reward >= 50.0)
 
     if on_helipad and upright and both_legs and settled and gym_ok:
         return True, False, False, False

@@ -6,6 +6,7 @@ di maggior successo per analizzare e confrontare i risultati ottenuti.
 
 from __future__ import annotations
 
+import html
 import json
 import shutil
 import datetime
@@ -252,15 +253,20 @@ def mostra_preferiti() -> None:
                 succ = f"<span style='font-weight:bold; color:{badge_color};'>{s_val:.0f}%</span>"
                 fuel_str = f"{e.get('mean_fuel', 0):.1f} un."
 
+            safe_name = html.escape(str(e.get("name", "")))
+            safe_tag = html.escape(str(e.get("tag", "Preferito")))
+            safe_mission = html.escape(str(e.get("mission_title", "")))
+            safe_notes = html.escape(str(e.get("notes", "")))
+
             rows.append(
                 f"<tr>"
-                f"<td style='padding:8px 12px; font-weight:bold;'>{icon} {e.get('name')}</td>"
-                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{e.get('tag', 'Preferito')}</span></td>"
-                f"<td style='padding:8px 12px;'>{e.get('mission_title', '')}</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{icon} {safe_name}</td>"
+                f"<td style='padding:8px 12px;'><span style='background:#e3f2fd; color:#0d47a1; padding:2px 8px; border-radius:12px; font-size:12px;'>{safe_tag}</span></td>"
+                f"<td style='padding:8px 12px;'>{safe_mission}</td>"
                 f"<td style='padding:8px 12px;'>{succ}</td>"
                 f"<td style='padding:8px 12px;'>{fuel_str}</td>"
                 f"<td style='padding:8px 12px;'>{e.get('saved_at', '')}</td>"
-                f"<td style='padding:8px 12px; font-style:italic; color:#555;'>{e.get('notes', '')}</td>"
+                f"<td style='padding:8px 12px; font-style:italic; color:#555;'>{safe_notes}</td>"
                 f"</tr>"
             )
 

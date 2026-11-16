@@ -2,8 +2,9 @@
 Modulo di Simulazione e Gioco Interattivo per Hill Climb Racing (Play2Learn).
 Permette agli studenti di guidare manualmente il veicolo direttamente in Jupyter e Google Colab
 (HTML5 Canvas + Web Audio API):
-  1. Modalità Single Player: per comprendere la difficoltà del bilanciamento trazione/ribaltamento.
-  2. Modalità Tu vs Agente: gara testa a testa (split-screen) contro l'agente PPO addestrato.
+  1. Modalita Single Player: per comprendere la difficolta del bilanciamento trazione/ribaltamento.
+  2. Modalita Tu vs Agente: gara testa a testa (split-screen) contro l'agente PPO addestrato.
+Include loop a frequenza fissa (50 Hz), controlli touch per tablet/mobile e gestione audio fluida.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def registra_traiettoria_agente(
     model: Any,
     seed: int = 42,
     mission: str = "campagna_standard",
-    max_steps: int = 1000,
+    max_steps: int = 1200,
     env_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Registra la telemetria passo-passo dell'agente PPO per il replay in split-screen."""
@@ -96,15 +97,20 @@ def gioca_single_player(
 
         <div style="position:relative; width:100%; text-align:center;">
             <canvas id="canvas_{uid}" width="800" height="420" tabindex="0" style="background:#87CEEB; border:1.5px solid #334155; border-radius:8px; outline:none; max-width:100%; cursor:pointer;"></canvas>
-            <div id="overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:14px 22px; border-radius:8px; text-align:center;">
-                <div style="font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom:6px;">Premi [SPAZIO] o Clicca per Partire!</div>
-                <div style="font-size:12px; color:#94a3b8;">Comandi: ⬆️ / W = Gas | ⬇️ / S = Freno/Retro | ⬅️ ➡️ = Bilanciamento in Volo</div>
+            <div id="overlay_{uid}" style="position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); background:rgba(15,23,42,0.92); border:1.5px solid #38bdf8; padding:16px 24px; border-radius:8px; text-align:center; cursor:pointer;">
+                <div style="font-size:16px; font-weight:bold; color:#f8fafc; margin-bottom:6px;">Premi [SPAZIO] o Clicca qui per Partire!</div>
+                <div style="font-size:12px; color:#94a3b8;">Comandi: ⬆️ / W = Gas | ⬇️ / S = Freno/Retro | ⬅️ ➡️ = Bilanciamento</div>
             </div>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:12px; margin-top:10px;">
+            <button id="touch_brake_{uid}" style="background:#ef4444; color:white; border:none; padding:10px 22px; border-radius:8px; font-weight:bold; font-size:14px; cursor:pointer; touch-action:manipulation;">🛑 FRENO / RETRO</button>
+            <button id="touch_gas_{uid}" style="background:#10b981; color:white; border:none; padding:10px 28px; border-radius:8px; font-weight:bold; font-size:14px; cursor:pointer; touch-action:manipulation;">⚡ GAS</button>
         </div>
 
         <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:12px; font-size:12px; background:#111827; padding:10px; border-radius:8px; border:1px solid #1f2937;">
             <div><span style="color:#94a3b8;">Distanza:</span> <strong id="hud_dist_{uid}" style="color:#38bdf8;">0.0 m</strong></div>
-            <div><span style="color:#94a3b8;">Velocità:</span> <strong id="hud_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></div>
+            <div><span style="color:#94a3b8;">Velocita:</span> <strong id="hud_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></div>
             <div><span style="color:#94a3b8;">Inclinazione:</span> <strong id="hud_ang_{uid}">0°</strong></div>
             <div><span style="color:#94a3b8;">Stato:</span> <strong id="hud_stat_{uid}" style="color:#10b981;">Pronto</strong></div>
         </div>
@@ -117,7 +123,16 @@ def gioca_single_player(
         const canvas = document.getElementById('canvas_{uid}');
         const ctx = canvas.getContext('2d');
         const overlay = document.getElementById('overlay_{uid}');
+        const btnSound = document.getElementById('btn_sound_{uid}');
         const W = canvas.width, H = canvas.height;
+
+        let soundEnabled = true;
+        if (btnSound) {{
+            btnSound.addEventListener('click', function() {{
+                soundEnabled = !soundEnabled;
+                btnSound.innerText = soundEnabled ? '🔊 Audio: ON' : '🔈 Audio: OFF';
+            }});
+        }}
 
         let seedVal = {actual_seed};
         function pseudoNoise(x) {{
@@ -137,6 +152,8 @@ def gioca_single_player(
             carX = 120; carY = 280; vx = 0; vy = 0; angle = 0; vangle = 0;
             dead = false; finished = false; gameActive = true;
             overlay.style.display = 'none';
+            document.getElementById('hud_stat_{uid}').innerText = 'In Corsa';
+            document.getElementById('hud_stat_{uid}').style.color = '#38bdf8';
             canvas.focus();
         }}
 
@@ -155,7 +172,7 @@ def gioca_single_player(
                     ay += Math.sin(angle) * 32.0;
                     vangle -= 1.8 * dt;
                 }}
-                playEngineTone(140 + Math.abs(vx) * 12, 0.06);
+                if (soundEnabled) playEngineTone(140 + Math.abs(vx) * 12, 0.06);
             }}
 
             if (keyBrake) {{
@@ -163,7 +180,7 @@ def gioca_single_player(
                     ax -= Math.cos(angle) * 22.0;
                     vangle += 2.0 * dt;
                 }}
-                playEngineTone(90, 0.05);
+                if (soundEnabled) playEngineTone(90, 0.05);
             }}
 
             // Bilanciamento in aria
@@ -181,7 +198,6 @@ def gioca_single_player(
             if (carY > groundY - 16) {{
                 carY = groundY - 16;
                 vy = 0;
-                // Allineamento naturale alla pendenza
                 const slope = (getTerrainY(carX + 15) - getTerrainY(carX - 15)) / 30.0;
                 const targetAngle = Math.atan2(slope, 1.0);
                 angle += (targetAngle - angle) * 0.25;
@@ -189,7 +205,9 @@ def gioca_single_player(
                 // Controllo cappottamento
                 if (Math.abs(angle) > 1.45) {{
                     dead = true;
-                    playCrashSound();
+                    if (soundEnabled) playCrashSound();
+                    document.getElementById('hud_stat_{uid}').innerText = 'Schianto';
+                    document.getElementById('hud_stat_{uid}').style.color = '#ef4444';
                     overlay.innerHTML = '<div style="color:#ef4444; font-size:16px; font-weight:bold;">💥 PILOTA SCHIANTATO! (Ribaltamento)</div><button id="btn_ret_{uid}" style="margin-top:8px; background:#ef4444; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;">Riprova</button>';
                     overlay.style.display = 'block';
                     document.getElementById('btn_ret_{uid}').addEventListener('click', resetGame);
@@ -198,7 +216,9 @@ def gioca_single_player(
 
             if (carX >= 2400) {{
                 finished = true;
-                playVictoryChime();
+                if (soundEnabled) playVictoryChime();
+                document.getElementById('hud_stat_{uid}').innerText = 'Vittoria';
+                document.getElementById('hud_stat_{uid}').style.color = '#10b981';
                 overlay.innerHTML = '<div style="color:#10b981; font-size:16px; font-weight:bold;">🎉 TRAGUARDO 800m COMPLETATO!</div><button id="btn_ret_{uid}" style="margin-top:8px; background:#10b981; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;">Rigioca</button>';
                 overlay.style.display = 'block';
                 document.getElementById('btn_ret_{uid}').addEventListener('click', resetGame);
@@ -295,6 +315,21 @@ def gioca_single_player(
         }});
 
         canvas.addEventListener('click', function() {{ initAudio(); if (!gameActive) resetGame(); }});
+        overlay.addEventListener('click', function() {{ initAudio(); if (!gameActive) resetGame(); }});
+
+        // Controlli Touch
+        const btnGas = document.getElementById('touch_gas_{uid}');
+        const btnBrake = document.getElementById('touch_brake_{uid}');
+        if (btnGas && btnBrake) {{
+            btnGas.addEventListener('pointerdown', (e) => {{ e.preventDefault(); initAudio(); if(!gameActive) resetGame(); keyGas = true; }});
+            btnGas.addEventListener('pointerup', (e) => {{ e.preventDefault(); keyGas = false; }});
+            btnGas.addEventListener('pointercancel', (e) => {{ e.preventDefault(); keyGas = false; }});
+
+            btnBrake.addEventListener('pointerdown', (e) => {{ e.preventDefault(); initAudio(); if(!gameActive) resetGame(); keyBrake = true; }});
+            btnBrake.addEventListener('pointerup', (e) => {{ e.preventDefault(); keyBrake = false; }});
+            btnBrake.addEventListener('pointercancel', (e) => {{ e.preventDefault(); keyBrake = false; }});
+        }}
+
         loop(performance.now());
     }})();
     </script>
@@ -308,7 +343,7 @@ def gioca_vs_agente(
     mission: str = "campagna_standard",
     env_kwargs: dict[str, Any] | None = None,
 ) -> Any:
-    """Avvia la modalità testa a testa 'Tu vs Agente AI' in Split-Screen."""
+    """Avvia la modalita testa a testa 'Tu vs Agente AI' in Split-Screen."""
     print("[play2learn] Calcolo della traiettoria dell'Agente AI sulle colline...")
 
     # Risoluzione modello
@@ -352,7 +387,7 @@ def gioca_vs_agente(
                 <canvas id="canvas_human_{uid}" width="440" height="300" tabindex="0" style="background:#87CEEB; border-radius:6px; outline:none; max-width:100%; cursor:pointer;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
                     <span>Distanza: <strong id="h_dist_{uid}" style="color:#38bdf8;">0.0 m</strong></span>
-                    <span>Velocità: <strong id="h_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></span>
+                    <span>Velocita: <strong id="h_spd_{uid}" style="color:#10b981;">0.0 m/s</strong></span>
                 </div>
             </div>
 
@@ -361,9 +396,14 @@ def gioca_vs_agente(
                 <canvas id="canvas_ai_{uid}" width="440" height="300" style="background:#87CEEB; border-radius:6px; max-width:100%;"></canvas>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-top:6px; background:#1e293b; padding:6px 10px; border-radius:6px;">
                     <span>Distanza: <strong id="ai_dist_{uid}" style="color:#10b981;">0.0 m</strong></span>
-                    <span>Velocità: <strong id="ai_spd_{uid}" style="color:#38bdf8;">0.0 m/s</strong></span>
+                    <span>Velocita: <strong id="ai_spd_{uid}" style="color:#38bdf8;">0.0 m/s</strong></span>
                 </div>
             </div>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:12px; margin-top:10px;">
+            <button id="vs_touch_brake_{uid}" style="background:#ef4444; color:white; border:none; padding:8px 18px; border-radius:6px; font-weight:bold; font-size:13px; cursor:pointer;">🛑 Freno</button>
+            <button id="vs_touch_gas_{uid}" style="background:#10b981; color:white; border:none; padding:8px 24px; border-radius:6px; font-weight:bold; font-size:13px; cursor:pointer;">⚡ Gas</button>
         </div>
     </div>
 
@@ -374,6 +414,15 @@ def gioca_vs_agente(
         const ctxH = canvasH.getContext('2d');
         const canvasA = document.getElementById('canvas_ai_{uid}');
         const ctxA = canvasA.getContext('2d');
+        const btnSound = document.getElementById('vs_btn_sound_{uid}');
+
+        let soundEnabled = true;
+        if (btnSound) {{
+            btnSound.addEventListener('click', function() {{
+                soundEnabled = !soundEnabled;
+                btnSound.innerText = soundEnabled ? '🔊 Audio: ON' : '🔈 Audio: OFF';
+            }});
+        }}
 
         const aiSteps = {agent_steps_json};
         let aiIdx = 0;
@@ -387,15 +436,20 @@ def gioca_vs_agente(
             return 220 + pseudoNoise(px - 150);
         }}
 
-        let hX = 120, hY = 190, hVx = 0, hVy = 0, hAngle = 0, hVangle = 0;
+        let hX = 120, hY = 190, hVx = 0, hVy = 0, hAngle = 0;
         let keyGas = false, keyBrake = false;
+        let lastAiX = 120;
 
-        function update() {{
+        const FIXED_DT = 0.02;
+        let lastTime = performance.now();
+        let accum = 0.0;
+
+        function updatePhysics(dt) {{
             // AI Replay
             if (aiIdx < aiSteps.length) {{
                 const step = aiSteps[aiIdx];
-                const aiDist = step.x;
-                document.getElementById('ai_dist_{uid}').innerText = aiDist.toFixed(1) + ' m';
+                lastAiX = step.x * 3.0 + 120;
+                document.getElementById('ai_dist_{uid}').innerText = step.x.toFixed(1) + ' m';
                 document.getElementById('ai_spd_{uid}').innerText = Math.abs(step.vx).toFixed(1) + ' m/s';
                 aiIdx++;
             }}
@@ -403,7 +457,10 @@ def gioca_vs_agente(
             // Umano
             const gy = getTerrainY(hX);
             const onGround = (hY >= gy - 16);
-            if (keyGas && onGround) {{ hVx += 1.2; playEngineTone(150, 0.04); }}
+            if (keyGas && onGround) {{
+                hVx += 1.2;
+                if (soundEnabled) playEngineTone(150, 0.04);
+            }}
             if (keyBrake && onGround) hVx -= 0.8;
             hVx *= 0.98;
             hX += hVx;
@@ -411,40 +468,65 @@ def gioca_vs_agente(
 
             document.getElementById('h_dist_{uid}').innerText = Math.max(0, (hX - 120) / 3.0).toFixed(1) + ' m';
             document.getElementById('h_spd_{uid}').innerText = Math.abs(hVx * 0.4).toFixed(1) + ' m/s';
+        }}
 
+        function drawScenes() {{
             // Draw Human
             ctxH.fillStyle = '#87CEEB'; ctxH.fillRect(0, 0, 440, 300);
             const camH = hX - 120;
             ctxH.fillStyle = '#582300';
+            ctxH.strokeStyle = '#22c55e';
+            ctxH.lineWidth = 4;
             ctxH.beginPath(); ctxH.moveTo(0, 300);
-            for (let p = 0; p <= 440; p += 10) ctxH.lineTo(p, getTerrainY(camH + p));
-            ctxH.lineTo(440, 300); ctxH.fill();
+            for (let p = 0; p <= 440; p += 8) ctxH.lineTo(p, getTerrainY(camH + p));
+            ctxH.lineTo(440, 300); ctxH.fill(); ctxH.stroke();
             ctxH.fillStyle = '#ef4444'; ctxH.fillRect(100, hY - 8, 30, 10);
 
             // Draw AI
             ctxA.fillStyle = '#87CEEB'; ctxA.fillRect(0, 0, 440, 300);
-            const aiCurX = (aiIdx < aiSteps.length ? aiSteps[aiIdx].x * 3.0 + 120 : hX);
-            const camA = aiCurX - 120;
+            const camA = lastAiX - 120;
             ctxA.fillStyle = '#582300';
+            ctxA.strokeStyle = '#22c55e';
+            ctxA.lineWidth = 4;
             ctxA.beginPath(); ctxA.moveTo(0, 300);
-            for (let p = 0; p <= 440; p += 10) ctxA.lineTo(p, getTerrainY(camA + p));
-            ctxA.lineTo(440, 300); ctxA.fill();
-            ctxA.fillStyle = '#10b981'; ctxA.fillRect(100, getTerrainY(aiCurX) - 24, 30, 10);
+            for (let p = 0; p <= 440; p += 8) ctxA.lineTo(p, getTerrainY(camA + p));
+            ctxA.lineTo(440, 300); ctxA.fill(); ctxA.stroke();
+            ctxA.fillStyle = '#10b981'; ctxA.fillRect(100, getTerrainY(lastAiX) - 24, 30, 10);
+        }}
 
-            requestAnimationFrame(update);
+        function loop(now) {{
+            const dt = Math.min(0.1, (now - lastTime) / 1000.0);
+            lastTime = now;
+            accum += dt;
+            while (accum >= FIXED_DT) {{
+                updatePhysics(FIXED_DT);
+                accum -= FIXED_DT;
+            }}
+            drawScenes();
+            requestAnimationFrame(loop);
         }}
 
         canvasH.addEventListener('keydown', function(e) {{
             initAudio();
-            if (e.key === 'ArrowUp' || e.key === 'w') keyGas = true;
-            if (e.key === 'ArrowDown' || e.key === 's') keyBrake = true;
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') keyGas = true;
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keyBrake = true;
         }});
         canvasH.addEventListener('keyup', function(e) {{
-            if (e.key === 'ArrowUp' || e.key === 'w') keyGas = false;
-            if (e.key === 'ArrowDown' || e.key === 's') keyBrake = false;
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') keyGas = false;
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keyBrake = false;
         }});
 
-        update();
+        const btnTouchGas = document.getElementById('vs_touch_gas_{uid}');
+        const btnTouchBrake = document.getElementById('vs_touch_brake_{uid}');
+        if (btnTouchGas && btnTouchBrake) {{
+            btnTouchGas.addEventListener('pointerdown', (e) => {{ e.preventDefault(); initAudio(); keyGas = true; }});
+            btnTouchGas.addEventListener('pointerup', (e) => {{ e.preventDefault(); keyGas = false; }});
+            btnTouchBrake.addEventListener('pointerdown', (e) => {{ e.preventDefault(); initAudio(); keyBrake = true; }});
+            btnTouchBrake.addEventListener('pointerup', (e) => {{ e.preventDefault(); keyBrake = false; }});
+        }}
+
+        loop(performance.now());
     }})();
     </script>
     """

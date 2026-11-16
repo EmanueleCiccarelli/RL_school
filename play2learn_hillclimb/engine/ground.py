@@ -39,9 +39,9 @@ class Ground:
         self.original_noise = original_noise
 
     def randomize_ground(self, seed: Optional[int] = None) -> None:
-        if seed is not None:
-            random.seed(seed)
-        ground_seed = random.uniform(0, 100000)
+        self.ground_vectors.clear()
+        rng = random.Random(seed) if seed is not None else random.Random()
+        ground_seed = rng.uniform(0, 100000)
         min_height = 30
         flat_length = 500
         height_addition = 0.0

@@ -102,6 +102,8 @@ class Car:
             person_height=hill_racing.PERSON_HEIGHT,
             world=self.world,
         )
+        self.person.head.agent = self.agent
+        self.person.torso.agent = self.agent
 
         # Giunto corpo-pilota
         torso_joint_def = b2DistanceJointDef()

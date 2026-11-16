@@ -19,7 +19,10 @@ try:
     from stable_baselines3.common.vec_env import VecEnv
 except ImportError:
     PPO = Any  # type: ignore
-    BaseCallback = object  # type: ignore
+    class _DummyBaseCallback:
+        def __init__(self, verbose: int = 0):
+            self.verbose = verbose
+    BaseCallback = _DummyBaseCallback  # type: ignore
     VecEnv = Any  # type: ignore
 
 from play2learn_lunarlander.config import (

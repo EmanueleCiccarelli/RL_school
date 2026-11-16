@@ -21,8 +21,16 @@ def scaled_cosine(i: float) -> float:
     return 0.5 * (1.0 - math.cos(i * math.pi))
 
 
-# Tabella di permutazione pseudo-casuale fissa o inizializzata
-_PERLIN_TABLE = [random.random() for _ in range(PERLIN_SIZE + 1)]
+# Tabella di permutazione pseudo-casuale deterministica a seed fisso (100% cross-platform)
+_PERLIN_RNG = random.Random(1337)
+_PERLIN_TABLE = [_PERLIN_RNG.random() for _ in range(PERLIN_SIZE + 1)]
+
+
+def seed_perlin(seed: int) -> None:
+    """Inizializza la tabella di rumore di Perlin in modo deterministico."""
+    global _PERLIN_TABLE
+    rng = random.Random(int(seed))
+    _PERLIN_TABLE = [rng.random() for _ in range(PERLIN_SIZE + 1)]
 
 
 def original_pnoise(x: float, y: float = 0.0, z: float = 0.0) -> float:

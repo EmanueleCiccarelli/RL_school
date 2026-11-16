@@ -1,17 +1,24 @@
 """
 Interfaccia Principale del Laboratorio Didattico per Hill Climb Racing (Play2Learn).
-Fornisce la funzione didattica `run_lab` e la classe `LabResult`.
+Fornisce la funzione didattica `run_lab` e la classe `LabResult` con piena parita di API.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 import gymnasium as gym
+from stable_baselines3.common.monitor import Monitor
 
-from play2learn_core.agent import make_parallel_envs
+from play2learn_core.agent import (
+    configure_cpu_threads,
+    get_optimal_vec_config,
+    make_parallel_envs,
+)
 from play2learn_hillclimb.agent import HillClimbRewardTrackerCallback, build_hill_agent
 from play2learn_hillclimb.config import (
     DEFAULT_N_ENVS,
@@ -29,30 +36,55 @@ from play2learn_hillclimb.storage import create_run_directory, save_run_metadata
 
 
 class LabResult(dict):
-    """Oggetto risultato arricchito con metodi didattici rapidi."""
+    """Oggetto risultato arricchito con metodi didattici rapidi e retrocompatibilita completa."""
 
     def __init__(self, data: dict[str, Any]):
         super().__init__(data)
         self.model = data.get("model")
         self.run_dir = Path(data.get("checkpoint_dir", "."))
 
-    def report(self, autore: str = "Studente", titolo: str = "Report Hill Climb") -> dict[str, Path]:
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'LabResult' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def genera_report(
+        self,
+        autore: str = "Studente",
+        titolo: str = "Report Hill Climb",
+        note: str = "",
+    ) -> dict[str, Path]:
         """Genera istantaneamente la scheda tecnica in PDF, HTML e Markdown."""
-        return genera_report_esperimento(run_or_fav=self, autore=autore, titolo=titolo)
+        return genera_report_esperimento(run_or_fav=self, autore=autore, titolo=titolo, note=note)
+
+    report = genera_report
+
+    def salva_preferito(
+        self,
+        nome_personalizzato: str | None = None,
+        note: str = "",
+        tag: str = "Mio Preferito",
+        nome: str | None = None,
+    ) -> dict[str, Any]:
+        """Salva questo esperimento nei preferiti personali."""
+        from play2learn_hillclimb.favorites import salva_nei_preferiti
+        chosen = nome or nome_personalizzato or self.get("mission", "campagna_standard")
+        return salva_nei_preferiti(self, nome=chosen, note=note, tag=tag)
+
+    preferito = salva_preferito
 
     def sfida(self, seed: int = 42) -> Any:
         """Lancia la sfida interattiva Split-Screen contro questo modello."""
         return gioca_vs_agente(
-            model_or_result=self.model,
+            model_or_result=self.get("model"),
             seed=seed,
             mission=self.get("mission", "campagna_standard"),
             env_kwargs=self.get("env_kwargs"),
         )
-
-    def preferito(self, nome: str, note: str = "") -> dict[str, Any]:
-        """Salva questo esperimento nei preferiti personali."""
-        from play2learn_hillclimb.favorites import salva_nei_preferiti
-        return salva_nei_preferiti(self, nome=nome, note=note)
 
 
 def run_lab(
@@ -68,47 +100,48 @@ def run_lab(
     """
     Funzione didattica principale per avviare l'addestramento dell'auto in Hill Climb Racing.
     """
+    configure_cpu_threads()
+
     mission_cfg = MISSIONS.get(mission, MISSIONS["campagna_standard"])
     env_kwargs = dict(mission_cfg["env_kwargs"])
 
     run_dir = create_run_directory(mission=mission)
     checkpoints_dir = run_dir / "checkpoints"
 
+    resolved_envs, use_subproc = get_optimal_vec_config(
+        n_envs=n_envs,
+        total_timesteps=total_timesteps,
+    )
+
     print("=" * 70)
     print(" 🏎️  PLAY2LEARN — LABORATORIO DI REINFORCEMENT LEARNING")
     print("     Ambiente: Hill Climb Racing (Farama Box2D + Perlin Noise)")
     print(f"     Tracciato: {mission_cfg['title']}")
-    print(f"     Timesteps previsti: {total_timesteps:,} | Ambienti paralleli: {n_envs}")
+    print(f"     Timesteps previsti: {total_timesteps:,} | Ambienti paralleli: {resolved_envs}")
     print("=" * 70)
 
-    # 1. Creazione ambienti paralleli
+    # 1. Creazione ambienti paralleli con Monitor e render_mode=None per massima velocita
     def _make_single_env(rank: int) -> Callable[[], gym.Env]:
         def _thunk() -> gym.Env:
-            env = gym.make(ENV_ID, render_mode="rgb_array", **env_kwargs)
+            env = gym.make(ENV_ID, render_mode=None, **env_kwargs)
             env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
+            env = Monitor(env, info_keywords=("is_success",))
             env.reset(seed=seed + rank * 100)
             return env
         return _thunk
 
-    env_fns = [_make_single_env(i) for i in range(n_envs)]
-    vec_env = make_parallel_envs(env_fns, use_subproc=(n_envs > 1))
-
-    # Raccolta milestone per timelapse GIF evolutivo
-    milestones: list[tuple[int, Any]] = []
-
-    def _milestone_cb(step: int, mdl: Any) -> None:
-        if crea_gif_evoluzione and len(milestones) < 6:
-            milestones.append((step, mdl))
+    env_fns = [_make_single_env(i) for i in range(resolved_envs)]
+    vec_env = make_parallel_envs(env_fns, use_subproc=use_subproc, vecnorm_kwargs=VECNORM_PARAMS)
 
     callback = HillClimbRewardTrackerCallback(
         total_timesteps=total_timesteps,
         show_progress=show_progress,
         save_checkpoints=True,
         checkpoint_dir=checkpoints_dir,
-        milestone_callback=_milestone_cb,
+        milestone_freq=max(10_000, total_timesteps // 4),
     )
 
-    # 2. Creazione modello PPO
+    # 2. Creazione modello PPO con feature extraction invariante
     model = build_hill_agent(
         env=vec_env,
         learning_rate=learning_rate,
@@ -124,8 +157,8 @@ def run_lab(
     elapsed = time.time() - t0
     print(f"\n✅ Addestramento completato in {elapsed:.1f} s ({total_timesteps/max(0.1, elapsed):.0f} step/s)!")
 
-    # 3. Valutazione e registrazione video streaming
-    print("\n🎥 Avvio sessione di verifica su 20 scenari collinari deterministici...")
+    # 3. Valutazione deterministica e registrazione video streaming
+    print("\n🎥 Avvio sessione di verifica deterministica su 20 scenari collinari...")
     eval_stats = evaluate_and_record(
         model=model,
         output_dir=run_dir,
@@ -135,13 +168,14 @@ def run_lab(
 
     # 4. GIF evoluzione apprendimento
     gif_path = None
-    if crea_gif_evoluzione and milestones:
+    if crea_gif_evoluzione and callback.milestone_snapshots:
         print("🎬 Generazione timelapse GIF dell'evoluzione dell'apprendimento...")
         gif_path = crea_gif_evoluzione_apprendimento(
-            checkpoints=milestones,
+            checkpoints=callback.milestone_snapshots,
             output_gif_path=run_dir / "evoluzione_apprendimento.gif",
             env_kwargs=env_kwargs,
             reward_fn=reward_fn,
+            base_model=model,
         )
 
     # 5. Diagnostica comportamentale
@@ -197,16 +231,26 @@ def dimostrazione_live(
     model = getattr(model_or_result, "model", model_or_result)
     mission_cfg = MISSIONS.get(mission, MISSIONS["campagna_standard"])
 
-    env = gym.make(ENV_ID, render_mode="human", **mission_cfg["env_kwargs"])
-    obs, _ = env.reset(seed=seed)
+    # Se siamo su Linux headless (es. Colab senza DISPLAY), avvisa l'utente
+    is_headless = (os.name != "nt") and (not os.environ.get("DISPLAY")) and (sys.platform != "darwin")
+    if is_headless:
+        print("[play2learn] Ambiente headless rilevato (Google Colab / Linux server).")
+        print("💡 La visualizzazione Pygame su schermo non e supportata in headless. I video MP4 sono disponibili nella cartella run.")
+        return
 
-    print("🚗 Dimostrazione live avviata... Premi ESC nella finestra Pygame per uscire.")
-    for _ in range(1200):
-        action, _ = model.predict(obs, deterministic=True)
-        act_item = action.item() if hasattr(action, "item") and not hasattr(action, "__len__") else action
-        obs, reward, terminated, truncated, info = env.step(act_item)
-        env.render()
-        if terminated or truncated:
-            break
+    try:
+        env = gym.make(ENV_ID, render_mode="human", **mission_cfg["env_kwargs"])
+        obs, _ = env.reset(seed=seed)
 
-    env.close()
+        print("🚗 Dimostrazione live avviata... Premi ESC nella finestra Pygame per uscire.")
+        for _ in range(1200):
+            action, _ = model.predict(obs, deterministic=True)
+            act_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
+            obs, reward, terminated, truncated, info = env.step(act_item)
+            env.render()
+            if terminated or truncated:
+                break
+
+        env.close()
+    except Exception as e:
+        print(f"[play2learn] Impossibile avviare la finestra Pygame ({e}).")

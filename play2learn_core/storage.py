@@ -1,6 +1,6 @@
 """
 Modulo Core di Storage e Persistenza per Play2Learn.
-Gestisce scritture atomiche, risoluzione timestamp e indicizzazione metadata.
+Gestisce scritture atomiche crash-safe, risoluzione timestamp e indicizzazione metadata.
 """
 
 from __future__ import annotations
@@ -15,29 +15,39 @@ from typing import Any, Callable
 
 
 def atomic_write_text(path: Path | str, content: str, encoding: str = "utf-8") -> None:
-    """Scrive testo in modo atomico usando un file temporaneo e sostituzione atomica."""
+    """Scrive testo in modo atomico con cleanup garantito del file temporaneo su errore."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = p.parent
-    with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding=encoding) as tf:
-        tf.write(content)
-        tf.flush()
-        os.fsync(tf.fileno())
-        temp_name = tf.name
-    os.replace(temp_name, str(p))
+    fd, temp_name = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.", suffix=".tmp")
+    tmp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as tf:
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(str(tmp_path), str(p))
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def atomic_write_json(path: Path | str, data: Any, encoding: str = "utf-8", indent: int = 2) -> None:
-    """Scrive JSON in modo atomico usando un file temporaneo e sostituzione atomica."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = p.parent
-    with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding=encoding) as tf:
-        json.dump(data, tf, indent=indent, default=str)
-        tf.flush()
-        os.fsync(tf.fileno())
-        temp_name = tf.name
-    os.replace(temp_name, str(p))
+    """Serializza JSON (UTF-8 leggibile) e lo scrive atomicamente su disco."""
+    payload = json.dumps(data, indent=indent, ensure_ascii=False, default=str)
+    atomic_write_text(path, payload, encoding=encoding)
+
+
+def _sanitize_json_value(val: Any) -> Any:
+    """Converte ricorsivamente oggetti in strutture JSON-compatibili, serializzando i Path."""
+    if isinstance(val, (int, float, str, bool)) or val is None:
+        return val
+    if isinstance(val, Path):
+        return str(val)
+    if isinstance(val, (list, tuple)):
+        return [_sanitize_json_value(x) for x in val]
+    if isinstance(val, dict):
+        return {str(k): _sanitize_json_value(v) for k, v in val.items()}
+    return str(val)
 
 
 def unique_dir(parent: Path, base_name: str) -> Path:
@@ -58,7 +68,7 @@ def find_run_by_timestamp(
     runs_dir: Path | str | None = None
 ) -> Path | None:
     """
-    Risolve un identificatore di run (timestamp 'YYYYMMDD_HHMMSS', ISO, o 'latest')
+    Risolve un identificatore di run (timestamp 'YYYYMMDD_HHMMSS', ISO, 'latest', 'previous')
     nella directory corrispondente cercata in `runs_dir`.
     """
     if runs_dir is None:
@@ -69,30 +79,37 @@ def find_run_by_timestamp(
     if not runs_dir.exists():
         return None
 
-    clean_id = str(identifier).strip().replace(":", "").replace("-", "").replace(" ", "_")
+    clean_id = str(identifier).strip()
 
-    # Scansione di tutte le directory che contengono run_metadata.json
-    candidates: list[tuple[str, Path]] = []
+    # Separa run standard da archivi (favorites, successi) per evitare che un salvataggio falsi 'latest'
+    standard_dirs: list[Path] = []
+    all_dirs: list[Path] = []
     for d in runs_dir.iterdir():
-        if d.is_dir() and d.name not in ("favorites", "preferiti"):
-            meta = d / "run_metadata.json"
-            if meta.exists():
-                candidates.append((d.name, d))
+        if d.is_dir() and (d / "run_metadata.json").exists():
+            all_dirs.append(d)
+            if d.name not in ("favorites", "preferiti", "successi"):
+                standard_dirs.append(d)
 
-    if not candidates:
+    if not all_dirs:
         return None
 
-    # Ordina cronologicamente
-    candidates.sort(key=lambda x: x[0], reverse=True)
+    standard_dirs.sort(key=lambda p: p.name, reverse=True)
+    all_dirs.sort(key=lambda p: p.name, reverse=True)
 
-    if clean_id.lower() in ("latest", "last", "ultimo", "ultima"):
-        return candidates[0][1]
+    q_low = clean_id.lower()
+    if q_low in ("latest", "ultima", "ultimo", "last", "recents", "recente"):
+        return standard_dirs[0] if standard_dirs else all_dirs[0]
 
-    # Ricerca esatta o per prefisso/suffisso
-    for name, path in candidates:
-        norm_name = name.replace(":", "").replace("-", "").replace(" ", "_")
-        if clean_id in norm_name:
-            return path
+    if q_low in ("previous", "precedente", "penultima", "penultimo", "prev"):
+        pool = standard_dirs if len(standard_dirs) >= 2 else all_dirs
+        return pool[1] if len(pool) >= 2 else None
+
+    # Ricerca per match esatto o parziale del timestamp
+    norm_query = clean_id.replace(":", "").replace("-", "").replace(" ", "_").lower()
+    for p in all_dirs:
+        norm_name = p.name.replace(":", "").replace("-", "").replace(" ", "_").lower()
+        if norm_query in norm_name:
+            return p
 
     return None
 
@@ -109,7 +126,7 @@ def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, 
 
     cronologia = []
     for d in sorted(runs_dir.iterdir(), reverse=True):
-        if not d.is_dir() or d.name in ("favorites", "preferiti"):
+        if not d.is_dir() or d.name in ("favorites", "preferiti", "successi"):
             continue
         meta_path = d / "run_metadata.json"
         if not meta_path.exists():
@@ -161,47 +178,38 @@ def save_generic_run_metadata(
     notes: str = "",
     extra: dict[str, Any] | None = None,
 ) -> Path:
-    """Salva i metadati completi della sessione di addestramento in formato JSON atomico."""
+    """Salva i metadati completi (inclusa la history per i grafici) in formato JSON atomico."""
     run_dir.mkdir(parents=True, exist_ok=True)
     meta_path = run_dir / "run_metadata.json"
 
-    # Estrazione codice sorgente della reward function
     reward_code = "# Funzione non disponibile"
     if reward_fn is not None:
         try:
-            reward_code = inspect.getsource(reward_fn)
+            reward_code = inspect.getsource(reward_fn).strip()
         except Exception:
             reward_code = str(reward_fn)
 
-    # Pulizia metadati di valutazione
-    clean_eval = {}
-    for k, v in eval_stats.items():
-        if isinstance(v, (int, float, str, bool)):
-            clean_eval[k] = v
-        elif isinstance(v, list) and all(isinstance(x, (int, float, str, bool)) for x in v):
-            clean_eval[k] = v
-
+    clean_eval = _sanitize_json_value(eval_stats)
     data: dict[str, Any] = {
         "timestamp": datetime.datetime.now().isoformat(),
         "mission": {
             "key": mission,
             "title": mission_cfg.get("title", mission),
             "description": mission_cfg.get("description", ""),
-            "env_kwargs": env_kwargs,
+            "env_kwargs": _sanitize_json_value(env_kwargs),
         },
         "training": {
-            "total_timesteps": total_timesteps,
-            "elapsed_seconds": round(elapsed_seconds, 2),
-            "fps_average": round(total_timesteps / max(0.1, elapsed_seconds), 1),
+            "total_timesteps": int(total_timesteps),
+            "elapsed_seconds": round(float(elapsed_seconds), 2),
+            "fps_average": round(total_timesteps / max(0.1, float(elapsed_seconds)), 1),
         },
         "reward_source_code": reward_code,
         "eval_metrics": clean_eval,
-        "diagnostics": diagnostics,
+        "diagnostics": _sanitize_json_value(diagnostics),
         "notes": notes,
     }
-
     if extra:
-        data.update(extra)
+        data.update(_sanitize_json_value(extra))
 
     atomic_write_json(meta_path, data)
     return meta_path

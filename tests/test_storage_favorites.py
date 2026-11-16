@@ -19,15 +19,19 @@ class TestStorage(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_create_and_find_run_dir(self):
-        run_dir = create_run_directory(mission="test_mission", base_dir=self.test_dir)
-        self.assertTrue(run_dir.exists())
-        self.assertTrue((run_dir / "videos").exists())
+        run_dir1 = self.test_dir / "run_20261115_100000_luna"
+        run_dir1.mkdir(parents=True, exist_ok=True)
+        (run_dir1 / "run_metadata.json").write_text("{}", encoding="utf-8")
 
-        # Crea un metadato minimo per rendere la run indicizzabile
-        (run_dir / "run_metadata.json").write_text("{}", encoding="utf-8")
+        run_dir2 = self.test_dir / "run_20261115_120000_luna"
+        run_dir2.mkdir(parents=True, exist_ok=True)
+        (run_dir2 / "run_metadata.json").write_text("{}", encoding="utf-8")
 
-        found = find_run_by_timestamp("latest", runs_dir=self.test_dir)
-        self.assertEqual(found, run_dir)
+        found_latest = find_run_by_timestamp("latest", runs_dir=self.test_dir)
+        self.assertEqual(found_latest, run_dir2)
+
+        found_previous = find_run_by_timestamp("previous", runs_dir=self.test_dir)
+        self.assertEqual(found_previous, run_dir1)
 
     def test_save_metadata(self):
         run_dir = create_run_directory(mission="luna_standard", base_dir=self.test_dir)

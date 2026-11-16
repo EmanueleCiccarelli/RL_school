@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "play2learn-lunarlander"
-version = "2.0.0"
-description = "Laboratorio didattico di Reinforcement Learning per studenti di scuola secondaria (Gymnasium LunarLander-v3 & PPO)"
+name = "play2learn"
+version = "2.1.0"
+description = "Laboratorio didattico di Reinforcement Learning per studenti: Lunar Lander (Gymnasium LunarLander-v3) & Hill Climb Racing (HillClimbRacing-v0) con PPO"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -16,6 +16,7 @@ keywords = [
     "reinforcement-learning",
     "education",
     "lunar-lander",
+    "hill-climb-racing",
     "ppo",
     "gymnasium",
     "stable-baselines3",
@@ -59,6 +60,9 @@ Repository = "https://github.com/EmanueleCiccarelli/RL_school.git"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["play2learn_core*", "play2learn_lunarlander*", "play2learn_hillclimb*"]
+
+[tool.setuptools.package-data]
+"play2learn_hillclimb.engine" = ["pictures/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
