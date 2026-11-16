@@ -98,8 +98,8 @@ class Car:
 
         # Pilota
         self.person = person.Person(
-            x=self.starting_position.x - 10,
-            y=self.starting_position.y - self.chassis_height / 2,
+            x=x,
+            y=y,
             person_width=hill_racing.PERSON_WIDTH,
             person_height=hill_racing.PERSON_HEIGHT,
             world=self.world,
@@ -107,25 +107,33 @@ class Car:
         self.person.head.agent = self.agent
         self.person.torso.agent = self.agent
 
-        # Giunto corpo-pilota
-        torso_joint_def = b2DistanceJointDef()
-        anchor_torso = [self.person.torso.body.position.x, self.person.torso.body.position.y]
-        anchor_chassis = [self.chassis_body.position.x, self.chassis_body.position.y]
-        torso_joint_def.Initialize(
-            bodyA=self.person.torso.body,
-            bodyB=self.chassis_body,
-            anchorA=anchor_torso,
-            anchorB=anchor_chassis,
-        )
-        self.dist_joint_torso_chassis = self.world.CreateJoint(torso_joint_def)
-
+        # 1. Giunto a cerniera (revolute joint) alla base del torso (fianchi) con finecorsa di sicurezza
         rev_joint_def = b2RevoluteJointDef()
-        rev_joint_def.Initialize(
+        joint_pos = b2Vec2(x / hill_racing.SCALE, y / hill_racing.SCALE)
+        rev_joint_def.Initialize(bodyA=self.person.torso.body, bodyB=self.chassis_body, anchor=joint_pos)
+        rev_joint_def.enableLimit = True
+        rev_joint_def.lowerAngle = -math.pi / 3  # -60° max inclinazione posteriore
+        rev_joint_def.upperAngle = math.pi / 3   # +60° max inclinazione anteriore
+        self.rev_joint_torso_chassis = self.world.CreateJoint(rev_joint_def)
+
+        # 2. Giunto a molla diagonale (distance joint): pettorina pilota <-> cofano anteriore
+        # Funge da cintura elastica: frequencyHz=5 e dampingRatio=0.1 tirano il torso in posizione seduta eretta
+        dist_joint_def = b2DistanceJointDef()
+        anchor_person = b2Vec2(x / hill_racing.SCALE, (y - self.person.height * 2.0 / 3.0) / hill_racing.SCALE)
+        anchor_car = b2Vec2(
+            (x + self.chassis_width / 2.0) / hill_racing.SCALE,
+            (y - self.chassis_height / 2.0) / hill_racing.SCALE,
+        )
+        dist_joint_def.Initialize(
             bodyA=self.person.torso.body,
             bodyB=self.chassis_body,
-            anchor=anchor_chassis,
+            anchorA=anchor_person,
+            anchorB=anchor_car,
         )
-        self.rev_joint_torso_chassis = self.world.CreateJoint(rev_joint_def)
+        dist_joint_def.frequencyHz = 5.0
+        dist_joint_def.dampingRatio = 0.1
+        dist_joint_def.length *= 1.1
+        self.dist_joint_torso_chassis = self.world.CreateJoint(dist_joint_def)
 
     def reset_pose(self, x_px: float, y_px: float) -> None:
         """
@@ -175,13 +183,11 @@ class Car:
             w.on_ground = False
 
         # 3. Pilota (Torso e Testa)
-        px = x_px - 10.0
-        py = y_px - self.chassis_height / 2.0
         p_w = float(hill_racing.PERSON_WIDTH)
         p_h = float(hill_racing.PERSON_HEIGHT)
 
-        torso_pos = (px / scale, (py - p_h / 2.0) / scale)
-        head_pos = (px / scale, (py - (p_h + p_w)) / scale)
+        torso_pos = (x_px / scale, (y_px - p_h / 2.0) / scale)
+        head_pos = (x_px / scale, (y_px - (p_h + p_w)) / scale)
 
         tb = self.person.torso.body
         tb.transform = (torso_pos, 0.0)
@@ -206,12 +212,12 @@ class Car:
 
         sprite = getattr(hill_racing, "car_sprite", None)
         if sprite is not None:
-            scaled = pygame.transform.scale(sprite, (self.chassis_width + 10, self.chassis_height + 25))
+            scaled = pygame.transform.scale(sprite, (self.chassis_width + 23, self.chassis_height * 2 + 10))
             rotated = pygame.transform.rotate(scaled, degrees_angle)
             surface_screen.blit(
                 rotated,
-                (-self.chassis_width / 2 + pos_x - hill_racing.panX - 5,
-                 -self.chassis_height / 2 + pos_y - hill_racing.panY - 15),
+                ((-self.chassis_width / 2 - 7) + pos_x - hill_racing.panX,
+                 -self.chassis_height - 20 + pos_y - hill_racing.panY),
             )
         else:
             rect = pygame.Rect(

@@ -152,6 +152,32 @@ class TestHillClimb(unittest.TestCase):
         self.assertEqual(fav["metadata"], fake_meta)
         self.assertEqual(fav.get("mission"), "Test")
 
+    def test_person_driver_stability_and_joints(self):
+        env = gym.make(ENV_ID, render_mode=None)
+        obs, info = env.reset(seed=137)
+        car = env.unwrapped.agent.car
+
+        # 1. Verifica parametri fisici dei giunti (stabilità anti-spin)
+        self.assertTrue(car.rev_joint_torso_chassis.limitEnabled, "Il giunto del torso deve avere finecorsa limitEnabled=True")
+        self.assertAlmostEqual(car.dist_joint_torso_chassis.frequency, 5.0, places=1)
+        self.assertAlmostEqual(car.dist_joint_torso_chassis.dampingRatio, 0.1, places=1)
+
+        # 2. Verifica che durante il moto il busto non spinni (angolo relativo limitato)
+        for _ in range(40):
+            obs, r, term, trunc, _ = env.step(1)
+            chassis_ang = car.chassis_body.angle
+            torso_ang = car.person.torso.body.angle
+            rel_ang = abs(torso_ang - chassis_ang)
+            self.assertLessEqual(rel_ang, math.pi / 2.0, f"Il torso non deve spinnare: angolo relativo {rel_ang:.2f} rad")
+            if term or trunc:
+                break
+
+        # 3. Verifica allineamento perfetto delle ancore dopo reset_pose
+        car.reset_pose(200.0, 350.0)
+        pos_err = (car.rev_joint_torso_chassis.anchorA - car.rev_joint_torso_chassis.anchorB).length
+        self.assertLess(pos_err, 1e-4, f"Errore di allineamento ancore dopo reset_pose: {pos_err}")
+        env.close()
+
 
 if __name__ == "__main__":
     unittest.main()
