@@ -204,7 +204,7 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
 ### 2. Reward Shaping per Hill Climb Racing
 ```python
 def custom_reward(obs, action, is_success, is_crashed, is_timeout):
-    x_dist, y_quota, vx, vy, angle, vangle, rear_contact, front_contact = obs
+    dist_x, quota_y, vx, vy, angle, ang_vel, rear_on, front_on = obs
     reward = 0.0
 
     # =========================================================================
@@ -212,12 +212,12 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
     # =========================================================================
     # - Avanzamento: premiare la componente di velocità in avanti (vx > 0)
     # - Stabilità: penalizzare angoli di rollio accentuati per evitare il ribaltamento
-    # - Trazione: incentivare il contatto costante con il terreno (rear_contact / front_contact)
+    # - Trazione: incentivare il contatto costante con il terreno (rear_on / front_on)
     # - Condizioni terminali:
     if is_success:
-        reward += 200.0  # Traguardo dei 1000m superato con successo
+        reward += 100.0  # Traguardo degli 800m superato con successo
     if is_crashed:
-        reward -= 150.0  # Impatto violento della testa del pilota
+        reward -= 100.0  # Impatto della testa del pilota (cappottamento)
 
     return float(reward)
 ```
