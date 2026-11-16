@@ -5,6 +5,7 @@ Modulo di Storage e Persistenza Esperimenti per Hill Climb Racing (Play2Learn).
 from __future__ import annotations
 
 import datetime
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,21 +20,27 @@ from play2learn_core.storage import (
 
 
 def get_default_runs_dir() -> Path:
-    """Restituisce il percorso della cartella principale delle run per Hill Climb."""
-    cwd = Path.cwd()
-    if cwd.name in ("play2learn_hillclimb", "play2learn_lunarlander"):
-        base = cwd.parent
+    """Restituisce il percorso della cartella principale 'runs/' specifica per Hill Climb Racing."""
+    env_override = os.environ.get("PLAY2LEARN_HILLCLIMB_RUNS_DIR") or os.environ.get("PLAY2LEARN_RUNS_DIR")
+    if env_override:
+        p = Path(env_override).resolve()
     else:
-        base = cwd
-    p = base / "runs_hillclimb"
+        pkg_dir = Path(__file__).resolve().parent
+        p = pkg_dir / "runs"
     p.mkdir(parents=True, exist_ok=True)
+    (p / "favorites").mkdir(parents=True, exist_ok=True)
     return p
 
 
 def find_run_by_timestamp(identifier: str, runs_dir: Path | str | None = None) -> Path | None:
-    """Risolve un identificatore nella cartella runs_hillclimb."""
+    """Risolve un identificatore nella cartella runs di Hill Climb."""
     actual_dir = Path(runs_dir) if runs_dir else get_default_runs_dir()
-    return _core_find(identifier=identifier, runs_dir=actual_dir)
+    found = _core_find(identifier=identifier, runs_dir=actual_dir)
+    if found is None and runs_dir is None:
+        legacy_dir = Path.cwd() / "runs_hillclimb"
+        if legacy_dir.exists():
+            found = _core_find(identifier=identifier, runs_dir=legacy_dir)
+    return found
 
 
 def elenca_cronologia_run(runs_dir: Path | str | None = None) -> list[dict[str, Any]]:
@@ -116,8 +123,11 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
 
 
 def create_run_directory(mission: str = "campagna_standard", base_dir: Path | str | None = None) -> Path:
-    """Crea una nuova directory univoca per la sessione di addestramento."""
-    parent = Path(base_dir) if base_dir else get_default_runs_dir()
+    """Crea una nuova directory univoca per la sessione di addestramento in play2learn_hillclimb/runs."""
+    if base_dir is None or str(base_dir) in ("runs", "runs_hillclimb"):
+        parent = get_default_runs_dir()
+    else:
+        parent = Path(base_dir).resolve()
     parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dir_name = f"run_{timestamp}_{mission}"

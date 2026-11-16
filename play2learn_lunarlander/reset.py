@@ -149,8 +149,8 @@ def reset_laboratorio(chiedi_conferma: bool = False) -> None:
             print("❌ Operazione annullata.")
             return
 
-    # 1. Pulizia cartella runs
-    pulisci_runs(root_dir / "runs")
+    # 1. Pulizia cartella runs specifica di Lunar Lander
+    pulisci_runs(root_dir / "play2learn_lunarlander" / "runs")
 
     # 2. Pulizia notebook (sia versione Colab che versione Locale)
     pulisci_notebook(root_dir / "laboratorio_lunar_lander.ipynb")

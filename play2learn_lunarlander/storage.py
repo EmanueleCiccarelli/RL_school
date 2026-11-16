@@ -39,18 +39,15 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 def get_default_runs_dir() -> Path:
     """
-    Restituisce il percorso della cartella principale 'runs/', garantendo coerenza
-    anche quando eseguito da dentro 'play2learn_lunarlander/' (es. notebook locale).
+    Restituisce il percorso della cartella 'runs/' specifica per Lunar Lander
+    all'interno di 'play2learn_lunarlander/runs/'.
     """
-    env_override = os.environ.get("PLAY2LEARN_RUNS_DIR")
+    env_override = os.environ.get("PLAY2LEARN_LUNARLANDER_RUNS_DIR") or os.environ.get("PLAY2LEARN_RUNS_DIR")
     if env_override:
         runs_dir = Path(env_override).resolve()
     else:
-        cwd = Path.cwd().resolve()
-        if cwd.name == "play2learn_lunarlander" and (cwd.parent / "pyproject.toml").exists():
-            runs_dir = cwd.parent / "runs"
-        else:
-            runs_dir = cwd / "runs"
+        pkg_dir = Path(__file__).resolve().parent
+        runs_dir = pkg_dir / "runs"
 
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / "favorites").mkdir(parents=True, exist_ok=True)
@@ -84,10 +81,13 @@ def create_run_directory(
     custom_name: str | None = None
 ) -> Path:
     """
-    Crea una nuova directory timestampata per la sessione corrente in 'runs/'.
-    Esempio: runs/run_20261114_154500_luna_standard/
+    Crea una nuova directory timestampata per la sessione corrente in 'play2learn_lunarlander/runs/'.
+    Esempio: play2learn_lunarlander/runs/run_20261114_154500_luna_standard/
     """
-    base = Path(base_dir).resolve() if base_dir else get_default_runs_dir()
+    if base_dir is None or str(base_dir) in ("runs", "runs_lunarlander"):
+        base = get_default_runs_dir()
+    else:
+        base = Path(base_dir).resolve()
     base.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -572,7 +572,7 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
 
 
 def comprimi_runs(
-    runs_dir: Path | str = "runs",
+    runs_dir: Path | str | None = None,
     nome_zip: str = "runs_lunarlander.zip",
     scarica_su_colab: bool = True,
 ) -> Path | None:
@@ -581,4 +581,5 @@ def comprimi_runs(
     e ne avvia il download automatico se eseguito su Google Colab.
     """
     from play2learn_core.storage import comprimi_runs as _core_comprimi
-    return _core_comprimi(runs_dir=runs_dir, nome_zip=nome_zip, scarica_su_colab=scarica_su_colab)
+    actual_dir = Path(runs_dir) if runs_dir else get_default_runs_dir()
+    return _core_comprimi(runs_dir=actual_dir, nome_zip=nome_zip, scarica_su_colab=scarica_su_colab)

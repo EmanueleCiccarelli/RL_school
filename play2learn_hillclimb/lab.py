@@ -412,7 +412,7 @@ def run_lab(
     print(f"   • Distanza Massima: {eval_stats['max_distance_achieved']:.1f} m")
     print(f"   • Distanza Media:   {eval_stats['mean_distance']:.1f} m")
     print(f"   • Tasso Successo:   {eval_stats['eval_success_rate']:.1f}%")
-    print(f"   • Cartella Run:     {run_dir.name}\n")
+    print(f"   • Cartella Run:     play2learn_hillclimb/runs/{run_dir.name}\n")
 
     # 8. Visualizzazione automatica nel Notebook
     if display_in_notebook:

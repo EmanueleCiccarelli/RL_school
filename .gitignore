@@ -20,13 +20,24 @@ env.bak/
 venv.bak/
 
 # File e cartelle generate dal training e test
-# Preserva la cartella runs e gli indici di preferiti e successi, ignorando modelli pesanti .zip e video .mp4
-runs/*
-!runs/favorites/
-!runs/favorites/index.json
-!runs/successi/
-!runs/successi/index.json
-runs_hillclimb/
+# Preserva le cartelle runs e gli indici di preferiti e successi per ciascun ambiente
+play2learn_lunarlander/runs/*
+!play2learn_lunarlander/runs/favorites/
+play2learn_lunarlander/runs/favorites/*
+!play2learn_lunarlander/runs/favorites/index.json
+!play2learn_lunarlander/runs/successi/
+play2learn_lunarlander/runs/successi/*
+!play2learn_lunarlander/runs/successi/index.json
+
+play2learn_hillclimb/runs/*
+!play2learn_hillclimb/runs/favorites/
+play2learn_hillclimb/runs/favorites/*
+!play2learn_hillclimb/runs/favorites/index.json
+
+# Cartelle runs legacy e file compressi generati
+/runs/
+/runs_hillclimb/
+*.zip
 
 # File temporanei di sistema e IDE
 .DS_Store

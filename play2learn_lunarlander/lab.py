@@ -203,7 +203,7 @@ def run_lab(
     enable_wind: bool | None = None,
     wind_power: float | None = None,
     turbulence_power: float | None = None,
-    output_dir: str | Path = "runs",
+    output_dir: str | Path | None = None,
     nome_run: str | None = None,
     n_eval_episodes: int = 3,
     crea_gif: bool = True,
@@ -281,7 +281,7 @@ def run_lab(
             f"  ⚡ AMBIENTI: {actual_n_envs} ({vec_backend}) | STEP TOTALI: {total_timesteps:,} | "
             f"RewardNorm: {'ON' if use_reward_norm else 'OFF'}"
         )
-        print(f"  📁 SALVATAGGIO RUN IN: runs/{run_dir.name}")
+        print(f"  📁 SALVATAGGIO RUN IN: play2learn_lunarlander/runs/{run_dir.name}")
         print("=" * 76)
 
         # 4. Callback con checkpoint in RAM e progress bar leggera throttled
