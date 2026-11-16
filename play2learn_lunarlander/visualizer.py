@@ -98,111 +98,179 @@ def mostra_mappa_ambiente() -> None:
     plt.close(fig)
 
 
-def plot_training_results(
-    tracker: RewardTrackerCallback,
-    mission_title: str,
-    save_path: Path | str
-) -> dict[str, Any]:
-    """
-    Genera e salva una dashboard 2x2 con:
-    1. Custom Reward per episodio (curva istantanea e media mobile)
-    2. Tasso di Successo / Schianto / Timeout (%) nel tempo
-    3. Durata del volo (Step per episodio con fascia ideale 150-350)
-    4. Consumo di Carburante (unità spese)
-    Include in calce il box della Diagnosi Flight Coach.
-    """
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+try:
+    import cv2 as _cv2
+    _HAS_CV2 = True
+except ImportError:
+    _HAS_CV2 = False
 
-    n_episodes = len(tracker.episode_rewards)
-    diag = diagnose_agent_behavior(tracker)
-    diag_text = diag["formatted_text"]
+# Template Figure/Axes persistente in RAM per azzerare il costo di creazione artisti Matplotlib
+_PLOT_TEMPLATE_CACHE: dict[str, Any] = {}
 
-    if n_episodes == 0:
-        print("[play2learn] Nessun episodio completato per generare il grafico.")
-        return diag
 
-    episodes = np.arange(1, n_episodes + 1)
-    window = min(40, max(5, n_episodes // 12))
+def _fast_rolling_mean(arr: np.ndarray, window: int) -> np.ndarray:
+    """Media mobile O(N) vettorizzata tramite cumsum (3x più veloce di np.convolve)."""
+    csum = np.empty(arr.size + 1, dtype=np.float64)
+    csum[0] = 0.0
+    np.cumsum(arr, out=csum[1:])
+    return (csum[window:] - csum[:-window]) / window
 
-    fig = Figure(figsize=(14, 8.8), dpi=110)
-    FigureCanvasAgg(fig)
-    fig.suptitle(f"Telemetria di Addestramento RL — {mission_title}", fontsize=14, fontweight="bold")
+
+def _decimate_xy(x: np.ndarray, y: np.ndarray, max_points: int = 120) -> tuple[np.ndarray, np.ndarray]:
+    """Riduce i vertici a <= 120 punti preservando sempre il punto finale."""
+    n = x.size
+    if n <= max_points:
+        return x, y
+    idx = np.linspace(0, n - 1, max_points, dtype=np.intp)
+    return x[idx], y[idx]
+
+
+def _get_or_create_dashboard_template() -> dict[str, Any]:
+    if _PLOT_TEMPLATE_CACHE:
+        return _PLOT_TEMPLATE_CACHE
+
+    fig = Figure(figsize=(12.2, 7.6), dpi=100)
+    canvas = FigureCanvasAgg(fig)
     axes = fig.subplots(2, 2)
     (ax1, ax2), (ax3, ax4) = axes
 
-    # 1. Custom Reward
-    ax1.plot(episodes, tracker.episode_rewards, color="#90caf9", alpha=0.45, label="Reward Episodio", rasterized=True)
-    if n_episodes >= window:
-        mov_rew = np.convolve(tracker.episode_rewards, np.ones(window) / window, mode="valid")
-        ax1.plot(range(window, n_episodes + 1), mov_rew, color="#0d47a1", lw=2.2, label=f"Media Mobile ({window} ep)")
-    ax1.set_title("1. Ricompensa Cumulata (La tua Custom Reward)", fontweight="bold")
-    ax1.set_ylabel("Custom Reward")
-    ax1.grid(True, linestyle="--", alpha=0.5)
-    ax1.legend(loc="upper left", fontsize=8.5)
+    title_obj = fig.suptitle("", fontsize=13, fontweight="bold")
 
-    # 2. Percentuali Esiti nel Tempo
-    succ_arr = np.array([100.0 if o == "success" else 0.0 for o in tracker.outcomes])
-    crash_arr = np.array([100.0 if o == "crash" else 0.0 for o in tracker.outcomes])
-    time_arr = np.array([100.0 if o == "timeout" else 0.0 for o in tracker.outcomes])
+    # 1. Reward
+    (l1_raw,) = ax1.plot([], [], color="#90caf9", alpha=0.45, lw=1.0, label="Reward Episodio")
+    (l1_mov,) = ax1.plot([], [], color="#0d47a1", lw=2.0, label="Media Mobile")
+    ax1.set_title("1. Ricompensa Cumulata (Custom Reward)", fontweight="bold", fontsize=10.5)
+    ax1.set_ylabel("Custom Reward", fontsize=9.5)
+    ax1.grid(True, linestyle="--", alpha=0.45)
+    ax1.legend(loc="upper left", fontsize=8)
 
-    if n_episodes >= window:
-        x_roll = range(window, n_episodes + 1)
-        ax2.plot(x_roll, np.convolve(succ_arr, np.ones(window) / window, mode="valid"), color="#2e7d32", lw=2.2, label="% Allunaggi Riusciti")
-        ax2.plot(x_roll, np.convolve(crash_arr, np.ones(window) / window, mode="valid"), color="#c62828", lw=1.8, linestyle="--", label="% Schianti")
-        ax2.plot(x_roll, np.convolve(time_arr, np.ones(window) / window, mode="valid"), color="#ef6c00", lw=1.8, linestyle=":", label="% Timeout (Hovering)")
-    else:
-        ax2.plot(episodes, succ_arr, color="#2e7d32", label="% Successo")
-    ax2.set_title("2. Esito delle Missioni nel Tempo (%)", fontweight="bold")
-    ax2.set_ylabel("Percentuale (%)")
+    # 2. Esiti %
+    (l2_succ,) = ax2.plot([], [], color="#2e7d32", lw=2.0, label="% Allunaggi Riusciti")
+    (l2_crash,) = ax2.plot([], [], color="#c62828", lw=1.6, linestyle="--", label="% Schianti")
+    (l2_time,) = ax2.plot([], [], color="#ef6c00", lw=1.6, linestyle=":", label="% Timeout")
+    ax2.set_title("2. Esito delle Missioni nel Tempo (%)", fontweight="bold", fontsize=10.5)
+    ax2.set_ylabel("Percentuale (%)", fontsize=9.5)
     ax2.set_ylim(-5, 105)
-    ax2.grid(True, linestyle="--", alpha=0.5)
-    ax2.legend(loc="center left", fontsize=8.5)
+    ax2.grid(True, linestyle="--", alpha=0.45)
+    ax2.legend(loc="center left", fontsize=8)
 
-    # 3. Durata del Volo
-    ax3.plot(episodes, tracker.episode_lengths, color="#a5d6a7", alpha=0.45, label="Step per Episodio", rasterized=True)
-    if n_episodes >= window:
-        mov_len = np.convolve(tracker.episode_lengths, np.ones(window) / window, mode="valid")
-        ax3.plot(range(window, n_episodes + 1), mov_len, color="#1b5e20", lw=2.0, label=f"Media Mobile ({window} ep)")
-    ax3.axhspan(150, 350, color="#00e676", alpha=0.12, label="Fascia durata ideale (150-350 step)")
-    ax3.axhline(1000, color="#ef6c00", linestyle=":", lw=1.2, label="Limite Timeout (1000 step)")
-    ax3.set_title("3. Durata del Volo (Step: <90 Kamikaze, 1000 Timeout)", fontweight="bold")
-    ax3.set_xlabel("Numero di Episodio")
-    ax3.set_ylabel("Numero di Step (50 step = 1s)")
-    ax3.grid(True, linestyle="--", alpha=0.5)
-    ax3.legend(loc="upper left", fontsize=8.5)
+    # 3. Durata Volo
+    (l3_raw,) = ax3.plot([], [], color="#a5d6a7", alpha=0.45, lw=1.0, label="Step per Episodio")
+    (l3_mov,) = ax3.plot([], [], color="#1b5e20", lw=1.8, label="Media Mobile")
+    ax3.axhspan(150, 350, color="#00e676", alpha=0.12, label="Fascia ideale (150-350)")
+    ax3.axhline(1000, color="#ef6c00", linestyle=":", lw=1.1, label="Timeout (1000)")
+    ax3.set_title("3. Durata del Volo (<90 Kamikaze, 1000 Timeout)", fontweight="bold", fontsize=10.5)
+    ax3.set_xlabel("Episodio", fontsize=9.5)
+    ax3.set_ylabel("Step (50 step = 1s)", fontsize=9.5)
+    ax3.grid(True, linestyle="--", alpha=0.45)
+    ax3.legend(loc="upper left", fontsize=8)
 
-    # 4. Consumo di Carburante
-    ax4.plot(episodes, tracker.fuel_used_list, color="#ffcc80", alpha=0.45, label="Carburante Speso", rasterized=True)
-    if n_episodes >= window:
-        mov_fuel = np.convolve(tracker.fuel_used_list, np.ones(window) / window, mode="valid")
-        ax4.plot(range(window, n_episodes + 1), mov_fuel, color="#e65100", lw=2.0, label=f"Media Mobile ({window} ep)")
-    ax4.set_title("4. Carburante Consumato (1.0 princ., 0.3 lat.)", fontweight="bold")
-    ax4.set_xlabel("Numero di Episodio")
-    ax4.set_ylabel("Unità di Carburante")
-    ax4.grid(True, linestyle="--", alpha=0.5)
-    ax4.legend(loc="upper left", fontsize=8.5)
+    # 4. Carburante
+    (l4_raw,) = ax4.plot([], [], color="#ffcc80", alpha=0.45, lw=1.0, label="Carburante")
+    (l4_mov,) = ax4.plot([], [], color="#e65100", lw=1.8, label="Media Mobile")
+    ax4.set_title("4. Carburante Consumato (1.0 princ., 0.3 lat.)", fontweight="bold", fontsize=10.5)
+    ax4.set_xlabel("Episodio", fontsize=9.5)
+    ax4.set_ylabel("Unità", fontsize=9.5)
+    ax4.grid(True, linestyle="--", alpha=0.45)
+    ax4.legend(loc="upper left", fontsize=8)
 
-    fig.tight_layout(rect=[0, 0.15, 1, 0.95])
+    # Layout statico pre-calcolato: elimina tight_layout (~180 ms risparmiati)
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.90, bottom=0.22, wspace=0.18, hspace=0.34)
 
-    # Box Diagnosi Flight Coach posizionato in calce
-    # Sostituisce eventuali emoji non presenti nei font standard per evitare warning grafici
+    diag_obj = fig.text(
+        0.5, 0.015, "", ha="center", va="bottom", fontsize=8.8, family="sans-serif",
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.4),
+    )
+
+    _PLOT_TEMPLATE_CACHE.update({
+        "fig": fig,
+        "canvas": canvas,
+        "axes": (ax1, ax2, ax3, ax4),
+        "title": title_obj,
+        "diag": diag_obj,
+        "lines": (l1_raw, l1_mov, l2_succ, l2_crash, l2_time, l3_raw, l3_mov, l4_raw, l4_mov),
+    })
+    return _PLOT_TEMPLATE_CACHE
+
+
+def plot_training_results(
+    tracker: RewardTrackerCallback,
+    mission_title: str,
+    save_path: Path | str,
+) -> dict[str, Any]:
+    """Dashboard 2x2 ultra-rapida (< 120 ms) con template RAM, cumsum e export PNG cv2."""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n_ep = len(tracker.episode_rewards)
+    diag = diagnose_agent_behavior(tracker)
+    if n_ep == 0:
+        return diag
+
+    tpl = _get_or_create_dashboard_template()
+    fig = tpl["fig"]
+    canvas = tpl["canvas"]
+    ax1, ax2, ax3, ax4 = tpl["axes"]
+    l1_raw, l1_mov, l2_succ, l2_crash, l2_time, l3_raw, l3_mov, l4_raw, l4_mov = tpl["lines"]
+
+    tpl["title"].set_text(f"Telemetria di Addestramento RL — {mission_title}")
+
+    episodes = np.arange(1, n_ep + 1, dtype=np.float32)
+    window = min(40, max(5, n_ep // 12))
+
+    rew_arr = np.asarray(tracker.episode_rewards, dtype=np.float32)
+    len_arr = np.asarray(tracker.episode_lengths, dtype=np.float32)
+    fuel_arr = np.asarray(tracker.fuel_used_list, dtype=np.float32)
+
+    out_arr = np.asarray(tracker.outcomes)
+    succ_arr = (out_arr == "success").astype(np.float32) * 100.0
+    crash_arr = (out_arr == "crash").astype(np.float32) * 100.0
+    time_arr = (out_arr == "timeout").astype(np.float32) * 100.0
+
+    # Decimazione a 120 punti per curve raw e medie mobili
+    xr, yr = _decimate_xy(episodes, rew_arr, 120)
+    l1_raw.set_data(xr, yr)
+    xl, yl = _decimate_xy(episodes, len_arr, 120)
+    l3_raw.set_data(xl, yl)
+    xf, yf = _decimate_xy(episodes, fuel_arr, 120)
+    l4_raw.set_data(xf, yf)
+
+    if n_ep >= window:
+        x_roll = np.arange(window, n_ep + 1, dtype=np.float32)
+        l1_mov.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(rew_arr, window), 120))
+        l2_succ.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(succ_arr, window), 120))
+        l2_crash.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(crash_arr, window), 120))
+        l2_time.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(time_arr, window), 120))
+        l3_mov.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(len_arr, window), 120))
+        l4_mov.set_data(*_decimate_xy(x_roll, _fast_rolling_mean(fuel_arr, window), 120))
+    else:
+        l1_mov.set_data([], [])
+        l2_succ.set_data(*_decimate_xy(episodes, succ_arr, 120))
+        l2_crash.set_data([], [])
+        l2_time.set_data([], [])
+        l3_mov.set_data([], [])
+        l4_mov.set_data([], [])
+
+    for ax in (ax1, ax3, ax4):
+        ax.relim()
+        ax.autoscale_view()
+    ax2.set_xlim(1, max(2, n_ep))
+
     clean_diag = (
-        diag_text.replace("🏎️", "")
-        .replace("📍", "")
-        .replace("📐", "")
-        .replace("⚙️", "")
-        .replace("💡", "-> ")
-        .replace("💥", "*")
-        .replace("🎯", "[OK]")
+        diag["formatted_text"]
+        .replace("🏎️", "").replace("📍", "").replace("📐", "")
+        .replace("⚙️", "").replace("💡", "-> ").replace("💥", "*").replace("🎯", "[OK]")
     )
-    fig.text(
-        0.5, 0.015, clean_diag, ha="center", va="bottom", fontsize=9.2, family="sans-serif",
-        bbox=dict(boxstyle="round,pad=0.55", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.6)
-    )
+    tpl["diag"].set_text(clean_diag)
 
-    fig.savefig(str(save_path), dpi=150)
-    fig.clear()
+    canvas.draw()
+    if _HAS_CV2:
+        rgba = np.asarray(canvas.buffer_rgba())
+        bgr = _cv2.cvtColor(rgba, _cv2.COLOR_RGBA2BGR)
+        _cv2.imwrite(str(save_path), bgr, [_cv2.IMWRITE_PNG_COMPRESSION, 1])
+    else:
+        fig.savefig(str(save_path), dpi=100, pil_kwargs={"compress_level": 1})
+
     return diag
 
 

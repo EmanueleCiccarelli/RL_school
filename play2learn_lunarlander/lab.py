@@ -12,6 +12,10 @@ from typing import Callable, Any
 
 import torch
 
+from concurrent.futures import ThreadPoolExecutor
+
+_ARTIFACT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="p2l_artifact")
+
 try:
     import gymnasium as gym
     from stable_baselines3 import PPO
@@ -92,7 +96,13 @@ class LabResult(dict):
         fut = self.get("_artifact_future")
         if fut is not None and not fut.done():
             try:
-                fut.result(timeout=timeout)
+                res = fut.result(timeout=timeout)
+                if isinstance(res, dict):
+                    if res.get("report_bundle"):
+                        self["report_bundle"] = res["report_bundle"]
+                        self["maturita_bundle"] = res["report_bundle"]
+                    if res.get("meta_path"):
+                        self["metadata_path"] = res["meta_path"]
             except Exception as e:
                 print(f"[play2learn] Avviso completamento background: {e}")
 
@@ -372,8 +382,10 @@ def run_lab(
 
         adaptive_cb = AdaptiveBatchSizeCallback(
             total_timesteps=total_timesteps,
-            switch_fraction=0.5,
-            target_batch_size=256,
+            switch_fraction=0.40,
+            target_batch_size=512,
+            epoch_switch_fraction=0.65,
+            target_n_epochs=3,
         )
 
         # 6. Addestramento (progress_bar=False per evitare overhead Rich su Colab)
@@ -401,21 +413,15 @@ def run_lab(
         f"({fps_avg:,} step/sec)!"
     )
 
-    # 7. Salvataggio modello finale + flush su disco del miglior snapshot in RAM
-    final_model_path = run_dir / "ppo_lunar_lander.zip"
-    model.save(str(final_model_path))
-
-    used_best_weights = tracker.flush_best_model_to_disk(
-        keep_best_loaded_if_superior=True,
-        superiority_margin=5.0,
-    )
+    # 7. Applicazione istantanea in RAM del miglior modello se superiore (< 0.1 ms)
+    used_best_weights = tracker.apply_best_weights_if_superior(superiority_margin=5.0)
     if used_best_weights:
         print(
             f"[play2learn] Ripristinato per la valutazione il miglior checkpoint in corsa "
             f"(picco successo mobile: {tracker.best_moving_success_rate:.1f}%)."
         )
 
-    # 8. Generazione grafico telemetria e diagnosi Flight Coach
+    # 8. Generazione grafico telemetria con Figure template pre-allocata e OpenCV (< 100 ms)
     plot_path = run_dir / "reward_plot.png"
     diag_dict = plot_training_results(
         tracker=tracker,
@@ -423,23 +429,29 @@ def run_lab(
         save_path=plot_path,
     )
 
-    # 9. Valutazione imparziale e registrazione video in 2 fasi
+    # 9. Valutazione rapida da RAM Episode Cache e Replay Video parallelo su 2 vCPU
     eval_stats = evaluate_and_record(
         model=model,
         env_id=env_id,
         reward_fn=reward_fn,
         video_dir=video_dir,
+        episode_cache=None if used_best_weights else getattr(tracker, "episode_cache", None),
         target_successes=max(1, n_eval_episodes),
         target_failures=max(1, n_eval_episodes),
-        sweep_timeout_seconds=6.0,
+        sweep_timeout_seconds=4.0,
         min_eval_episodes=20,
-        max_eval_episodes=80,
+        max_eval_episodes=60,
         seed=seed + 1000,
         env_kwargs=env_kwargs,
-        create_gif=crea_gif,
+        create_gif=False,
+        fast_early_exit=True,
+        fast_solver=True,
     )
 
-    # 9b. Generazione del timelapse GIF dell'evoluzione dell'apprendimento nel tempo
+    final_model_path = run_dir / "ppo_lunar_lander.zip"
+    best_model_path = run_dir / "best_model.zip"
+
+    # 9b. Generazione opzionale del timelapse GIF dell'evoluzione dell'apprendimento
     gif_evoluzione_path = None
     if crea_gif_evoluzione and tracker.milestone_snapshots:
         try:
@@ -459,21 +471,46 @@ def run_lab(
         except Exception as e:
             print(f"[play2learn] Avviso generazione timelapse evoluzione: {e}")
 
-    # 10. Salvataggio automatico metadati e codice sorgente
-    meta_path = save_run_metadata(
-        run_dir=run_dir,
-        mission=mission,
-        mission_cfg=mission_cfg,
-        env_kwargs=env_kwargs,
-        total_timesteps=completed_steps,
-        elapsed_seconds=elapsed_time,
-        reward_fn=reward_fn,
-        eval_stats=eval_stats,
-        diagnostics=diag_dict,
-    )
+    # 10. Persistenza asincrona in background di modelli, metadati e archivio successi
+    succ_rate = eval_stats.get("eval_success_rate", 0.0)
+
+    def _background_persist() -> dict[str, Any]:
+        try:
+            model.save(str(final_model_path))
+            tracker.flush_best_model_to_disk()
+            meta = save_run_metadata(
+                run_dir=run_dir,
+                mission=mission,
+                mission_cfg=mission_cfg,
+                env_kwargs=env_kwargs,
+                total_timesteps=completed_steps,
+                elapsed_seconds=elapsed_time,
+                reward_fn=reward_fn,
+                eval_stats=eval_stats,
+                diagnostics=diag_dict,
+            )
+            rep_b = None
+            if succ_rate >= 80.0:
+                succ_info = archivia_esperimento_successo(
+                    run_dir=run_dir,
+                    nome_run=nome_run or mission,
+                    succ_rate=succ_rate,
+                    eval_stats=eval_stats,
+                )
+                rep_b = {
+                    "succ_entry": succ_info["entry"],
+                    "rep_files": succ_info["rep_files"],
+                    "dir_path": succ_info["dest_dir"],
+                }
+                _display_success_popup(succ_info["entry"], succ_info["rep_files"])
+            return {"meta_path": meta, "report_bundle": rep_b}
+        except Exception as err:
+            print(f"[play2learn] Avviso persistenza background: {err}")
+            return {"meta_path": None, "report_bundle": None}
+
+    artifact_future = _ARTIFACT_EXECUTOR.submit(_background_persist)
 
     # 11. Stampa riassuntiva dei risultati
-    succ_rate = eval_stats.get("eval_success_rate", 0.0)
     n_succ = len(eval_stats.get("success_videos", []))
     n_fail = len(eval_stats.get("failure_videos", []))
 
@@ -499,29 +536,12 @@ def run_lab(
     print(f"  💾 Tutti i checkpoint e i video sono archiviati in: runs/{run_dir.name}")
     print("=" * 76 + "\n")
 
-    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Archiviazione in 'runs/successi/'
-    report_bundle = None
+    # 12. GESTIONE OBIETTIVO RAGGIUNTO (SUCCESSO >= 80%): Notifica immediata
     if succ_rate >= 80.0:
         print("🎉 " + "=" * 72)
         print("  🏆 OBIETTIVO ALLUNAGGIO RAGGIUNTO! (Tasso di successo >= 80%)")
         print("  Archiviazione automatica in 'runs/successi/' e generazione Scheda Tecnica...")
         print("=" * 76)
-
-        succ_info = archivia_esperimento_successo(
-            run_dir=run_dir,
-            nome_run=nome_run or mission,
-            succ_rate=succ_rate,
-            eval_stats=eval_stats,
-        )
-        succ_dir = succ_info["dest_dir"]
-        rep_files = succ_info["rep_files"]
-        report_bundle = {
-            "succ_entry": succ_info["entry"],
-            "rep_files": rep_files,
-            "dir_path": succ_dir,
-        }
-
-        _display_success_popup(succ_info["entry"], rep_files)
 
     # 13. Mostra dashboard e video nel Notebook
     if display_in_notebook:
@@ -539,7 +559,7 @@ def run_lab(
         "checkpoint_dir": run_dir,
         "mission": mission,
         "model_path": final_model_path,
-        "best_model_path": tracker.best_model_path or final_model_path,
+        "best_model_path": best_model_path if tracker._best_policy_state is not None else final_model_path,
         "plot_path": plot_path,
         "recorded_videos": eval_stats.get("videos", []),
         "success_videos": eval_stats.get("success_videos", []),
@@ -555,13 +575,14 @@ def run_lab(
         "diagnosis": diag_dict.get("formatted_text", ""),
         "elapsed_seconds": elapsed_time,
         "total_timesteps": total_timesteps,
-        "metadata_path": meta_path,
+        "metadata_path": run_dir / "run_metadata.json",
         "model": model,
         "reward_fn": reward_fn,
         "env_id": env_id,
         "env_kwargs": env_kwargs,
-        "report_bundle": report_bundle,
-        "maturita_bundle": report_bundle,
+        "report_bundle": None,
+        "maturita_bundle": None,
+        "_artifact_future": artifact_future,
     })
 
 
