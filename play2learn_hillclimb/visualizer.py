@@ -154,3 +154,116 @@ def plot_hill_telemetry(eval_history: list[dict[str, Any]], output_path: Path | 
     except Exception:
         pass
     return None
+
+
+def display_notebook_summary(
+    plot_path: Path | str | None = None,
+    videos: list[Path | str] | None = None,
+    success_videos: list[Path | str] | None = None,
+    failure_videos: list[Path | str] | None = None,
+    max_videos: int = 2,
+    gif_path: Path | str | None = None,
+) -> None:
+    """
+    Mostra il grafico e i video di test direttamente nell'output della cella del Notebook,
+    separando chiaramente le salite di successo dai fallimenti per un'analisi didattica mirata,
+    e includendo l'eventuale timelapse GIF o MP4 dell'evoluzione dell'agente.
+    """
+    try:
+        import base64
+        from IPython.display import HTML, Image, display
+
+        p_plot = Path(plot_path) if plot_path else None
+        if p_plot and p_plot.exists():
+            display(Image(filename=str(p_plot)))
+
+        # Se sono passati esplicitamente success_videos e failure_videos
+        has_split = (success_videos is not None) or (failure_videos is not None)
+        succ_list = [Path(v) for v in (success_videos or [])]
+        fail_list = [Path(v) for v in (failure_videos or [])]
+
+        if not has_split and videos:
+            all_v = [Path(v) for v in videos]
+            succ_list = [v for v in all_v if "successo" in v.name.lower()]
+            fail_list = [v for v in all_v if "fallimento" in v.name.lower() or "crash" in v.name.lower()]
+            if not succ_list and not fail_list:
+                succ_list = all_v[:max_videos]
+
+        sections = []
+
+        # Card timelapse (MP4 looping o GIF) dell'evoluzione dell'apprendimento
+        if gif_path:
+            p_media = Path(gif_path)
+            if p_media.exists():
+                b64_media = base64.b64encode(p_media.read_bytes()).decode("ascii")
+                if p_media.suffix.lower() == ".mp4":
+                    media_tag = (
+                        f'<video width="440" controls autoplay loop muted style="border-radius:6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);">'
+                        f'<source src="data:video/mp4;base64,{b64_media}" type="video/mp4">'
+                        f'</video>'
+                    )
+                else:
+                    media_tag = f'<img src="data:image/gif;base64,{b64_media}" style="max-width: 460px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);" />'
+
+                sections.append(
+                    f'<div style="margin-top: 18px; text-align: center; background: #f3e5f5; padding: 12px; border-radius: 8px; border: 1.5px solid #ab47bc;">'
+                    f'<h4 style="color:#6a1b9a; margin-top:2px; margin-bottom:6px;">🎞️ Evoluzione dell\'Apprendimento nel Tempo (Timelapse delle Fasi di Training)</h4>'
+                    f'<p style="color:#4a148c; font-size:12px; margin-bottom:10px;">Confronto della guida sullo stesso tracciato attraverso le diverse fasi di addestramento:</p>'
+                    f'{media_tag}'
+                    f'</div>'
+                )
+
+        if succ_list:
+            cards = []
+            for idx, v_path in enumerate(succ_list[:max_videos]):
+                if not v_path.exists():
+                    continue
+                b64 = base64.b64encode(v_path.read_bytes()).decode("ascii")
+                cards.append(
+                    f'<div style="margin: 8px; text-align: center; background: #e8f5e9; padding: 10px; border-radius: 8px; border: 1.5px solid #4caf50;">'
+                    f'<div style="font-weight:bold; margin-bottom:6px; color:#1b5e20;">🟢 Salita Riuscita #{idx+1}</div>'
+                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
+                    f'</video></div>'
+                )
+            if cards:
+                sections.append(
+                    f'<div style="margin-top: 14px;">'
+                    f'<h4 style="color:#2e7d32; margin-bottom:4px;">🎯 Esempi di Successo (Traguardo Raggiunto &gt;= 800m):</h4>'
+                    f'<div style="display:flex; flex-wrap:wrap; justify-content:center;">{"".join(cards)}</div>'
+                    f'</div>'
+                )
+
+        if fail_list:
+            cards = []
+            for idx, v_path in enumerate(fail_list[:max_videos]):
+                if not v_path.exists():
+                    continue
+                b64 = base64.b64encode(v_path.read_bytes()).decode("ascii")
+                cards.append(
+                    f'<div style="margin: 8px; text-align: center; background: #ffebee; padding: 10px; border-radius: 8px; border: 1.5px solid #e53935;">'
+                    f'<div style="font-weight:bold; margin-bottom:6px; color:#b71c1c;">🔴 Fallimento / Schianto #{idx+1}</div>'
+                    f'<video width="320" controls autoplay loop muted style="border-radius:6px;">'
+                    f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
+                    f'</video></div>'
+                )
+            if cards:
+                sections.append(
+                    f'<div style="margin-top: 14px;">'
+                    f'<h4 style="color:#c62828; margin-bottom:4px;">💥 Esempi di Fallimento (Cosa correggere nella reward):</h4>'
+                    f'<div style="display:flex; flex-wrap:wrap; justify-content:center;">{"".join(cards)}</div>'
+                    f'</div>'
+                )
+        else:
+            sections.append(
+                f'<div style="margin-top: 14px; background: #f1f8e9; padding: 12px 16px; border-radius: 8px; border-left: 4px solid #4caf50;">'
+                f'<strong style="color: #2e7d32;">🛡️ Nessun fallimento registrato nelle prove:</strong> '
+                f'<span style="color: #333;">Tutte le salite di test sono state completate con successo senza schianti o blocchi!</span>'
+                f'</div>'
+            )
+
+        if sections:
+            display(HTML("".join(sections)))
+    except Exception as e:
+        print(f"[play2learn] Impossibile mostrare i media inline: {e}")
+

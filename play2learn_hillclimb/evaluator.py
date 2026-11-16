@@ -152,7 +152,9 @@ def evaluate_and_record(
         for ep_info in vids_to_record:
             s = ep_info["seed"]
             idx = ep_info["episode"]
-            vid_path = videos_dir / f"episodio_{idx:02d}_seed_{s}.mp4"
+            is_target_succ = bool(ep_info.get("is_success", False))
+            status_tag = "successo" if is_target_succ else "fallimento"
+            vid_path = videos_dir / f"episodio_{idx:02d}_{status_tag}_seed_{s}.mp4"
 
             tot_rew, steps, is_succ, info = record_episode_streaming(
                 env=render_env,
@@ -165,7 +167,8 @@ def evaluate_and_record(
             )
             ep_info["video_path"] = str(vid_path)
             all_videos.append(vid_path)
-            if is_succ:
+            final_succ = is_succ if is_succ is not None else is_target_succ
+            if final_succ:
                 success_videos.append(vid_path)
             else:
                 failure_videos.append(vid_path)

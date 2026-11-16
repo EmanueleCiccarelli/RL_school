@@ -39,6 +39,7 @@ from play2learn_hillclimb.environment import HillClimbRewardWrapper
 from play2learn_hillclimb.evaluator import crea_gif_evoluzione_apprendimento, evaluate_and_record
 from play2learn_hillclimb.reporting import genera_report_esperimento
 from play2learn_hillclimb.storage import create_run_directory, save_run_metadata
+from play2learn_hillclimb.visualizer import display_notebook_summary, plot_hill_telemetry
 
 
 class HillClimbNumpyRolloutForward:
@@ -231,6 +232,18 @@ class LabResult(dict):
         else:
             print("[play2learn] Nessun timelapse di evoluzione disponibile per questa run.")
 
+    def mostra_corsa(self, indice: int = 0) -> None:
+        """Visualizza uno dei video di prova registrati direttamente nel Notebook."""
+        from play2learn_hillclimb.visualizer import display_notebook_summary
+        videos = self.get("videos", []) or self.get("recorded_videos", [])
+        if videos and 0 <= indice < len(videos):
+            display_notebook_summary(self.get("plot_path"), [videos[indice]])
+        else:
+            print(f"[play2learn] Nessun video trovato all'indice {indice}.")
+
+    mostra_video = mostra_corsa
+    mostra_volo = mostra_corsa
+
 
 def mostra_evoluzione(run_or_result: Any) -> None:
     """Mostra l'evoluzione dell'agente per l'oggetto LabResult o dizionario passato."""
@@ -249,6 +262,7 @@ def run_lab(
     crea_gif_evoluzione: bool = True,
     seed: int = 42,
     show_progress: bool = True,
+    display_in_notebook: bool = True,
     **kwargs: Any,
 ) -> LabResult:
     """
@@ -353,7 +367,11 @@ def run_lab(
     diagnostics = diagnose_hill_climb_behavior(eval_stats)
     print("\n" + diagnostics["formatted_text"])
 
-    # 6. Salvataggio metadati
+    # 6. Generazione grafico telemetria
+    plot_path = run_dir / "telemetria_plot.png"
+    plot_hill_telemetry(eval_stats.get("history", []), output_path=plot_path)
+
+    # 7. Salvataggio metadati
     save_run_metadata(
         run_dir=run_dir,
         mission=mission,
@@ -376,6 +394,12 @@ def run_lab(
         "max_distance": eval_stats["max_distance_achieved"],
         "mean_speed": eval_stats["mean_speed"],
         "checkpoint_dir": str(run_dir),
+        "run_dir": str(run_dir),
+        "plot_path": str(plot_path),
+        "videos": eval_stats.get("videos", []),
+        "success_videos": eval_stats.get("success_videos", []),
+        "failure_videos": eval_stats.get("failure_videos", []),
+        "recorded_videos": eval_stats.get("videos", []),
         "best_video_path": str(eval_stats["best_video_path"]) if eval_stats.get("best_video_path") else None,
         "gif_evoluzione_path": str(gif_path) if gif_path else None,
         "mission": mission,
@@ -389,6 +413,16 @@ def run_lab(
     print(f"   • Distanza Media:   {eval_stats['mean_distance']:.1f} m")
     print(f"   • Tasso Successo:   {eval_stats['eval_success_rate']:.1f}%")
     print(f"   • Cartella Run:     {run_dir.name}\n")
+
+    # 8. Visualizzazione automatica nel Notebook
+    if display_in_notebook:
+        display_notebook_summary(
+            plot_path=plot_path,
+            videos=eval_stats.get("videos"),
+            success_videos=eval_stats.get("success_videos"),
+            failure_videos=eval_stats.get("failure_videos"),
+            gif_path=gif_path,
+        )
 
     return LabResult(result_data)
 
