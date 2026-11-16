@@ -68,6 +68,30 @@ def custom_reward(obs, action, is_success, is_crashed, is_timeout):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def test_labresult_mostra_evoluzione(self):
+        import tempfile
+        import shutil
+        from play2learn_lunarlander.lab import LabResult, mostra_evoluzione
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            fake_mp4 = tmp_dir / "evoluzione_apprendimento.mp4"
+            fake_mp4.write_bytes(b"\x00\x00\x00\x20ftypisom")
+            lr = LabResult({
+                "checkpoint_dir": tmp_dir,
+                "gif_evoluzione_path": fake_mp4,
+            })
+            # Visualizzazione con media esistente
+            ret = lr.mostra_evoluzione()
+            self.assertIsNotNone(ret)
+            self.assertEqual(lr.genera_evoluzione(), ret)
+
+            # Chiamata tramite funzione top-level
+            ret_top = mostra_evoluzione(lr)
+            self.assertIsNotNone(ret_top)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

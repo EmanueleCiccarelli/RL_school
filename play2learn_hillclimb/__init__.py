@@ -23,6 +23,8 @@ from play2learn_hillclimb.favorites import (
 from play2learn_hillclimb.lab import (
     LabResult,
     dimostrazione_live,
+    mostra_evoluzione,
+    genera_evoluzione,
     run_lab,
 )
 from play2learn_hillclimb.reporting import (
@@ -37,6 +39,8 @@ __all__ = [
     "run_lab",
     "LabResult",
     "dimostrazione_live",
+    "mostra_evoluzione",
+    "genera_evoluzione",
     "carica_preferito",
     "salva_preferito",
     "salva_nei_preferiti",

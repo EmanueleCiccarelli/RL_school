@@ -165,19 +165,87 @@ class LabResult(dict):
         else:
             print(f"[play2learn] Nessun video trovato all'indice {indice}.")
 
-    def mostra_evoluzione(self) -> None:
-        """Visualizza il timelapse GIF dell'evoluzione dell'agente nel corso del training."""
+    def mostra_evoluzione(self, force: bool = False) -> Any:
+        """
+        Visualizza (e genera su richiesta se non ancora presente) il timelapse video/GIF
+        dell'evoluzione dell'agente nel corso del training.
+        """
         self.wait_artifacts()
-        p = self.get("gif_evoluzione_path") or (Path(self.get("checkpoint_dir", "")) / "evoluzione_apprendimento.gif")
-        if p and Path(p).exists():
-            try:
-                from IPython.display import Image, display
-                print("🎞️ Evoluzione dell'Agente durante il Training (Milestone nel tempo):")
-                display(Image(filename=str(p)))
-            except Exception:
-                print(f"GIF evoluzione salvata in: {p}")
-        else:
-            print("[play2learn] Nessun timelapse di evoluzione disponibile per questa run.")
+        existing = self.get("gif_evoluzione_path")
+        run_dir = Path(self.get("checkpoint_dir", self.get("run_dir", ".")))
+
+        valid_path = None
+        candidates = [
+            Path(existing) if existing else None,
+            run_dir / "evoluzione_apprendimento.mp4",
+            run_dir / "evoluzione_apprendimento.gif",
+        ]
+        for c in candidates:
+            if c and c.exists():
+                valid_path = c
+                break
+
+        if not force and valid_path:
+            self["gif_evoluzione_path"] = valid_path
+            return self._display_timelapse(valid_path)
+
+        milestones = self.get("milestone_snapshots")
+        model = self.get("model")
+        if not milestones or model is None:
+            print("[play2learn] Nessun checkpoint o milestone di addestramento disponibile per generare l'evoluzione.")
+            return None
+
+        print("🎬 Generazione su richiesta del timelapse dell'evoluzione dell'apprendimento...")
+        try:
+            from play2learn_lunarlander.evaluator import crea_gif_evoluzione_apprendimento
+            target_path = run_dir / "evoluzione_apprendimento.mp4"
+            out = crea_gif_evoluzione_apprendimento(
+                model=model,
+                milestones=milestones,
+                env_id=self.get("env_id", ENV_ID),
+                output_path=target_path,
+                env_kwargs=self.get("env_kwargs"),
+                seed=self.get("seed", 42),
+            )
+            if out and out.exists():
+                self["gif_evoluzione_path"] = out
+                print(f"🎬 Timelapse salvato: runs/{run_dir.name}/{out.name}")
+                return self._display_timelapse(out)
+            else:
+                print("[play2learn] Impossibile generare il timelapse.")
+                return None
+        except Exception as e:
+            print(f"[play2learn] Avviso durante la generazione del timelapse: {e}")
+            return None
+
+    def _display_timelapse(self, media_path: Path) -> Any:
+        try:
+            import base64
+            from IPython.display import HTML, display
+            b64_data = base64.b64encode(media_path.read_bytes()).decode("ascii")
+            if media_path.suffix.lower() == ".mp4":
+                media_tag = (
+                    f'<video width="480" controls autoplay loop muted style="border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.3);">'
+                    f'<source src="data:video/mp4;base64,{b64_data}" type="video/mp4">'
+                    f'</video>'
+                )
+            else:
+                media_tag = f'<img src="data:image/gif;base64,{b64_data}" style="max-width:480px; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.3);" />'
+
+            html_code = (
+                f'<div style="margin-top:10px; margin-bottom:10px; text-align:center; background:#1e1e2f; padding:14px; border-radius:8px; border:1.5px solid #9c27b0;">'
+                f'<h4 style="color:#e1bee7; margin-top:2px; margin-bottom:6px;">🎞️ Evoluzione dell\'Apprendimento nel Tempo (Fasi di Training)</h4>'
+                f'<p style="color:#ce93d8; font-size:12px; margin-bottom:12px;">Progressione delle traiettorie sullo stesso scenario nelle varie fasi di addestramento:</p>'
+                f'{media_tag}'
+                f'</div>'
+            )
+            display(HTML(html_code))
+            return media_path
+        except Exception:
+            print(f"🎞️ Timelapse evoluzione salvato in: {media_path}")
+            return media_path
+
+    genera_evoluzione = mostra_evoluzione
 
     def test_dal_vivo(self, n_episodi: int = 1, seed: int = 999) -> None:
         """Esegue una dimostrazione rapida dal vivo del modello."""
@@ -207,7 +275,7 @@ def run_lab(
     nome_run: str | None = None,
     n_eval_episodes: int = 3,
     crea_gif: bool = True,
-    crea_gif_evoluzione: bool = True,
+    crea_gif_evoluzione: bool = False,
     display_in_notebook: bool = True,
     use_reward_norm: bool = True,
 ) -> LabResult:
@@ -290,7 +358,7 @@ def run_lab(
             total_timesteps=total_timesteps,
             show_progress=True,
             progress_interval_sec=1.0,
-            capture_milestones=crea_gif_evoluzione,
+            capture_milestones=True,
         )
 
         # 5. Creazione modello PPO (verbose=0 per output pulito e veloce)
@@ -462,7 +530,7 @@ def run_lab(
             videos=eval_stats.get("videos"),
             success_videos=eval_stats.get("success_videos"),
             failure_videos=eval_stats.get("failure_videos"),
-            gif_path=gif_evoluzione_path or eval_stats.get("gif_path"),
+            gif_path=gif_evoluzione_path if (crea_gif_evoluzione and gif_evoluzione_path) else None,
         )
 
     return LabResult({
@@ -478,6 +546,8 @@ def run_lab(
         "failure_videos": eval_stats.get("failure_videos", []),
         "gif_path": eval_stats.get("gif_path"),
         "gif_evoluzione_path": gif_evoluzione_path,
+        "milestone_snapshots": getattr(tracker, "milestone_snapshots", []),
+        "seed": seed,
         "eval_success_rate": eval_stats.get("eval_success_rate", 0.0),
         "eval_mean_length": eval_stats.get("mean_length", 0.0),
         "eval_mean_fuel": eval_stats.get("mean_fuel", 0.0),
@@ -614,3 +684,27 @@ def dimostrazione_live(
             print("-" * 65)
     finally:
         env.close()
+
+
+def mostra_evoluzione(risultati_o_path: Any = None, force: bool = False) -> Any:
+    """Funzione helper didattica per mostrare/generare il timelapse dell'evoluzione dell'apprendimento."""
+    if risultati_o_path is None:
+        print("[play2learn] Passa l'oggetto 'risultati' restituito da run_lab() per visualizzare l'evoluzione.")
+        return None
+    if isinstance(risultati_o_path, LabResult):
+        return risultati_o_path.mostra_evoluzione(force=force)
+    p = Path(risultati_o_path)
+    if p.is_dir():
+        cands = [p / "evoluzione_apprendimento.mp4", p / "evoluzione_apprendimento.gif"]
+        for c in cands:
+            if c.exists():
+                p = c
+                break
+    if p.is_file():
+        lr = LabResult({"checkpoint_dir": str(p.parent), "gif_evoluzione_path": p})
+        return lr._display_timelapse(p)
+    print(f"[play2learn] Nessun timelapse trovato per: {risultati_o_path}")
+    return None
+
+
+genera_evoluzione = mostra_evoluzione

@@ -20,7 +20,13 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from play2learn_lunarlander.config import MISSIONS, ENV_ID
 from play2learn_lunarlander.visualizer import mostra_mappa_ambiente, plot_comparison
-from play2learn_lunarlander.lab import run_lab, dimostrazione_live, LabResult
+from play2learn_lunarlander.lab import (
+    run_lab,
+    dimostrazione_live,
+    mostra_evoluzione,
+    genera_evoluzione,
+    LabResult,
+)
 from play2learn_lunarlander.favorites import (
     salva_nei_preferiti,
     salva_video_preferito,
@@ -69,6 +75,8 @@ __all__ = [
     "genera_report_maturita",
     "confronta_run",
     "dimostrazione_live",
+    "mostra_evoluzione",
+    "genera_evoluzione",
     "list_all_runs",
     "reset_laboratorio",
     "comprimi_runs",

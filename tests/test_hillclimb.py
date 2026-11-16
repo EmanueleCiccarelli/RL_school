@@ -152,6 +152,28 @@ class TestHillClimb(unittest.TestCase):
         self.assertEqual(fav["metadata"], fake_meta)
         self.assertEqual(fav.get("mission"), "Test")
 
+    def test_hillclimb_mostra_evoluzione(self):
+        import tempfile
+        import shutil
+        from play2learn_hillclimb.lab import LabResult, mostra_evoluzione
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            fake_mp4 = tmp_dir / "evoluzione_apprendimento.mp4"
+            fake_mp4.write_bytes(b"\x00\x00\x00\x20ftypisom")
+            lr = LabResult({
+                "checkpoint_dir": tmp_dir,
+                "gif_evoluzione_path": str(fake_mp4),
+            })
+            ret = lr.mostra_evoluzione()
+            self.assertIsNotNone(ret)
+            self.assertEqual(lr.genera_evoluzione(), ret)
+
+            ret_top = mostra_evoluzione(lr)
+            self.assertIsNotNone(ret_top)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
