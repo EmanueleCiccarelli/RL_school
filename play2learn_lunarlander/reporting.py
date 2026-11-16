@@ -27,6 +27,11 @@ from play2learn_lunarlander.storage import (
     atomic_write_text,
     atomic_write_json,
 )
+from play2learn_lunarlander.environment import classify_lunar_lander_outcome
+from play2learn_core.evaluator import (
+    make_fast_predictor,
+    create_split_screen_comparison_mp4,
+)
 
 
 def _serialize_eval_metrics(stats: dict[str, Any]) -> dict[str, Any]:
@@ -121,8 +126,8 @@ def _genera_pdf_fast_fpdf2(
         rows = [
             ["Tasso Allunaggio", f"{succ_rate:.1f}%", ">= 80.0%", "OK" if succ_rate >= 80 else "IN CORSO"],
             ["Prove Valutazione", f"{succ_cnt} ok / {fail_cnt} fail", "Campione misto", "CAMPIONATO"],
-            ["Carburante Riusciti", f"{fuel_succ:.1f} un.", "< 60.0 un.", "OTTIMO" if fuel_succ <= 60 else "STANDARD"],
-            ["Carburante Falliti", f"{fuel_fail:.1f} un." if fail_cnt > 0 else "0 fallimenti", "0 un.", "OTTIMO" if fail_cnt == 0 else "DIAGNOSI"],
+            ["Carburante Medio Voli Riusciti", f"{fuel_succ:.1f} un.", "< 60.0 un.", "OTTIMO" if fuel_succ <= 60 else "STANDARD"],
+            ["Carburante Medio Voli Falliti", f"{fuel_fail:.1f} un." if fail_cnt > 0 else "0 fallimenti", "N/A", "OTTIMO" if fail_cnt == 0 else "DIAGNOSI"],
             ["Durata Media Volo", f"{steps:.0f} step ({steps/50:.1f}s)", "150 - 350 step", "NOMINALE"],
         ]
 
@@ -245,7 +250,7 @@ def genera_pdf_report(
 
         col_labels = ["Metrica Telemetrica", "Valore Sperimentale", "Riferimento Ideale", "Stato"]
         fuel_fail_val = f"{fuel_fail:.1f} unità" if fail_count > 0 else "0 fallimenti"
-        fuel_fail_ref = "Nessun fallimento (0 un.)"
+        fuel_fail_ref = "N/A"
         fuel_fail_stato = "OTTIMO" if fail_count == 0 else "DIAGNOSI"
 
         table_vals = [
@@ -473,7 +478,7 @@ def genera_report_esperimento(
             plot_src = target_plot_path.name
 
     fail_fuel_val = f"{fuel_fail:.1f} unità" if fail_count > 0 else "0 fallimenti"
-    fail_fuel_ref = "Nessun fallimento (0 un.)"
+    fail_fuel_ref = "N/A"
     fail_fuel_esito = "🔍 Analisi criticità" if fail_count > 0 else "✅ Nessun fallimento"
     fail_fuel_badge = "Criticità" if fail_count > 0 else "Ottimo (0 fall.)"
 
@@ -743,6 +748,301 @@ def genera_report_esperimento(
 genera_report_maturita = genera_report_esperimento
 
 
+def _load_model_from_run(run_dir: Path) -> Any:
+    """Carica il checkpoint del modello da una cartella di run."""
+    for fname in ("best_model.zip", "ppo_lunar_lander.zip", "final_model.zip"):
+        cand = run_dir / fname
+        if cand.exists():
+            from stable_baselines3 import PPO
+            return PPO.load(str(cand))
+    zips = list(run_dir.glob("*.zip"))
+    if zips:
+        from stable_baselines3 import PPO
+        return PPO.load(str(zips[0]))
+    return None
+
+
+def _esegui_valutazione_comparativa_lunar(
+    run_dir_a: Path,
+    run_dir_b: Path,
+    label_a: str,
+    label_b: str,
+    n_episodes: int = 20,
+    video_seeds: list[int] | None = None,
+) -> dict[str, Any]:
+    """Esegue un confronto deterministico su 20 scenari identici ed estrae 2 video split-screen."""
+    import gymnasium as gym
+
+    model_a = _load_model_from_run(run_dir_a)
+    model_b = _load_model_from_run(run_dir_b)
+    if model_a is None or model_b is None:
+        return {}
+
+    seeds = [1000 + i for i in range(n_episodes)]
+    v_seeds = video_seeds or [42, 999]
+
+    env = gym.make("LunarLander-v3")
+    pred_a = make_fast_predictor(model_a)
+    pred_b = make_fast_predictor(model_b)
+
+    results_a = {"successes": 0, "fuel": [], "steps": []}
+    results_b = {"successes": 0, "fuel": [], "steps": []}
+    wins_a = 0
+    wins_b = 0
+    ties = 0
+
+    try:
+        for s in seeds:
+            # Run A
+            obs, _ = env.reset(seed=s)
+            done = False
+            fuel_a = 0.0
+            steps_a = 0
+            rew = 0.0
+            term = False
+            trunc = False
+            while not done and steps_a < 1000:
+                act = pred_a(obs, True)
+                if act == 2:
+                    fuel_a += 0.30
+                elif act in (1, 3):
+                    fuel_a += 0.03
+                obs, rew, term, trunc, _ = env.step(act)
+                steps_a += 1
+                done = bool(term or trunc)
+            succ_a, _, _, _ = classify_lunar_lander_outcome(
+                obs=obs, original_reward=float(rew), terminated=bool(term),
+                truncated=bool(trunc), unwrapped=env.unwrapped
+            )
+            if succ_a:
+                results_a["successes"] += 1
+            results_a["fuel"].append(fuel_a)
+            results_a["steps"].append(steps_a)
+
+            # Run B
+            obs, _ = env.reset(seed=s)
+            done = False
+            fuel_b = 0.0
+            steps_b = 0
+            rew = 0.0
+            term = False
+            trunc = False
+            while not done and steps_b < 1000:
+                act = pred_b(obs, True)
+                if act == 2:
+                    fuel_b += 0.30
+                elif act in (1, 3):
+                    fuel_b += 0.03
+                obs, rew, term, trunc, _ = env.step(act)
+                steps_b += 1
+                done = bool(term or trunc)
+            succ_b, _, _, _ = classify_lunar_lander_outcome(
+                obs=obs, original_reward=float(rew), terminated=bool(term),
+                truncated=bool(trunc), unwrapped=env.unwrapped
+            )
+            if succ_b:
+                results_b["successes"] += 1
+            results_b["fuel"].append(fuel_b)
+            results_b["steps"].append(steps_b)
+
+            # Assegnazione vincitore round
+            if succ_a and not succ_b:
+                wins_a += 1
+            elif succ_b and not succ_a:
+                wins_b += 1
+            elif succ_a and succ_b:
+                if fuel_a < fuel_b - 1.0:
+                    wins_a += 1
+                elif fuel_b < fuel_a - 1.0:
+                    wins_b += 1
+                else:
+                    ties += 1
+            else:
+                ties += 1
+    finally:
+        env.close()
+
+    # Generazione video split-screen su 2 scenari
+    video_paths: list[Path] = []
+    try:
+        render_env = gym.make("LunarLander-v3", render_mode="rgb_array")
+        for idx, vs in enumerate(v_seeds):
+            # Registra A
+            obs, _ = render_env.reset(seed=vs)
+            frames_a = []
+            f = render_env.render()
+            if f is not None:
+                frames_a.append(f)
+            done = False
+            st_a = 0
+            fuel_va = 0.0
+            rew = 0.0
+            term = False
+            trunc = False
+            while not done and st_a < 800:
+                act = pred_a(obs, True)
+                if act == 2:
+                    fuel_va += 0.30
+                elif act in (1, 3):
+                    fuel_va += 0.03
+                obs, rew, term, trunc, _ = render_env.step(act)
+                st_a += 1
+                done = bool(term or trunc)
+                if st_a % 2 == 0 or done:
+                    f = render_env.render()
+                    if f is not None:
+                        frames_a.append(f)
+            succ_va, _, _, _ = classify_lunar_lander_outcome(
+                obs=obs, original_reward=float(rew), terminated=bool(term),
+                truncated=bool(trunc), unwrapped=render_env.unwrapped
+            )
+
+            # Registra B
+            obs, _ = render_env.reset(seed=vs)
+            frames_b = []
+            f = render_env.render()
+            if f is not None:
+                frames_b.append(f)
+            done = False
+            st_b = 0
+            fuel_vb = 0.0
+            rew = 0.0
+            term = False
+            trunc = False
+            while not done and st_b < 800:
+                act = pred_b(obs, True)
+                if act == 2:
+                    fuel_vb += 0.30
+                elif act in (1, 3):
+                    fuel_vb += 0.03
+                obs, rew, term, trunc, _ = render_env.step(act)
+                st_b += 1
+                done = bool(term or trunc)
+                if st_b % 2 == 0 or done:
+                    f = render_env.render()
+                    if f is not None:
+                        frames_b.append(f)
+            succ_vb, _, _, _ = classify_lunar_lander_outcome(
+                obs=obs, original_reward=float(rew), terminated=bool(term),
+                truncated=bool(trunc), unwrapped=render_env.unwrapped
+            )
+
+            tag_a = f"{label_a[:16]} ({'OK' if succ_va else 'FAIL'} | {fuel_va:.1f} carb)"
+            tag_b = f"{label_b[:16]} ({'OK' if succ_vb else 'FAIL'} | {fuel_vb:.1f} carb)"
+            out_v = get_default_runs_dir() / f"confronto_volo_seed{vs}.mp4"
+            create_split_screen_comparison_mp4(
+                frames_a=frames_a,
+                frames_b=frames_b,
+                label_a=tag_a,
+                label_b=tag_b,
+                output_path=out_v,
+                fps=25,
+            )
+            if out_v.exists():
+                video_paths.append(out_v)
+        render_env.close()
+    except Exception as e:
+        print(f"[play2learn] Avviso: registrazione video split-screen saltata: {e}")
+
+    mean_fuel_a = float(np.mean(results_a["fuel"])) if results_a["fuel"] else 0.0
+    mean_fuel_b = float(np.mean(results_b["fuel"])) if results_b["fuel"] else 0.0
+    rate_a = (results_a["successes"] / n_episodes) * 100.0
+    rate_b = (results_b["successes"] / n_episodes) * 100.0
+
+    return {
+        "n_episodes": n_episodes,
+        "rate_a": rate_a,
+        "rate_b": rate_b,
+        "mean_fuel_a": mean_fuel_a,
+        "mean_fuel_b": mean_fuel_b,
+        "wins_a": wins_a,
+        "wins_b": wins_b,
+        "ties": ties,
+        "video_paths": video_paths,
+    }
+
+
+def _mostra_dashboard_testa_a_testa_lunar(r_a: dict[str, Any], r_b: dict[str, Any], ext: dict[str, Any]) -> None:
+    """Mostra la dashboard HTML interattiva con tabella di confronto a 20 episodi e video affiancati."""
+    try:
+        from IPython.display import HTML, display
+        wins_a = ext["wins_a"]
+        wins_b = ext["wins_b"]
+        ties = ext["ties"]
+        rate_a = ext["rate_a"]
+        rate_b = ext["rate_b"]
+        fuel_a = ext["mean_fuel_a"]
+        fuel_b = ext["mean_fuel_b"]
+        name_a = html.escape(str(r_a["name"]))
+        name_b = html.escape(str(r_b["name"]))
+        ts_a = html.escape(str(r_a["timestamp"]))
+        ts_b = html.escape(str(r_b["timestamp"]))
+
+        winner_banner = (
+            f"🏆 Vincitore Generale: <strong>{name_a}</strong> ({wins_a} vittorie vs {wins_b})"
+            if wins_a > wins_b else
+            (f"🏆 Vincitore Generale: <strong>{name_b}</strong> ({wins_b} vittorie vs {wins_a})" if wins_b > wins_a
+             else "🤝 Pareggio Perfetto tra le due versioni!")
+        )
+
+        video_cards = []
+        for vpath in ext.get("video_paths", []):
+            if vpath.exists():
+                b64 = base64.b64encode(vpath.read_bytes()).decode("ascii")
+                v_name = vpath.stem.replace("confronto_volo_", "Scenario ").capitalize()
+                video_cards.append(
+                    f'<div style="margin:8px; text-align:center; background:#1e293b; padding:10px; border-radius:8px; border:1.5px solid #38bdf8;">'
+                    f'<div style="font-weight:bold; color:#38bdf8; font-size:13px; margin-bottom:6px;">🎬 Gara Simultanea: {v_name} (Sinistra: {ts_a} vs Destra: {ts_b})</div>'
+                    f'<video width="560" controls autoplay loop muted style="border-radius:6px; max-width:100%;">'
+                    f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
+                    f'</video></div>'
+                )
+
+        videos_html = f'<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:14px;">{"".join(video_cards)}</div>' if video_cards else ''
+
+        card_html = f"""
+        <div style="font-family:'Segoe UI',sans-serif; background:#0b1120; color:#f8fafc; padding:18px; border-radius:12px; margin:20px 0; border:2px solid #38bdf8; box-shadow:0 6px 20px rgba(0,0,0,0.4);">
+            <h3 style="margin-top:0; color:#38bdf8; border-bottom:1px solid #1e293b; padding-bottom:8px;">⚔️ Sfida Diretta Testa a Testa su 20 Scenari Identici</h3>
+            <div style="font-size:15px; margin-bottom:14px; background:#1e293b; padding:10px 14px; border-radius:8px; color:#fef08a;">{winner_banner}</div>
+            
+            <table style="width:100%; border-collapse:collapse; font-size:13.5px; text-align:center; background:#111827; border-radius:8px; overflow:hidden;">
+                <thead style="background:#1e293b; color:#38bdf8;">
+                    <tr>
+                        <th style="padding:10px; text-align:left;">Metrica Verificata (20 Prove)</th>
+                        <th style="padding:10px;">🔵 {name_a} ({ts_a})</th>
+                        <th style="padding:10px;">🟢 {name_b} ({ts_b})</th>
+                        <th style="padding:10px;">Vantaggio</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom:1px solid #1f2937;">
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Tasso di Allunaggio Riuscito</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if rate_a>=rate_b else '#f87171'};">{rate_a:.1f}%</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if rate_b>=rate_a else '#f87171'};">{rate_b:.1f}%</td>
+                        <td style="padding:10px;">{f"+{rate_a-rate_b:.1f}% ({name_a})" if rate_a>rate_b else (f"+{rate_b-rate_a:.1f}% ({name_b})" if rate_b>rate_a else "Parità")}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #1f2937;">
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Carburante Medio Consumato</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if fuel_a<=fuel_b else '#f87171'};">{fuel_a:.1f} un.</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if fuel_b<=fuel_a else '#f87171'};">{fuel_b:.1f} un.</td>
+                        <td style="padding:10px;">{f"-{fuel_b-fuel_a:.1f} un. ({name_a})" if fuel_a<fuel_b else (f"-{fuel_a-fuel_b:.1f} un. ({name_b})" if fuel_b<fuel_a else "Parità")}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Round Vinti nello Scontro Diretto</td>
+                        <td style="padding:10px; font-size:15px; font-weight:bold; color:#38bdf8;">{wins_a} / 20</td>
+                        <td style="padding:10px; font-size:15px; font-weight:bold; color:#10b981;">{wins_b} / 20</td>
+                        <td style="padding:10px; color:#94a3b8;">{ties} pareggi</td>
+                    </tr>
+                </tbody>
+            </table>
+            {videos_html}
+        </div>
+        """
+        display(HTML(card_html))
+    except Exception as e:
+        print(f"[play2learn] Errore visualizzazione dashboard testa a testa: {e}")
+
+
 def confronta_run(
     runs_or_favs: list[Any] | tuple[Any, ...] | str,
     output_image_path: Path | str | None = None
@@ -892,7 +1192,30 @@ def confronta_run(
             print(f"{r.get('timestamp', ''):<18} | {r.get('name', '')[:23]:<24} | {r.get('eval_success_rate', 0):<9.1f}% | {r.get('eval_mean_fuel', 0):<12.1f} | {r.get('eval_mean_length', 0):<10.0f}")
         print("=" * 78 + "\n")
 
-    return {"runs": runs_data, "comparison_plot": save_img}
+    # Se sono disponibili almeno 2 run, avvia la sfida estesa testa a testa su 20 scenari identici
+    extended_results = {}
+    if len(runs_data) >= 2:
+        try:
+            r_a = runs_data[0]
+            r_b = runs_data[1]
+            dir_a = Path(get_default_runs_dir()) / r_a["dir_name"]
+            dir_b = Path(get_default_runs_dir()) / r_b["dir_name"]
+            print("\n⚔️ Avvio valutazione estesa testa a testa su 20 scenari identici...")
+            ext = _esegui_valutazione_comparativa_lunar(
+                run_dir_a=dir_a,
+                run_dir_b=dir_b,
+                label_a=r_a["name"],
+                label_b=r_b["name"],
+                n_episodes=20,
+                video_seeds=[42, 999],
+            )
+            if ext:
+                extended_results = ext
+                _mostra_dashboard_testa_a_testa_lunar(r_a, r_b, ext)
+        except Exception as e:
+            print(f"[play2learn] Nota: valutazione estesa opzionale completata con avviso: {e}")
+
+    return {"runs": runs_data, "comparison_plot": save_img, "head_to_head": extended_results}
 
 
 def genera_report_da_timestamp(

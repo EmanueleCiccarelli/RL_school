@@ -263,3 +263,65 @@ def create_milestone_gif(
     except Exception:
         imageio.mimsave(str(gif_path), frames_or_images, fps=fps, loop=0)
     return gif_path
+
+
+def create_split_screen_comparison_mp4(
+    frames_a: list[np.ndarray],
+    frames_b: list[np.ndarray],
+    label_a: str,
+    label_b: str,
+    output_path: Path,
+    fps: int = 25,
+    target_height: int = 280,
+) -> Path:
+    """
+    Unisce i frame di due agenti affiancandoli in split-screen orizzontale
+    con etichette informative, esportando un MP4 compatto H.264.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    n_frames = max(len(frames_a), len(frames_b))
+    if n_frames == 0:
+        return output_path
+
+    def _prep_frame(f: np.ndarray, lbl: str) -> np.ndarray:
+        h, w = f.shape[:2]
+        new_w = int(w * (target_height / h))
+        if new_w % 2 != 0:
+            new_w -= 1
+        buf = np.empty((target_height, new_w, 3), dtype=np.uint8)
+        fast_resize_into(f, buf)
+        banner = render_banner_once(width=new_w, line1=lbl, line2="", height=24)
+        buf[:24, :, :] = banner
+        return buf
+
+    last_a = frames_a[-1] if frames_a else np.zeros((target_height, 300, 3), dtype=np.uint8)
+    last_b = frames_b[-1] if frames_b else np.zeros((target_height, 300, 3), dtype=np.uint8)
+
+    prep_a = [_prep_frame(f, label_a) for f in frames_a]
+    prep_b = [_prep_frame(f, label_b) for f in frames_b]
+    last_prep_a = prep_a[-1] if prep_a else _prep_frame(last_a, label_a)
+    last_prep_b = prep_b[-1] if prep_b else _prep_frame(last_b, label_b)
+
+    try:
+        writer = imageio.get_writer(
+            str(output_path),
+            fps=fps,
+            macro_block_size=1,
+            ffmpeg_params=["-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p"],
+        )
+    except Exception:
+        writer = imageio.get_writer(str(output_path), fps=fps, macro_block_size=1)
+
+    try:
+        for i in range(n_frames):
+            fa = prep_a[i] if i < len(prep_a) else last_prep_a
+            fb = prep_b[i] if i < len(prep_b) else last_prep_b
+            combined = np.concatenate([fa, fb], axis=1)
+            writer.append_data(combined)
+        for _ in range(12):
+            combined = np.concatenate([last_prep_a, last_prep_b], axis=1)
+            writer.append_data(combined)
+    finally:
+        writer.close()
+
+    return output_path

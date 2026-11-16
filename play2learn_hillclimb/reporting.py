@@ -20,6 +20,11 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
 from play2learn_core.storage import atomic_write_json, atomic_write_text
+from play2learn_core.evaluator import (
+    make_fast_predictor,
+    create_split_screen_comparison_mp4,
+)
+from play2learn_hillclimb.config import ENV_ID
 from play2learn_hillclimb.storage import find_run_by_timestamp, get_default_runs_dir
 from play2learn_hillclimb.visualizer import plot_hill_telemetry
 
@@ -227,6 +232,245 @@ def genera_report_esperimento(
     }
 
 
+def _load_model_from_run_hill(run_dir: Path) -> Any:
+    for fname in ("final_model.zip", "best_model.zip"):
+        cand = run_dir / fname
+        if cand.exists():
+            from stable_baselines3 import PPO
+            return PPO.load(str(cand))
+    zips = list(run_dir.glob("*.zip"))
+    if zips:
+        from stable_baselines3 import PPO
+        return PPO.load(str(zips[0]))
+    return None
+
+
+def _esegui_valutazione_comparativa_hill(
+    run_dir_a: Path,
+    run_dir_b: Path,
+    label_a: str,
+    label_b: str,
+    n_episodes: int = 20,
+    video_seeds: list[int] | None = None,
+) -> dict[str, Any]:
+    """Esegue un confronto deterministico su 20 scenari collinari identici ed estrae 2 video split-screen."""
+    import gymnasium as gym
+    import numpy as np
+
+    model_a = _load_model_from_run_hill(run_dir_a)
+    model_b = _load_model_from_run_hill(run_dir_b)
+    if model_a is None or model_b is None:
+        return {}
+
+    seeds = [1000 + i for i in range(n_episodes)]
+    v_seeds = video_seeds or [42, 142]
+
+    env = gym.make(ENV_ID, render_mode=None)
+    pred_a = make_fast_predictor(model_a)
+    pred_b = make_fast_predictor(model_b)
+
+    results_a: dict[str, list[float]] = {"distances": [], "speeds": []}
+    results_b: dict[str, list[float]] = {"distances": [], "speeds": []}
+    wins_a = 0
+    wins_b = 0
+    ties = 0
+
+    try:
+        for s in seeds:
+            # Run A
+            obs, _ = env.reset(seed=s)
+            done = False
+            step_a = 0
+            while not done and step_a < 1000:
+                act = pred_a(obs, True)
+                obs, rew, term, trunc, _ = env.step(act)
+                step_a += 1
+                done = bool(term or trunc)
+            dist_a = float(obs[0])
+            sp_a = abs(float(obs[2]))
+            results_a["distances"].append(dist_a)
+            results_a["speeds"].append(sp_a)
+
+            # Run B
+            obs, _ = env.reset(seed=s)
+            done = False
+            step_b = 0
+            while not done and step_b < 1000:
+                act = pred_b(obs, True)
+                obs, rew, term, trunc, _ = env.step(act)
+                step_b += 1
+                done = bool(term or trunc)
+            dist_b = float(obs[0])
+            sp_b = abs(float(obs[2]))
+            results_b["distances"].append(dist_b)
+            results_b["speeds"].append(sp_b)
+
+            if dist_a > dist_b + 5.0:
+                wins_a += 1
+            elif dist_b > dist_a + 5.0:
+                wins_b += 1
+            else:
+                ties += 1
+    finally:
+        env.close()
+
+    # Video split-screen su 2 scenari collinari
+    video_paths: list[Path] = []
+    try:
+        render_env = gym.make(ENV_ID, render_mode="rgb_array")
+        for vs in v_seeds:
+            # Video A
+            obs, _ = render_env.reset(seed=vs)
+            frames_a = []
+            f = render_env.render()
+            if f is not None:
+                frames_a.append(f)
+            done = False
+            st_a = 0
+            while not done and st_a < 800:
+                act = pred_a(obs, True)
+                obs, rew, term, trunc, _ = render_env.step(act)
+                st_a += 1
+                done = bool(term or trunc)
+                if st_a % 2 == 0 or done:
+                    f = render_env.render()
+                    if f is not None:
+                        frames_a.append(f)
+            dist_va = float(obs[0])
+
+            # Video B
+            obs, _ = render_env.reset(seed=vs)
+            frames_b = []
+            f = render_env.render()
+            if f is not None:
+                frames_b.append(f)
+            done = False
+            st_b = 0
+            while not done and st_b < 800:
+                act = pred_b(obs, True)
+                obs, rew, term, trunc, _ = render_env.step(act)
+                st_b += 1
+                done = bool(term or trunc)
+                if st_b % 2 == 0 or done:
+                    f = render_env.render()
+                    if f is not None:
+                        frames_b.append(f)
+            dist_vb = float(obs[0])
+
+            tag_a = f"{label_a[:16]} ({dist_va:.0f}m)"
+            tag_b = f"{label_b[:16]} ({dist_vb:.0f}m)"
+            out_v = get_default_runs_dir() / f"confronto_gara_seed{vs}.mp4"
+            create_split_screen_comparison_mp4(
+                frames_a=frames_a,
+                frames_b=frames_b,
+                label_a=tag_a,
+                label_b=tag_b,
+                output_path=out_v,
+                fps=25,
+            )
+            if out_v.exists():
+                video_paths.append(out_v)
+        render_env.close()
+    except Exception as e:
+        print(f"[play2learn] Avviso: registrazione video split-screen Hill Climb saltata: {e}")
+
+    mean_dist_a = float(np.mean(results_a["distances"])) if results_a["distances"] else 0.0
+    mean_dist_b = float(np.mean(results_b["distances"])) if results_b["distances"] else 0.0
+    max_dist_a = float(np.max(results_a["distances"])) if results_a["distances"] else 0.0
+    max_dist_b = float(np.max(results_b["distances"])) if results_b["distances"] else 0.0
+
+    return {
+        "n_episodes": n_episodes,
+        "mean_dist_a": mean_dist_a,
+        "mean_dist_b": mean_dist_b,
+        "max_dist_a": max_dist_a,
+        "max_dist_b": max_dist_b,
+        "wins_a": wins_a,
+        "wins_b": wins_b,
+        "ties": ties,
+        "video_paths": video_paths,
+    }
+
+
+def _mostra_dashboard_testa_a_testa_hill(r_a: Path, r_b: Path, ext: dict[str, Any]) -> None:
+    """Mostra la dashboard HTML interattiva per Hill Climb con video affiancati."""
+    try:
+        from IPython.display import HTML, display
+        wins_a = ext["wins_a"]
+        wins_b = ext["wins_b"]
+        ties = ext["ties"]
+        dist_a = ext["mean_dist_a"]
+        dist_b = ext["mean_dist_b"]
+        max_a = ext["max_dist_a"]
+        max_b = ext["max_dist_b"]
+        name_a = html.escape(str(r_a.name[:18]))
+        name_b = html.escape(str(r_b.name[:18]))
+
+        winner_banner = (
+            f"🏆 Vettura Più Performante: <strong>{name_a}</strong> ({wins_a} vittorie vs {wins_b})"
+            if wins_a > wins_b else
+            (f"🏆 Vettura Più Performante: <strong>{name_b}</strong> ({wins_b} vittorie vs {wins_a})" if wins_b > wins_a
+             else "🤝 Prestazioni Equivalenti sulle Colline!")
+        )
+
+        video_cards = []
+        for vpath in ext.get("video_paths", []):
+            if vpath.exists():
+                b64 = base64.b64encode(vpath.read_bytes()).decode("ascii")
+                v_name = vpath.stem.replace("confronto_gara_", "Percorso ").capitalize()
+                video_cards.append(
+                    f'<div style="margin:8px; text-align:center; background:#1e293b; padding:10px; border-radius:8px; border:1.5px solid #38bdf8;">'
+                    f'<div style="font-weight:bold; color:#38bdf8; font-size:13px; margin-bottom:6px;">🏁 Gara Simultanea: {v_name} ({name_a} vs {name_b})</div>'
+                    f'<video width="560" controls autoplay loop muted style="border-radius:6px; max-width:100%;">'
+                    f'<source src="data:video/mp4;base64,{b64}" type="video/mp4">'
+                    f'</video></div>'
+                )
+
+        videos_html = f'<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:14px;">{"".join(video_cards)}</div>' if video_cards else ''
+
+        card_html = f"""
+        <div style="font-family:'Segoe UI',sans-serif; background:#0b1120; color:#f8fafc; padding:18px; border-radius:12px; margin:20px 0; border:2px solid #38bdf8; box-shadow:0 6px 20px rgba(0,0,0,0.4);">
+            <h3 style="margin-top:0; color:#38bdf8; border-bottom:1px solid #1e293b; padding-bottom:8px;">⚔️ Sfida Diretta Testa a Testa su 20 Scenari Collinari</h3>
+            <div style="font-size:15px; margin-bottom:14px; background:#1e293b; padding:10px 14px; border-radius:8px; color:#fef08a;">{winner_banner}</div>
+            
+            <table style="width:100%; border-collapse:collapse; font-size:13.5px; text-align:center; background:#111827; border-radius:8px; overflow:hidden;">
+                <thead style="background:#1e293b; color:#38bdf8;">
+                    <tr>
+                        <th style="padding:10px; text-align:left;">Metrica Verificata (20 Gare)</th>
+                        <th style="padding:10px;">🔵 {name_a}</th>
+                        <th style="padding:10px;">🟢 {name_b}</th>
+                        <th style="padding:10px;">Vantaggio</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom:1px solid #1f2937;">
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Distanza Media Percorsa</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if dist_a>=dist_b else '#f87171'};">{dist_a:.1f} m</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if dist_b>=dist_a else '#f87171'};">{dist_b:.1f} m</td>
+                        <td style="padding:10px;">{f"+{dist_a-dist_b:.1f} m" if dist_a>dist_b else (f"+{dist_b-dist_a:.1f} m" if dist_b>dist_a else "Parità")}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #1f2937;">
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Picco Distanza Massima</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if max_a>=max_b else '#f87171'};">{max_a:.1f} m</td>
+                        <td style="padding:10px; font-weight:bold; color:{'#10b981' if max_b>=max_a else '#f87171'};">{max_b:.1f} m</td>
+                        <td style="padding:10px;">{f"+{max_a-max_b:.1f} m" if max_a>max_b else (f"+{max_b-max_a:.1f} m" if max_b>max_a else "Parità")}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:10px; text-align:left; font-weight:bold;">Gare Vinte nello Scontro Diretto</td>
+                        <td style="padding:10px; font-size:15px; font-weight:bold; color:#38bdf8;">{wins_a} / 20</td>
+                        <td style="padding:10px; font-size:15px; font-weight:bold; color:#10b981;">{wins_b} / 20</td>
+                        <td style="padding:10px; color:#94a3b8;">{ties} pareggi</td>
+                    </tr>
+                </tbody>
+            </table>
+            {videos_html}
+        </div>
+        """
+        display(HTML(card_html))
+    except Exception as e:
+        print(f"[play2learn] Errore visualizzazione dashboard testa a testa: {e}")
+
+
 def confronta_run(runs_or_favs: Any) -> dict[str, Any]:
     """
     Genera un confronto sinottico tra piu sessioni di Hill Climb.
@@ -307,7 +551,25 @@ def confronta_run(runs_or_favs: Any) -> dict[str, Any]:
     except Exception:
         pass
 
-    return {"resolved_runs": resolved, "mean_distances": distances}
+    extended_results = {}
+    if len(resolved) >= 2:
+        try:
+            print("\n⚔️ Avvio valutazione estesa testa a testa su 20 scenari collinari...")
+            ext = _esegui_valutazione_comparativa_hill(
+                run_dir_a=resolved[0],
+                run_dir_b=resolved[1],
+                label_a=resolved[0].name,
+                label_b=resolved[1].name,
+                n_episodes=20,
+                video_seeds=[42, 142],
+            )
+            if ext:
+                extended_results = ext
+                _mostra_dashboard_testa_a_testa_hill(resolved[0], resolved[1], ext)
+        except Exception as e:
+            print(f"[play2learn] Avviso: confronto esteso non completato: {e}")
+
+    return {"resolved_runs": resolved, "mean_distances": distances, "head_to_head": extended_results}
 
 
 def genera_report_da_timestamp(
