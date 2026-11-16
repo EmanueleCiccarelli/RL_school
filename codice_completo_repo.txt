@@ -1,6 +1,7 @@
 # ==============================================================================
-# RL_SCHOOL - CODICE COMPLETO DELLA REPOSITORY
-# Progetto: Laboratorio di Reinforcement Learning didattico (LunarLander-v3)
+# RL_SCHOOL - CODICE SORGENTE COMPLETO DELLA REPOSITORY
+# Progetti: Lunar Lander (LunarLander-v3) & Hill Climb Racing (HillClimbRacing-v0)
+# Architettura: play2learn_core + play2learn_lunarlander + play2learn_hillclimb
 # ==============================================================================
 
 
