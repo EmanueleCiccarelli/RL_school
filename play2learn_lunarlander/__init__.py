@@ -41,6 +41,7 @@ from play2learn_lunarlander.storage import (
     find_run_by_timestamp,
     elenca_cronologia_run,
     mostra_cronologia_run,
+    comprimi_runs,
 )
 from play2learn_lunarlander.reset import reset_laboratorio
 from play2learn_lunarlander.interactive import (
@@ -78,6 +79,7 @@ __all__ = [
     "gioca_single_player",
     "gioca_vs_agente",
     "gioca",
+    "comprimi_runs",
     "MISSIONS",
     "ENV_ID",
     "LabResult",

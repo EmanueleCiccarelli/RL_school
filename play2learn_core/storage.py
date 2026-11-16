@@ -213,3 +213,46 @@ def save_generic_run_metadata(
 
     atomic_write_json(meta_path, data)
     return meta_path
+
+
+def comprimi_runs(
+    runs_dir: Path | str = "runs",
+    nome_zip: str = "runs_archivio.zip",
+    scarica_su_colab: bool = True,
+) -> Path | None:
+    """
+    Comprime l'intera cartella 'runs/' in un file ZIP al livello del notebook
+    e, se in esecuzione su Google Colab, avvia automaticamente il download nel browser.
+    """
+    import zipfile
+
+    r_dir = Path(runs_dir)
+    if not r_dir.exists():
+        print(f"⚠️ Cartella '{runs_dir}' non trovata. Nessun esperimento da comprimere.")
+        return None
+
+    zip_path = Path(nome_zip)
+    if not zip_path.is_absolute():
+        zip_path = Path.cwd() / zip_path
+
+    print(f"📦 Compressione della cartella '{r_dir}' in corso...")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(r_dir):
+            for file in files:
+                file_p = Path(root) / file
+                arcname = file_p.relative_to(r_dir.parent)
+                zipf.write(file_p, arcname=str(arcname))
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"✅ Archivio ZIP creato con successo: {zip_path.name} ({size_mb:.2f} MB)")
+    print(f"📍 Percorso: {zip_path}")
+
+    if scarica_su_colab:
+        try:
+            from google.colab import files
+            print("🚀 Avvio download automatico nel browser tramite Google Colab...")
+            files.download(str(zip_path))
+        except Exception:
+            pass
+
+    return zip_path

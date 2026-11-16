@@ -35,6 +35,7 @@ from play2learn_hillclimb.reporting import (
     genera_report_da_timestamp,
     genera_report_esperimento,
 )
+from play2learn_hillclimb.storage import comprimi_runs
 from play2learn_hillclimb.visualizer import mostra_mappa_ambiente
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "confronta_run",
     "genera_report_da_timestamp",
     "genera_report_esperimento",
+    "comprimi_runs",
     "gioca_single_player",
     "gioca_vs_agente",
     "gioca",

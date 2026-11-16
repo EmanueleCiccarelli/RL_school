@@ -569,3 +569,16 @@ def mostra_cronologia_run(runs_dir: Path | str | None = None) -> None:
             print(f"{e['timestamp']:<18} | {e['name'][:24]:<25} | {e['success_rate']:<9.1f}% | {e['mean_fuel']:<12.1f} | {mod_str:<8}")
         print("=" * 80)
         print("💡 Copia il Timestamp desiderato nella cella di reportistica per rigenerare la scheda tecnica!\n")
+
+
+def comprimi_runs(
+    runs_dir: Path | str = "runs",
+    nome_zip: str = "runs_lunarlander.zip",
+    scarica_su_colab: bool = True,
+) -> Path | None:
+    """
+    Comprime l'intera cartella 'runs/' degli esperimenti Lunar Lander in un file ZIP al livello del notebook
+    e ne avvia il download automatico se eseguito su Google Colab.
+    """
+    from play2learn_core.storage import comprimi_runs as _core_comprimi
+    return _core_comprimi(runs_dir=runs_dir, nome_zip=nome_zip, scarica_su_colab=scarica_su_colab)

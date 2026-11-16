@@ -80,3 +80,19 @@ def save_run_metadata(
         diagnostics=diagnostics,
         notes=notes,
     )
+
+
+def comprimi_runs(
+    runs_dir: Path | str | None = None,
+    nome_zip: str = "runs_hillclimb.zip",
+    scarica_su_colab: bool = True,
+) -> Path | None:
+    """
+    Comprime l'intera cartella degli esperimenti Hill Climb Racing in un file ZIP al livello del notebook
+    e ne avvia il download automatico se eseguito su Google Colab.
+    """
+    from play2learn_core.storage import comprimi_runs as _core_comprimi
+    actual_dir = Path(runs_dir) if runs_dir else get_default_runs_dir()
+    if not actual_dir.exists() and Path("runs").exists():
+        actual_dir = Path("runs")
+    return _core_comprimi(runs_dir=actual_dir, nome_zip=nome_zip, scarica_su_colab=scarica_su_colab)
