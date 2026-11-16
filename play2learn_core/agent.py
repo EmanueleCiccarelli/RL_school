@@ -356,7 +356,7 @@ class ChunkedSubprocVecEnv(VecEnv):
 
 def get_optimal_vec_config(
     n_envs: int | None = None,
-    total_timesteps: int = 150_000,
+    total_timesteps: int = 300_000,
     prefer_subproc: bool | None = None,
 ) -> tuple[int, bool]:
     """Seleziona ChunkedSubprocVecEnv su Linux / Colab e DummyVecEnv su Windows/macOS."""
