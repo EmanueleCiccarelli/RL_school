@@ -32,7 +32,6 @@ from play2learn_hillclimb.config import (
 from play2learn_hillclimb.diagnostics import diagnose_hill_climb_behavior
 from play2learn_hillclimb.environment import HillClimbRewardWrapper, classify_hill_climb_outcome
 from play2learn_hillclimb.evaluator import crea_gif_evoluzione_apprendimento, evaluate_and_record
-from play2learn_hillclimb.interactive import gioca_vs_agente
 from play2learn_hillclimb.reporting import genera_report_esperimento
 from play2learn_hillclimb.storage import create_run_directory, save_run_metadata
 
@@ -78,15 +77,6 @@ class LabResult(dict):
         return salva_nei_preferiti(self, nome=chosen, note=note, tag=tag)
 
     preferito = salva_preferito
-
-    def sfida(self, seed: int = 42) -> Any:
-        """Lancia la sfida interattiva Split-Screen contro questo modello."""
-        return gioca_vs_agente(
-            model_or_result=self.get("model"),
-            seed=seed,
-            mission=self.get("mission", "campagna_standard"),
-            env_kwargs=self.get("env_kwargs"),
-        )
 
 
 def run_lab(

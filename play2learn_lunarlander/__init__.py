@@ -44,11 +44,6 @@ from play2learn_lunarlander.storage import (
     comprimi_runs,
 )
 from play2learn_lunarlander.reset import reset_laboratorio
-from play2learn_lunarlander.interactive import (
-    gioca_single_player,
-    gioca_vs_agente,
-    gioca,
-)
 
 # Alias pubblico allineato a LabResult.salva_preferito
 salva_preferito = salva_nei_preferiti
@@ -76,9 +71,6 @@ __all__ = [
     "dimostrazione_live",
     "list_all_runs",
     "reset_laboratorio",
-    "gioca_single_player",
-    "gioca_vs_agente",
-    "gioca",
     "comprimi_runs",
     "MISSIONS",
     "ENV_ID",

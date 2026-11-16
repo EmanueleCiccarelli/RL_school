@@ -16,7 +16,6 @@ from play2learn_hillclimb.environment import (
     _wrap_angle,
 )
 from play2learn_hillclimb.favorites import LoadedFavorite
-from play2learn_hillclimb.interactive import gioca_single_player, gioca_vs_agente
 from play2learn_hillclimb.visualizer import plot_hill_telemetry
 
 
@@ -152,17 +151,6 @@ class TestHillClimb(unittest.TestCase):
         # 3. Accesso a dizionario
         self.assertEqual(fav["metadata"], fake_meta)
         self.assertEqual(fav.get("mission"), "Test")
-
-    def test_interactive_smoke(self):
-        ui = gioca_single_player(seed=42)
-        self.assertIsNotNone(ui)
-        html_str = str(getattr(ui, "data", ui))
-        self.assertIn("Simulatore Manuale", html_str)
-
-        ui_vs = gioca_vs_agente(model_or_result=None, seed=42)
-        self.assertIsNotNone(ui_vs)
-        html_vs = str(getattr(ui_vs, "data", ui_vs))
-        self.assertIn("Sfida Hill Climb", html_vs)
 
 
 if __name__ == "__main__":

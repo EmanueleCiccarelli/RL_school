@@ -26,7 +26,6 @@ DEFAULT_FILES_TO_BUNDLE = [
     "play2learn_core/evaluator.py",
     "play2learn_core/favorites.py",
     "play2learn_core/reporting.py",
-    "play2learn_core/base_interactive.py",
     "play2learn_lunarlander/__init__.py",
     "play2learn_lunarlander/config.py",
     "play2learn_lunarlander/environment.py",
@@ -37,7 +36,6 @@ DEFAULT_FILES_TO_BUNDLE = [
     "play2learn_lunarlander/storage.py",
     "play2learn_lunarlander/favorites.py",
     "play2learn_lunarlander/reporting.py",
-    "play2learn_lunarlander/interactive.py",
     "play2learn_lunarlander/reset.py",
     "play2learn_lunarlander/lab.py",
     "play2learn_hillclimb/__init__.py",
@@ -50,7 +48,6 @@ DEFAULT_FILES_TO_BUNDLE = [
     "play2learn_hillclimb/storage.py",
     "play2learn_hillclimb/favorites.py",
     "play2learn_hillclimb/reporting.py",
-    "play2learn_hillclimb/interactive.py",
     "play2learn_hillclimb/reset.py",
     "play2learn_hillclimb/lab.py",
     "play2learn_hillclimb/engine/__init__.py",
@@ -66,7 +63,6 @@ DEFAULT_FILES_TO_BUNDLE = [
     "tests/test_environment.py",
     "tests/test_agent.py",
     "tests/test_storage_favorites.py",
-    "tests/test_interactive.py",
     "tests/test_reporting.py",
     "tests/test_reset.py",
     "tests/test_hillclimb.py",
@@ -99,8 +95,8 @@ and introductory university students who practice Reward Shaping across two phys
 Operational Constraints:
 1. Student Public Interface Invariance:
    The public API (`custom_reward`, `run_lab`, `carica_preferito`, `salva_preferito`,
-   `mostra_preferiti`, `confronta_run`, `genera_report_da_timestamp`, `gioca_single_player`,
-   `gioca_vs_agente`, `LabResult`) must remain 100% backward compatible for both environments.
+   `mostra_preferiti`, `confronta_run`, `genera_report_da_timestamp`,
+   `LabResult`) must remain 100% backward compatible for both environments.
 2. Dual Target Runtime Environments:
    - Google Colab (2 vCPU, headless Linux, limited RAM ~12GB, virtual framebuffer).
    - Local PC (Windows / macOS / Linux, 4-16 threads, Jupyter Notebook / VS Code).

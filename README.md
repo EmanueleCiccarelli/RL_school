@@ -34,8 +34,7 @@ RL_school/
 │   ├── evaluator.py                        # Streaming video recording H.264 (<1 MB RAM) & GIF generator
 │   ├── storage.py                          # Scritture atomiche, cartelle univoche & timestamp resolution
 │   ├── favorites.py                        # BaseFavoritesManager per cataloghi persistenti
-│   ├── reporting.py                        # Base report engine: PDF vettoriale, HTML5, Markdown
-│   └── base_interactive.py                 # Sintetizzatore Web Audio & game loop fisso 50 Hz
+│   └── reporting.py                        # Base report engine: PDF vettoriale, HTML5, Markdown
 │
 ├── play2learn_lunarlander/                 # 🚀 Pacchetto specializzato Lunar Lander
 │   ├── config.py                           # Missioni lunari, costanti fisiche
@@ -44,7 +43,6 @@ RL_school/
 │   ├── visualizer.py                       # Mappe fisiche e telemetria radar
 │   ├── evaluator.py                        # Valutazione 20 seed deterministici & video
 │   ├── reporting.py                        # Schede tecniche (PDF, HTML5, Markdown)
-│   ├── interactive.py                      # Arcade Canvas HTML5: Single Player & Tu vs Agente
 │   └── lab.py                              # run_lab() didattico
 │
 ├── play2learn_hillclimb/                   # 🏎️ Pacchetto specializzato Hill Climb Racing
@@ -59,14 +57,12 @@ RL_school/
 │   ├── visualizer.py                       # Mappa veicolo e dashboard telemetrica colline
 │   ├── evaluator.py                        # Streaming mp4 ad alta fedeltà & GIF evoluzione
 │   ├── reporting.py                        # Scheda tecnica (Distanza max, velocità, airtime, ribaltamenti)
-│   ├── interactive.py                      # Arcade Canvas HTML5: Guida manuale & Gara Tu vs Agente AI
 │   └── lab.py                              # run_lab() didattico per Hill Climb
 │
-└── tests/                                  # 🧪 Suite di test unitari automatizzati (31/31 passing)
+└── tests/                                  # 🧪 Suite di test unitari automatizzati
     ├── test_hillclimb.py                   # Test suite Hill Climb Racing
     ├── test_environment.py                 # Test wrapper reward e guardie NaN
     ├── test_agent.py                       # Test callback scorrimento O(1)
-    ├── test_interactive.py                 # Test Canvas interattivo & compatibilità
     ├── test_reporting.py                   # Test PDF, HTML escape e serializzazione
     ├── test_storage_favorites.py           # Test persistenza atomica
     └── test_config.py                      # Test configurazioni e iperparametri
@@ -245,7 +241,6 @@ I test verificano:
 - Flessibilità della signature di `custom_reward` (compatibilità con 1, 2, 5 argomenti o `**kwargs`).
 - Calcolo in tempo reale a complessità $O(1)$ della finestra mobile del tracker di reward e telemetria.
 - Persistenza e indicizzazione corretta delle cartelle di run e dei preferiti.
-- Estrazione geometrica del terreno Box2D e tracciamento delle traiettorie per la sfida interattiva.
 - Integrità dei file sorgente del progetto tramite `reset.py --check`.
 
 ---

@@ -20,11 +20,6 @@ from play2learn_hillclimb.favorites import (
     salva_nei_preferiti,
     salva_preferito,
 )
-from play2learn_hillclimb.interactive import (
-    gioca,
-    gioca_single_player,
-    gioca_vs_agente,
-)
 from play2learn_hillclimb.lab import (
     LabResult,
     dimostrazione_live,
@@ -50,9 +45,6 @@ __all__ = [
     "genera_report_da_timestamp",
     "genera_report_esperimento",
     "comprimi_runs",
-    "gioca_single_player",
-    "gioca_vs_agente",
-    "gioca",
     "mostra_mappa_ambiente",
     "classify_hill_climb_outcome",
     "HillClimbRewardWrapper",

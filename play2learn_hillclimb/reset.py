@@ -23,7 +23,6 @@ def check_integrity() -> bool:
         "storage.py",
         "favorites.py",
         "reporting.py",
-        "interactive.py",
         "lab.py",
     ]
     missing = [f for f in required if not (pkg_dir / f).exists()]
