@@ -27,6 +27,11 @@ from play2learn_lunarlander.environment import (
     CustomRewardWrapper,
     classify_lunar_lander_outcome,
 )
+from play2learn_core.evaluator import (
+    render_banner_once,
+    fast_resize_into,
+    RENDER_LOCK,
+)
 
 
 def _make_fast_predictor(model: PPO) -> Callable[[np.ndarray, bool], int]:
@@ -104,14 +109,15 @@ def _record_episode_streaming(
     seed: int,
     actions: list[int],
     output_path: Path,
-    fps: int = 50,
+    fps: int = 25,
+    render_stride: int = 2,
     capture_gif_frames: bool = False,
     gif_stride: int = 2,
     gif_width: int = 400,
 ) -> list[np.ndarray]:
     """
     Rigioca un episodio e scrive direttamente i frame su disco in streaming (RAM costante ~1 MB).
-    Supporta pixel format yuv420p per massima compatibilità con browser HTML5.
+    Supporta render_stride=2 (25 FPS) per dimezzare le chiamate render Pygame e il peso dei video.
     """
     import imageio
     from PIL import Image
@@ -125,7 +131,7 @@ def _record_episode_streaming(
                 str(output_path),
                 fps=fps,
                 macro_block_size=1,
-                ffmpeg_params=["-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p"],
+                ffmpeg_params=["-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
             )
         except Exception:
             try:
@@ -133,7 +139,7 @@ def _record_episode_streaming(
                     str(output_path),
                     fps=fps,
                     macro_block_size=1,
-                    ffmpeg_params=["-preset", "ultrafast", "-crf", "26"],
+                    ffmpeg_params=["-preset", "ultrafast", "-crf", "28"],
                 )
             except Exception:
                 return imageio.get_writer(str(output_path), fps=fps, macro_block_size=1)
@@ -143,32 +149,36 @@ def _record_episode_streaming(
             return
         h, w = frame.shape[:2]
         target_h = max(1, int(gif_width * h / w))
-        small = Image.fromarray(frame).resize((gif_width, target_h), Image.Resampling.BILINEAR)
-        gif_frames.append(np.asarray(small))
+        buf = np.empty((target_h, gif_width, 3), dtype=np.uint8)
+        fast_resize_into(frame, buf)
+        gif_frames.append(buf.copy())
 
-    render_env.reset(seed=seed)
-    with _open_writer() as writer:
-        frame_idx = 0
-        init_frame = render_env.render()
-        if init_frame is not None:
-            writer.append_data(init_frame)
-            _maybe_collect_gif(init_frame, frame_idx)
-            frame_idx += 1
-
-        last_frame = init_frame
-        for act in actions:
-            _, _, term, trunc, _ = render_env.step(act)
-            frame = render_env.render()
-            if frame is not None:
-                writer.append_data(frame)
-                _maybe_collect_gif(frame, frame_idx)
-                last_frame = frame
+    with RENDER_LOCK:
+        render_env.reset(seed=seed)
+        with _open_writer() as writer:
+            frame_idx = 0
+            init_frame = render_env.render()
+            if init_frame is not None:
+                writer.append_data(init_frame)
+                _maybe_collect_gif(init_frame, frame_idx)
                 frame_idx += 1
-            if term or trunc:
-                break
 
-        if last_frame is not None and capture_gif_frames:
-            _maybe_collect_gif(last_frame, frame_idx, force=True)
+            last_frame = init_frame
+            for act_idx, act in enumerate(actions, start=1):
+                _, _, term, trunc, _ = render_env.step(act)
+                done = bool(term or trunc)
+                if (act_idx % render_stride == 0) or done:
+                    frame = render_env.render()
+                    if frame is not None:
+                        writer.append_data(frame)
+                        _maybe_collect_gif(frame, frame_idx)
+                        last_frame = frame
+                        frame_idx += 1
+                if done:
+                    break
+
+            if last_frame is not None and capture_gif_frames:
+                _maybe_collect_gif(last_frame, frame_idx, force=True)
 
     return gif_frames
 
@@ -441,7 +451,7 @@ def crea_gif_evoluzione_apprendimento(
     env_kwargs: dict[str, Any] | None = None,
     seed: int = 42,
     max_steps_per_episode: int = 240,
-    stride: int = 2,
+    stride: int = 3,
     target_width: int = 400,
     fps: int = 15,
 ) -> Path | None:
@@ -494,7 +504,22 @@ def crea_gif_evoluzione_apprendimento(
     frames_written = 0
 
     try:
-        with imageio.get_writer(str(output_path), mode="I", fps=fps, loop=0) as gif_writer:
+        def _open_timelapse():
+            if output_path.suffix.lower() == ".mp4":
+                return imageio.get_writer(
+                    str(output_path),
+                    fps=fps,
+                    macro_block_size=1,
+                    ffmpeg_params=[
+                        "-preset", "ultrafast",
+                        "-crf", "28",
+                        "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart",
+                    ],
+                )
+            return imageio.get_writer(str(output_path), mode="I", fps=fps, loop=0)
+
+        with _open_timelapse() as gif_writer:
             for idx, m in enumerate(milestones):
                 policy.load_state_dict(m["state_dict"])
                 predict_fn = _make_fast_predictor(model)
@@ -552,22 +577,29 @@ def crea_gif_evoluzione_apprendimento(
                 pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
                 succ_val = m.get("success_rate", 0.0)
 
+                banner = render_banner_once(
+                    width=target_width,
+                    line1=f"{stage_title} - Step ~{step_val:,} ({pct_val}%)",
+                    line2=f"Esito: {final_esito} | Succ. mobile: {succ_val:.0f}%",
+                    height=34,
+                )
+
                 last_annotated = None
                 for f in sampled_raw:
                     h, w = f.shape[:2]
-                    target_h = max(1, int(target_width * h / w))
-                    img = Image.fromarray(f).resize((target_width, target_h), Image.Resampling.BILINEAR)
-                    draw = ImageDraw.Draw(img)
-                    draw.rectangle([(0, 0), (target_width, 34)], fill=(15, 23, 42))
-                    draw.text((8, 4), f"{stage_title} - Step ~{step_val:,} ({pct_val}%)", fill=(255, 255, 255))
-                    draw.text((8, 18), f"Esito: {final_esito} | Succ. mobile: {succ_val:.0f}%", fill=(147, 197, 253))
-                    last_annotated = np.asarray(img)
-                    gif_writer.append_data(last_annotated)
+                    target_h = max(2, int(target_width * h / w))
+                    if target_h % 2 != 0:
+                        target_h -= 1
+                    buf = np.empty((target_h, target_width, 3), dtype=np.uint8)
+                    fast_resize_into(f, buf)
+                    buf[:34, :, :] = banner
+                    last_annotated = buf
+                    gif_writer.append_data(buf)
                     frames_written += 1
 
-                # Congela l'ultimo frame annotato per 8 frame per una lettura chiara
+                # Congela l'ultimo frame annotato per 4 frame per una lettura chiara
                 if last_annotated is not None:
-                    for _ in range(8):
+                    for _ in range(4):
                         gif_writer.append_data(last_annotated)
                         frames_written += 1
     except Exception as e:

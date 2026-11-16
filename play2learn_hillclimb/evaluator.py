@@ -16,7 +16,12 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
-from play2learn_core.evaluator import create_milestone_gif, record_episode_streaming
+from play2learn_core.evaluator import (
+    create_milestone_gif,
+    record_episode_streaming,
+    make_fast_predictor,
+    RENDER_LOCK,
+)
 from play2learn_hillclimb.config import ENV_ID, EVAL_SEEDS, MIN_EVAL_EPISODES
 from play2learn_hillclimb.environment import HillClimbRewardWrapper, classify_hill_climb_outcome
 
@@ -27,6 +32,7 @@ def _evaluate_single_episode_fast(
     seed: int,
     max_steps: int = 1200,
     reward_fn: Callable | None = None,
+    predict_fn: Callable[[np.ndarray, bool], int] | None = None,
 ) -> dict[str, Any]:
     """Valuta un episodio in modalita puramente headless senza rendering Pygame."""
     obs, info = env.reset(seed=seed)
@@ -35,10 +41,10 @@ def _evaluate_single_episode_fast(
     terminated = False
     truncated = False
     is_success = False
+    pred = predict_fn or make_fast_predictor(model)
 
     while not (terminated or truncated) and steps < max_steps:
-        action, _ = model.predict(obs, deterministic=True)
-        act_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
+        act_item = pred(obs, True)
         obs, reward, terminated, truncated, info = env.step(act_item)
         tot_rew += float(reward)
         steps += 1
@@ -100,6 +106,7 @@ def evaluate_and_record(
     if reward_fn is not None:
         fast_env = HillClimbRewardWrapper(fast_env, reward_fn=reward_fn)
 
+    pred_fn = make_fast_predictor(model)
     try:
         for idx, s in enumerate(actual_seeds):
             ep_res = _evaluate_single_episode_fast(
@@ -108,6 +115,7 @@ def evaluate_and_record(
                 seed=s,
                 max_steps=max_steps_per_episode,
                 reward_fn=reward_fn,
+                predict_fn=pred_fn,
             )
             ep_res["episode"] = idx + 1
             ep_res["video_path"] = None
@@ -203,63 +211,72 @@ def crea_gif_evoluzione_apprendimento(
 ) -> Path | None:
     """
     Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline,
-    ricostruendo correttamente i pesi dai checkpoint state_dict (senza mutazione di riferimento).
+    ricostruendo correttamente i pesi dai checkpoint state_dict (con ripristino dei pesi originali).
     """
     if not checkpoints:
         return None
 
+    import imageio
+
     gif_path = Path(output_gif_path)
     gif_path.parent.mkdir(parents=True, exist_ok=True)
-    frames_all: list[np.ndarray] = []
+
+    orig_state = None
+    if base_model is not None and hasattr(base_model, "policy"):
+        try:
+            orig_state = {k: v.detach().cpu().clone() for k, v in base_model.policy.state_dict().items()}
+        except Exception:
+            orig_state = None
 
     final_kwargs = dict(env_kwargs or {})
     env = gym.make(ENV_ID, render_mode="rgb_array", **final_kwargs)
     if reward_fn is not None:
         env = HillClimbRewardWrapper(env, reward_fn=reward_fn)
 
+    frames_written = 0
     try:
-        for timesteps, ckpt_or_model in checkpoints:
-            # Ripristina i pesi se e uno state_dict salvato in RAM
-            if isinstance(ckpt_or_model, dict) and base_model is not None:
-                try:
-                    base_model.policy.load_state_dict(ckpt_or_model)
-                    active_model = base_model
-                except Exception:
-                    continue
-            else:
-                active_model = ckpt_or_model
+        with imageio.get_writer(str(gif_path), mode="I", fps=12, loop=0) as writer:
+            for timesteps, ckpt_or_model in checkpoints:
+                # Ripristina i pesi se e uno state_dict salvato in RAM
+                if isinstance(ckpt_or_model, dict) and base_model is not None:
+                    try:
+                        base_model.policy.load_state_dict(ckpt_or_model)
+                        active_model = base_model
+                    except Exception:
+                        continue
+                else:
+                    active_model = ckpt_or_model
 
-            obs, _ = env.reset(seed=seed)
-            step_count = 0
-            terminated = False
-            truncated = False
+                pred_fn = make_fast_predictor(active_model)
+                obs, _ = env.reset(seed=seed)
+                step_count = 0
+                terminated = False
+                truncated = False
 
-            while not (terminated or truncated) and step_count < max_steps_per_ckpt:
-                action, _ = active_model.predict(obs, deterministic=True)
-                act_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else int(action)
-                obs, reward, terminated, truncated, info = env.step(act_item)
-                step_count += 1
+                while not (terminated or truncated) and step_count < max_steps_per_ckpt:
+                    act_item = pred_fn(obs, True)
+                    obs, reward, terminated, truncated, info = env.step(act_item)
+                    step_count += 1
 
-                if step_count % 3 == 0:
-                    frame = env.render()
-                    if frame is not None:
-                        # Ridimensiona il frame a 480px di larghezza per footprint O(1)
-                        img = Image.fromarray(frame)
-                        w, h = img.size
-                        new_w = 480
-                        new_h = int(h * (new_w / w))
-                        img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                    if step_count % 3 == 0 or terminated or truncated:
+                        frame = env.render()
+                        if frame is not None:
+                            img = Image.fromarray(frame)
+                            w, h = img.size
+                            new_w = 480
+                            new_h = int(h * (new_w / w))
+                            img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
-                        draw = ImageDraw.Draw(img)
-                        dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
-                        txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
-                        draw.rectangle([10, 10, 260, 32], fill=(15, 23, 42, 220))
-                        draw.text((16, 14), txt, fill=(56, 189, 248))
-                        frames_all.append(np.array(img))
-
+                            draw = ImageDraw.Draw(img)
+                            dist = float(obs[0]) if hasattr(obs, "__getitem__") else 0.0
+                            txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
+                            draw.rectangle([10, 10, 260, 32], fill=(15, 23, 42, 220))
+                            draw.text((16, 14), txt, fill=(56, 189, 248))
+                            writer.append_data(np.asarray(img))
+                            frames_written += 1
     finally:
         env.close()
+        if orig_state is not None and base_model is not None and hasattr(base_model, "policy"):
+            base_model.policy.load_state_dict(orig_state)
 
-    if frames_all:
-        return create_milestone_gif(frames_all, gif_path, fps=12)
-    return None
+    return gif_path if frames_written > 0 else None

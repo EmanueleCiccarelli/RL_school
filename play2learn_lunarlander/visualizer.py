@@ -125,7 +125,7 @@ def plot_training_results(
     episodes = np.arange(1, n_episodes + 1)
     window = min(40, max(5, n_episodes // 12))
 
-    fig = Figure(figsize=(14, 8.8), dpi=300)
+    fig = Figure(figsize=(14, 8.8), dpi=150)
     FigureCanvasAgg(fig)
     fig.suptitle(f"Telemetria di Addestramento RL — {mission_title}", fontsize=14, fontweight="bold")
     axes = fig.subplots(2, 2)
@@ -201,7 +201,7 @@ def plot_training_results(
         bbox=dict(boxstyle="round,pad=0.55", facecolor="#fffde7", edgecolor="#fbc02d", lw=1.6)
     )
 
-    fig.savefig(str(save_path), dpi=300)
+    fig.savefig(str(save_path), dpi=150)
     fig.clear()
     return diag
 
@@ -211,13 +211,13 @@ def display_notebook_summary(
     videos: list[Path] | None = None,
     success_videos: list[Path] | None = None,
     failure_videos: list[Path] | None = None,
-    max_videos: int = 4,
+    max_videos: int = 2,
     gif_path: Path | str | None = None,
 ) -> None:
     """
     Mostra il grafico e i video di test direttamente nell'output della cella del Notebook,
     separando chiaramente i voli di successo dai fallimenti per un'analisi didattica mirata,
-    e includendo l'eventuale timelapse GIF dell'evoluzione dell'agente.
+    e includendo l'eventuale timelapse GIF o MP4 dell'evoluzione dell'agente.
     """
     try:
         from IPython.display import Image, HTML, display
@@ -240,16 +240,25 @@ def display_notebook_summary(
 
         sections = []
 
-        # Card timelapse GIF dell'evoluzione dell'apprendimento
+        # Card timelapse (MP4 looping o GIF) dell'evoluzione dell'apprendimento
         if gif_path:
-            p_gif = Path(gif_path)
-            if p_gif.exists():
-                b64_gif = base64.b64encode(p_gif.read_bytes()).decode("ascii")
+            p_media = Path(gif_path)
+            if p_media.exists():
+                b64_media = base64.b64encode(p_media.read_bytes()).decode("ascii")
+                if p_media.suffix.lower() == ".mp4":
+                    media_tag = (
+                        f'<video width="440" controls autoplay loop muted style="border-radius:6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);">'
+                        f'<source src="data:video/mp4;base64,{b64_media}" type="video/mp4">'
+                        f'</video>'
+                    )
+                else:
+                    media_tag = f'<img src="data:image/gif;base64,{b64_media}" style="max-width: 460px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);" />'
+
                 sections.append(
                     f'<div style="margin-top: 18px; text-align: center; background: #f3e5f5; padding: 12px; border-radius: 8px; border: 1.5px solid #ab47bc;">'
                     f'<h4 style="color:#6a1b9a; margin-top:2px; margin-bottom:6px;">🎞️ Evoluzione dell\'Apprendimento nel Tempo (Timelapse delle Fasi di Training)</h4>'
                     f'<p style="color:#4a148c; font-size:12px; margin-bottom:10px;">Confronto della traiettoria sullo stesso terreno attraverso le diverse fasi di addestramento:</p>'
-                    f'<img src="data:image/gif;base64,{b64_gif}" style="max-width: 460px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.15);" />'
+                    f'{media_tag}'
                     f'</div>'
                 )
 
@@ -363,5 +372,5 @@ def plot_comparison(runs_data: list[dict[str, Any]], save_path: Path | str) -> N
     ax2.legend(loc="upper right")
 
     fig.tight_layout()
-    fig.savefig(str(save_path), dpi=300)
+    fig.savefig(str(save_path), dpi=150)
     fig.clear()

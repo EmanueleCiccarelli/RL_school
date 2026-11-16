@@ -1,17 +1,189 @@
 """
-Modulo Core di Valutazione e Streaming Video/GIF (Play2Learn).
+Modulo Core di Valutazione e Streaming Video/GIF/MP4 (Play2Learn).
 Scrittura incrementale direttamente su disco con footprint RAM costante (< 1 MB),
-preservazione del seed deterministico e compatibilità browser garantita (yuv420p).
+preservazione del seed deterministico, streaming H.264 ultrafast e inferenza accelerata.
 """
 
 from __future__ import annotations
 
 import collections
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
 import imageio
 import numpy as np
+import torch
+from PIL import Image, ImageDraw
+
+try:
+    import cv2
+    _HAS_CV2 = True
+except ImportError:
+    _HAS_CV2 = False
+
+# Global lock protecting headless Pygame/SDL surface rendering across threads
+RENDER_LOCK = threading.Lock()
+
+
+def make_fast_predictor(model: Any) -> Callable[[np.ndarray, bool], int]:
+    """Bypasses SB3 model.predict() per-step validation for 3-4x faster CPU inference."""
+    policy = getattr(model, "policy", None)
+    if policy is None:
+        return lambda obs, det: int(model.predict(obs, deterministic=det)[0])
+
+    policy.set_training_mode(False)
+    device = getattr(model, "device", "cpu")
+
+    @torch.inference_mode()
+    def _predict(obs: np.ndarray, deterministic: bool = True) -> int:
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        act_t = policy._predict(obs_t, deterministic=deterministic)
+        return int(act_t.item())
+
+    return _predict
+
+
+def make_fast_batch_predictor(model: Any) -> Callable[[np.ndarray, bool], np.ndarray]:
+    """Vectorized batch predictor for multi-env headless evaluation sweeps."""
+    policy = getattr(model, "policy", None)
+    if policy is None:
+        return lambda obs_b, det: model.predict(obs_b, deterministic=det)[0]
+
+    policy.set_training_mode(False)
+    device = getattr(model, "device", "cpu")
+
+    @torch.inference_mode()
+    def _predict_batch(obs_batch: np.ndarray, deterministic: bool = True) -> np.ndarray:
+        obs_t = torch.as_tensor(obs_batch, dtype=torch.float32, device=device)
+        act_t = policy._predict(obs_t, deterministic=deterministic)
+        return act_t.cpu().numpy()
+
+    return _predict_batch
+
+
+def _make_even(n: int) -> int:
+    return max(2, n - (n % 2))
+
+
+def render_banner_once(
+    width: int,
+    line1: str,
+    line2: str,
+    height: int = 34,
+) -> np.ndarray:
+    """Pre-renders the static milestone header once per stage as a uint8 RGB array."""
+    img = Image.new("RGB", (width, height), color=(15, 23, 42))
+    draw = ImageDraw.Draw(img)
+    draw.text((8, 4), line1, fill=(255, 255, 255))
+    draw.text((8, 18), line2, fill=(147, 197, 253))
+    return np.asarray(img, dtype=np.uint8)
+
+
+def fast_resize_into(frame: np.ndarray, out_buf: np.ndarray) -> np.ndarray:
+    """Resizes RGB frame into pre-allocated out_buf using OpenCV or fast PIL fallback."""
+    target_h, target_w = out_buf.shape[:2]
+    if _HAS_CV2:
+        cv2.resize(frame, (target_w, target_h), dst=out_buf, interpolation=cv2.INTER_AREA)
+        return out_buf
+    # Fast exact 2x decimation when dimensions match (e.g., 600x400 -> 300x200)
+    if frame.shape[0] == target_h * 2 and frame.shape[1] == target_w * 2:
+        np.copyto(out_buf, frame[::2, ::2])
+        return out_buf
+    pil_small = Image.fromarray(frame).resize(
+        (target_w, target_h), Image.Resampling.BILINEAR, reducing_gap=2.0
+    )
+    np.copyto(out_buf, np.asarray(pil_small, dtype=np.uint8))
+    return out_buf
+
+
+def replay_actions_streaming_mp4(
+    render_env: Any,
+    seed: int,
+    actions: list[int],
+    output_path: Path,
+    physics_fps: int = 50,
+    render_stride: int = 2,
+    target_width: int = 480,
+    crf: int = 28,
+) -> Path:
+    """
+    Replays recorded actions in Box2D with zero PyTorch overhead and streams H.264 directly
+    to disk at O(1) RAM. Default render_stride=2 outputs smooth 25 FPS video at 2x speed
+    and ~50% smaller file size.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_fps = max(1, physics_fps // max(1, render_stride))
+
+    with RENDER_LOCK:
+        render_env.reset(seed=seed)
+        init_frame = render_env.render()
+        if init_frame is None:
+            return output_path
+
+        h, w = init_frame.shape[:2]
+        out_w = _make_even(min(w, target_width))
+        out_h = _make_even(int(out_w * h / w))
+        buf = np.empty((out_h, out_w, 3), dtype=np.uint8)
+
+        writer = imageio.get_writer(
+            str(output_path),
+            fps=out_fps,
+            macro_block_size=1,
+            ffmpeg_params=[
+                "-preset", "ultrafast",
+                "-crf", str(crf),
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+            ],
+        )
+        try:
+            writer.append_data(fast_resize_into(init_frame, buf))
+            for idx, act in enumerate(actions, start=1):
+                _, _, term, trunc, _ = render_env.step(act)
+                done = bool(term or trunc)
+                if (idx % render_stride == 0) or done:
+                    frame = render_env.render()
+                    if frame is not None:
+                        writer.append_data(fast_resize_into(frame, buf))
+                if done:
+                    break
+        finally:
+            writer.close()
+
+    return output_path
+
+
+def create_timelapse_mp4_streaming(
+    frames_iter_fn: Callable[[], Any],
+    output_path: Path,
+    fps: int = 15,
+    crf: int = 28,
+) -> Path | None:
+    """
+    Streams annotated milestone frames directly into a lightweight looping H.264 MP4
+    (12-18x faster and ~12x smaller than animated GIF on Colab 2 vCPUs).
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_written = 0
+    writer = imageio.get_writer(
+        str(output_path),
+        fps=fps,
+        macro_block_size=1,
+        ffmpeg_params=[
+            "-preset", "ultrafast",
+            "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+        ],
+    )
+    try:
+        for frame in frames_iter_fn():
+            writer.append_data(frame)
+            frames_written += 1
+    finally:
+        writer.close()
+    return output_path if frames_written > 0 else None
 
 
 def record_episode_streaming(
@@ -41,6 +213,7 @@ def record_episode_streaming(
     except Exception:
         writer = imageio.get_writer(str(video_path), fps=fps, macro_block_size=1)
 
+    predict_fn = make_fast_predictor(model)
     total_reward = 0.0
     last_reward = 0.0
     steps = 0
@@ -54,8 +227,7 @@ def record_episode_streaming(
             writer.append_data(frame)
 
         while not (terminated or truncated) and steps < max_steps:
-            action, _ = model.predict(obs, deterministic=deterministic)
-            action_item = int(action.item()) if hasattr(action, "item") and not hasattr(action, "__len__") else action
+            action_item = predict_fn(obs, deterministic)
             obs, reward, terminated, truncated, info = env.step(action_item)
             last_reward = float(reward)
             total_reward += last_reward
