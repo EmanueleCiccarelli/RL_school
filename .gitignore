@@ -51,8 +51,8 @@ Thumbs.db
 Lunar Lander/
 
 # File di review generati per modelli LLM (usati solo localmente per interrogare modelli AI)
-PROMPT_CODE_REVIEW*.txt
-PROMPT_OTTIMIZZAZIONE*.txt
-codice_completo_repo*.txt
+PROMPT_*.txt
+codice_*.txt
 review_*.txt
 *.review.txt
+*.dump.txt
