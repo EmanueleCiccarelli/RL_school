@@ -339,26 +339,59 @@ def gioca_single_player(
 
 def gioca_vs_agente(
     model_or_result: Any = None,
-    seed: int = 42,
+    seed: int | None = None,
     mission: str = "campagna_standard",
     env_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     """Avvia la modalita testa a testa 'Tu vs Agente AI' in Split-Screen."""
-    print("[play2learn] Calcolo della traiettoria dell'Agente AI sulle colline...")
+    actual_seed = seed if seed is not None else random.randint(100, 999999)
+    print(f"[play2learn] Calcolo della traiettoria dell'Agente AI sulle colline (Seed: {actual_seed})...")
 
     # Risoluzione modello
     resolved_model = None
+    if isinstance(model_or_result, str) and not model_or_result.strip():
+        model_or_result = None
+
     if hasattr(model_or_result, "model"):
         resolved_model = model_or_result.model
+    elif isinstance(model_or_result, str):
+        runs_dir = get_default_runs_dir()
+        p = find_run_by_timestamp(model_or_result, runs_dir)
+        if p:
+            for fname in ("final_model.zip", "best_model.zip"):
+                cand = p / fname
+                if cand.exists():
+                    from stable_baselines3 import PPO
+                    resolved_model = PPO.load(str(cand))
+                    break
     elif model_or_result is not None:
         resolved_model = model_or_result
+
+    if resolved_model is None:
+        runs_dir = get_default_runs_dir()
+        if runs_dir.exists():
+            runs = sorted(
+                [d for d in runs_dir.iterdir() if d.is_dir() and d.name.startswith("run_")],
+                key=lambda x: x.name,
+                reverse=True,
+            )
+            for r in runs:
+                for fname in ("final_model.zip", "best_model.zip"):
+                    cand = r / fname
+                    if cand.exists():
+                        from stable_baselines3 import PPO
+                        print(f"🤖 Caricato automaticamente l'ultimo agente salvato ({r.name}).")
+                        resolved_model = PPO.load(str(cand))
+                        break
+                if resolved_model is not None:
+                    break
 
     agent_data = {"steps": [], "final_distance": 750.0}
     if resolved_model is not None:
         try:
             agent_data = registra_traiettoria_agente(
                 model=resolved_model,
-                seed=seed,
+                seed=actual_seed,
                 mission=mission,
                 env_kwargs=env_kwargs,
             )
@@ -374,7 +407,7 @@ def gioca_vs_agente(
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:19px;">⚔️ Sfida Hill Climb: Tu (Pilota Umano) vs Agente AI (PPO)</h3>
-                <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso tracciato collinare (Seed: {seed})</span>
+                <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso tracciato collinare (Seed: {actual_seed})</span>
             </div>
             <div>
                 <button id="vs_btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>

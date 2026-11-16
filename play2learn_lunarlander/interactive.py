@@ -25,13 +25,25 @@ from play2learn_lunarlander.favorites import carica_preferito
 from play2learn_lunarlander.storage import find_run_by_timestamp, get_default_runs_dir
 
 
+class _InteractiveUI:
+    """Wrapper didattico per l'interfaccia interattiva: previene la duplicazione su Colab/Jupyter."""
+    def __init__(self, data: str):
+        self.data = str(data)
+
+    def _repr_html_(self) -> str:
+        # Previene la seconda visualizzazione automatica causata dall'output di cella in Jupyter/Colab
+        return ""
+
+    def __str__(self) -> str:
+        return self.data
+
+
 def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Any:
-    """Mostra l'HTML inline nel notebook oppure lo apre nel browser se non in ambiente IPython."""
+    """Mostra l'HTML inline nel notebook esattamente una volta, evitando duplicazioni su Colab."""
     try:
         from IPython.display import HTML, display
-        res = HTML(html_code)
-        display(res)
-        return res
+        display(HTML(html_code))
+        return _InteractiveUI(html_code)
     except ImportError:
         import webbrowser
         import tempfile
@@ -39,7 +51,29 @@ def _display_or_open_html(html_code: str, filename: str = "lunar_lander") -> Any
         tmp.write_text(html_code, encoding="utf-8")
         print(f"[play2learn] Apertura del simulatore nel browser: {tmp}")
         webbrowser.open(tmp.as_uri())
-        return html_code
+        return _InteractiveUI(html_code)
+
+
+def _normalize_mission_name(m: str) -> str:
+    """Mappa gli alias didattici inseriti dagli studenti ai nomi di configurazione ufficiali."""
+    m_clean = str(m).lower().strip().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "vento_solare": "tempesta_solare",
+        "vento": "tempesta_solare",
+        "turbolenza": "tempesta_solare",
+        "tempesta": "tempesta_solare",
+        "gravita_aumentata": "pianeta_pesante",
+        "gravita_forte": "pianeta_pesante",
+        "alta_gravita": "pianeta_pesante",
+        "pesante": "pianeta_pesante",
+        "micro_gravita": "marte_leggero",
+        "bassa_gravita": "marte_leggero",
+        "marte": "marte_leggero",
+        "standard": "luna_standard",
+        "base": "luna_standard",
+        "luna": "luna_standard",
+    }
+    return aliases.get(m_clean, m_clean)
 
 
 def _extract_terrain_and_helipad(env: Any) -> tuple[list[list[float]], list[float]]:
@@ -98,13 +132,7 @@ def _resolve_model(model_or_result: Any) -> Any:
     Risolve l'agente PPO a partire da un oggetto LabResult, un'istanza PPO,
     un nome nei Preferiti o un timestamp di una run passata.
     """
-    if model_or_result is None:
-        try:
-            model, _ = carica_preferito(0)
-            return model
-        except Exception:
-            pass
-
+    if model_or_result is None or (isinstance(model_or_result, str) and not model_or_result.strip()):
         runs_dir = get_default_runs_dir()
         if runs_dir.exists():
             runs = sorted(
@@ -116,12 +144,19 @@ def _resolve_model(model_or_result: Any) -> Any:
                 tgt = _find_model_zip_in_dir(r)
                 if tgt:
                     from stable_baselines3 import PPO
+                    print(f"🤖 Caricato automaticamente l'ultimo agente salvato ({r.name}).")
                     return PPO.load(str(tgt))
 
+        try:
+            model, _ = carica_preferito(0)
+            print("🤖 Caricato l'agente dai tuoi Preferiti (#0).")
+            return model
+        except Exception:
+            pass
+
         raise ValueError(
-            "❌ Nessun modello PPO fornito o trovato in memoria!\n"
-            "Passa l'oggetto restituito da run_lab (es. `gioca_vs_agente(risultati)`),\n"
-            "oppure specifica il nome di un preferito o un timestamp."
+            "❌ Nessun modello PPO fornito e nessuna run passata trovata nella cartella 'runs/'!\n"
+            "Esegui prima un addestramento con `run_lab` oppure specifica il nome di un preferito o timestamp."
         )
 
     # 1. È già un LabResult o dizionario
@@ -473,15 +508,31 @@ def _get_shared_game_js() -> str:
         ctx.restore();
     }
 
-    // Disegno superficie lunare, piazzola e bandierine
+    // Disegno superficie lunare autentica stile Gymnasium LunarLander, con stelle e piazzola
     function drawTerrain(ctx, terrain, helipad, W, H) {
         const sx = W / 20.0;
         const sy = H / 13.333;
 
-        ctx.fillStyle = '#050814';
+        // Cielo nero dello spazio profondo
+        ctx.fillStyle = '#05070e';
         ctx.fillRect(0, 0, W, H);
 
-        ctx.fillStyle = '#1e293b';
+        // Stelle fisse scintillanti nello sfondo
+        ctx.fillStyle = '#ffffff';
+        const stars = [
+            [0.05, 0.10, 1.2], [0.15, 0.22, 0.8], [0.22, 0.08, 1.5], [0.32, 0.18, 0.9],
+            [0.42, 0.12, 1.3], [0.52, 0.05, 1.0], [0.63, 0.20, 1.1], [0.73, 0.09, 1.4],
+            [0.82, 0.25, 0.8], [0.92, 0.14, 1.2], [0.10, 0.35, 1.0], [0.88, 0.38, 1.1],
+            [0.28, 0.32, 0.9], [0.48, 0.28, 1.2], [0.68, 0.36, 1.0], [0.96, 0.28, 1.3]
+        ];
+        stars.forEach(s => {
+            ctx.beginPath();
+            ctx.arc(s[0] * W, s[1] * H, s[2], 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        // Terreno lunare poligonale autentico con riempimento a gradiente roccioso
+        ctx.fillStyle = '#1e2433';
         ctx.beginPath();
         ctx.moveTo(0, H);
         terrain.forEach((pt, i) => {
@@ -494,8 +545,9 @@ def _get_shared_game_js() -> str:
         ctx.closePath();
         ctx.fill();
 
-        ctx.strokeStyle = '#475569';
-        ctx.lineWidth = 2.5;
+        // Bordo roccioso chiaro tipico del Box2D Lunar Lander
+        ctx.strokeStyle = '#64748b';
+        ctx.lineWidth = 2.6;
         ctx.beginPath();
         terrain.forEach((pt, i) => {
             const px = pt[0] * sx;
@@ -510,9 +562,10 @@ def _get_shared_game_js() -> str:
         const hy = H - helipad[2] * sy;
         const hw = hx2 - hx1;
 
+        // Piazzola di atterraggio pianeggiante con strisce giallo-nere e luci
         ctx.fillStyle = '#334155';
         ctx.fillRect(hx1, hy - 3, hw, 7);
-        ctx.strokeStyle = '#fbbf24';
+        ctx.strokeStyle = '#f59e0b';
         ctx.lineWidth = 2;
         ctx.strokeRect(hx1, hy - 3, hw, 7);
 
@@ -530,6 +583,7 @@ def _get_shared_game_js() -> str:
         }
         ctx.restore();
 
+        // Bandierine classiche di segnalazione ai bordi dell'helipad
         drawFlag(ctx, hx1 + 3, hy - 3, '#ef4444');
         drawFlag(ctx, hx2 - 3, hy - 3, '#ef4444');
     }
@@ -567,8 +621,9 @@ def gioca_single_player(
     """
     import gymnasium as gym
 
-    actual_seed = seed if seed is not None else random.randint(100, 99999)
-    mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
+    actual_seed = seed if seed is not None else random.randint(100, 999999)
+    mission_key = _normalize_mission_name(mission)
+    mission_cfg = MISSIONS.get(mission_key, MISSIONS["luna_standard"])
     final_env_kwargs = dict(mission_cfg["env_kwargs"])
     if env_kwargs:
         final_env_kwargs.update(env_kwargs)
@@ -844,7 +899,7 @@ def gioca_single_player(
 
 def gioca_vs_agente(
     model_or_result: Any = None,
-    seed: int = 42,
+    seed: int | None = None,
     mission: str = "luna_standard",
     gravity: float | None = None,
     wind: bool | None = None,
@@ -855,11 +910,17 @@ def gioca_vs_agente(
     Avvia la modalità testa a testa 'Tu vs Agente' (Split-Screen interattivo)
     in Google Colab o Jupyter Notebook.
     Permette allo studente di gareggiare in tempo reale sullo stesso identico terreno lunare
-    contro la policy PPO addestrata, con telemetria simultanea e verdetto finale!
+    contro la policy PPO addestrata. Se non viene passato alcun modello o timestamp,
+    viene caricato automaticamente l'ultimo agente salvato in 'runs/'.
     """
     chosen_model = model if model is not None else model_or_result
+    if isinstance(chosen_model, str) and not chosen_model.strip():
+        chosen_model = None
     resolved_model = _resolve_model(chosen_model)
-    mission_cfg = MISSIONS.get(mission, MISSIONS["luna_standard"])
+
+    actual_seed = seed if seed is not None else random.randint(100, 999999)
+    mission_key = _normalize_mission_name(mission)
+    mission_cfg = MISSIONS.get(mission_key, MISSIONS["luna_standard"])
     final_env_kwargs = dict(mission_cfg["env_kwargs"])
     if env_kwargs:
         final_env_kwargs.update(env_kwargs)
@@ -868,11 +929,11 @@ def gioca_vs_agente(
     if wind is not None:
         final_env_kwargs["enable_wind"] = bool(wind)
 
-    print("[play2learn] Calcolo della traiettoria dell'Agente AI sullo scenario lunare...")
+    print(f"[play2learn] Calcolo della traiettoria dell'Agente AI sullo scenario lunare ({mission_cfg['title']} | Seed: {actual_seed})...")
     agent_data = registra_traiettoria_agente(
         model=resolved_model,
-        seed=seed,
-        mission=mission,
+        seed=actual_seed,
+        mission=mission_key,
         env_kwargs=final_env_kwargs,
     )
 
@@ -888,7 +949,7 @@ def gioca_vs_agente(
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
             <div>
                 <h3 style="margin:0; color:#38bdf8; font-size:19px;">⚔️ Sfida Allunaggio: Tu (Pilota Umano) vs Agente AI (PPO)</h3>
-                <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso terreno (Seed: {seed} | Missione: {mission_cfg['title']})</span>
+                <span style="font-size:12px; color:#94a3b8;">Gara simultanea sullo stesso terreno (Seed: {actual_seed} | Missione: {mission_cfg['title']})</span>
             </div>
             <div>
                 <button id="vs_btn_sound_{uid}" style="background:#1e293b; color:#cbd5e1; border:1px solid #475569; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer;">🔊 Audio: ON</button>

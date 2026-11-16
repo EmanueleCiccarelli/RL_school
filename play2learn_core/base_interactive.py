@@ -11,19 +11,31 @@ from pathlib import Path
 from typing import Any
 
 
+class _InteractiveUI:
+    """Wrapper didattico per l'interfaccia interattiva: previene la duplicazione su Colab/Jupyter."""
+    def __init__(self, data: str):
+        self.data = str(data)
+
+    def _repr_html_(self) -> str:
+        # Previene la seconda visualizzazione automatica causata dall'output di cella in Jupyter/Colab
+        return ""
+
+    def __str__(self) -> str:
+        return self.data
+
+
 def display_or_open_html(html_code: str, filename: str = "play2learn_interactive") -> Any:
-    """Mostra l'HTML inline nel notebook oppure lo apre nel browser predefinito."""
+    """Mostra l'HTML inline nel notebook esattamente una volta, evitando duplicazioni su Colab."""
     try:
         from IPython.display import HTML, display
-        res = HTML(html_code)
-        display(res)
-        return res
+        display(HTML(html_code))
+        return _InteractiveUI(html_code)
     except ImportError:
         tmp = Path(tempfile.gettempdir()) / f"{filename}.html"
         tmp.write_text(html_code, encoding="utf-8")
         print(f"[play2learn] Apertura del simulatore nel browser: {tmp}")
         webbrowser.open(tmp.as_uri())
-        return html_code
+        return _InteractiveUI(html_code)
 
 
 def get_shared_audio_and_loop_js() -> str:
