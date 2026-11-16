@@ -450,8 +450,8 @@ def crea_gif_evoluzione_apprendimento(
     output_path: Path | str,
     env_kwargs: dict[str, Any] | None = None,
     seed: int = 42,
-    max_steps_per_episode: int = 240,
-    stride: int = 3,
+    max_steps_per_episode: int = 1000,
+    stride: int = 4,
     target_width: int = 400,
     fps: int = 15,
 ) -> Path | None:
@@ -567,20 +567,19 @@ def crea_gif_evoluzione_apprendimento(
                             final_esito = "Fine Volo"
 
                 if not done and step_count >= max_steps_per_episode:
-                    final_esito = "[VOLO] Hovering Prolungato"
+                    final_esito = "[TIMEOUT] Durata Massima Raggiunta"
 
                 if not sampled_raw:
                     continue
 
-                stage_title = fasi_titoli[idx] if idx < len(fasi_titoli) else f"Fase {idx + 1}/{total_stages}"
-                step_val = m.get("step", step_count)
-                pct_val = m.get("percent", int((idx + 1) / total_stages * 100))
+                step_val = m.get("step", 0)
+                pct_val = m.get("percent", int((idx) / max(1, total_stages - 1) * 100))
                 succ_val = m.get("success_rate", 0.0)
 
                 banner = render_banner_once(
                     width=target_width,
-                    line1=f"{stage_title} - Step ~{step_val:,} ({pct_val}%)",
-                    line2=f"Esito: {final_esito} | Succ. mobile: {succ_val:.0f}%",
+                    line1=f"Fase {idx + 1}/{total_stages} • Step {step_val:,} ({pct_val}%)",
+                    line2=f"Esito: {final_esito} • Durata: {step_count} step",
                     height=34,
                 )
 
@@ -597,9 +596,9 @@ def crea_gif_evoluzione_apprendimento(
                     gif_writer.append_data(buf)
                     frames_written += 1
 
-                # Congela l'ultimo frame annotato per 4 frame per una lettura chiara
+                # Congela l'ultimo frame annotato per 8 frame (~0.5s) per mostrare chiaramente l'esito finale
                 if last_annotated is not None:
-                    for _ in range(4):
+                    for _ in range(8):
                         gif_writer.append_data(last_annotated)
                         frames_written += 1
     except Exception as e:

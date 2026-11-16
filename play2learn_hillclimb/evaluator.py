@@ -207,7 +207,7 @@ def crea_gif_evoluzione_apprendimento(
     reward_fn: Callable | None = None,
     base_model: Any = None,
     seed: int = 142,
-    max_steps_per_ckpt: int = 180,
+    max_steps_per_ckpt: int = 1000,
 ) -> Path | None:
     """
     Genera la GIF timelapse che illustra visivamente l'avanzamento dell'auto nelle colline,
@@ -272,8 +272,15 @@ def crea_gif_evoluzione_apprendimento(
                             txt = f"Fase: {timesteps//1000}k step | Distanza: {dist:.1f} m"
                             draw.rectangle([10, 10, 260, 32], fill=(15, 23, 42, 220))
                             draw.text((16, 14), txt, fill=(56, 189, 248))
-                            writer.append_data(np.asarray(img))
+                            frame_arr = np.asarray(img)
+                            writer.append_data(frame_arr)
                             frames_written += 1
+
+                # Congela l'ultimo frame per 8 frame (~0.6s) per apprezzare il risultato raggiunto
+                if 'frame_arr' in locals() and frame_arr is not None:
+                    for _ in range(8):
+                        writer.append_data(frame_arr)
+                        frames_written += 1
     finally:
         env.close()
         if orig_state is not None and base_model is not None and hasattr(base_model, "policy"):

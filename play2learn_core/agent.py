@@ -203,7 +203,7 @@ class BaseRewardTrackerCallback(BaseCallback):
         self.save_freq = save_freq
         self.window_size = window_size
         self.milestone_callback = milestone_callback
-        self.milestone_freq = max(1, int(milestone_freq))
+        self.milestone_freq = max(1, int(milestone_freq if milestone_freq != 30_000 else max(10_000, total_timesteps // 5)))
         self.metric_name = metric_name
 
         self.episode_rewards: collections.deque[float] = collections.deque(maxlen=window_size)
@@ -253,6 +253,8 @@ class BaseRewardTrackerCallback(BaseCallback):
     def _on_training_start(self) -> None:
         self.start_time = time.perf_counter()
         self._last_ui_update_time = self.start_time
+        if hasattr(self, "model") and hasattr(self.model, "policy"):
+            self.milestone_snapshots.append((0, self._clone_policy_state()))
         if self.show_progress:
             self.pbar = tqdm(
                 total=self.total_timesteps,
@@ -320,7 +322,7 @@ class BaseRewardTrackerCallback(BaseCallback):
                     self.best_mean_reward = rew
                     self._best_policy_state = self._clone_policy_state()
 
-        if self.num_timesteps >= self._next_milestone_step and len(self.milestone_snapshots) < 5:
+        if self.num_timesteps >= self._next_milestone_step and len(self.milestone_snapshots) < 6:
             snap = self._clone_policy_state()
             self.milestone_snapshots.append((self.num_timesteps, snap))
             if self.milestone_callback:

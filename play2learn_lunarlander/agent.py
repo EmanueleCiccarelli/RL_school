@@ -79,9 +79,9 @@ class RewardTrackerCallback(BaseCallback):
         self.window_size = int(window_size)
         self.capture_milestones = capture_milestones
 
-        # Snapshot intermedi per timelapse di evoluzione apprendimento (RAM, overhead 0)
+        # Snapshot intermedi distribuiti uniformemente per timelapse evoluzione (RAM, overhead 0)
         self.milestone_snapshots: list[dict[str, Any]] = []
-        self._milestone_targets: list[float] = [0.10, 0.35, 0.65]
+        self._milestone_targets: list[float] = [0.20, 0.40, 0.60, 0.80]
         self._next_milestone_idx: int = 0
 
         # Liste telemetriche pubbliche (contratto con diagnostics.py e visualizer.py)
@@ -122,6 +122,18 @@ class RewardTrackerCallback(BaseCallback):
     def _on_training_start(self) -> None:
         self._t_start = time.perf_counter()
         self._last_ui_update = self._t_start
+
+        # Cattura lo snapshot iniziale a step 0 (politica casuale non addestrata)
+        if self.capture_milestones and hasattr(self, "model") and hasattr(self.model, "policy"):
+            self.milestone_snapshots.append({
+                "step": 0,
+                "percent": 0,
+                "success_rate": 0.0,
+                "state_dict": {
+                    k: v.detach().cpu().clone()
+                    for k, v in self.model.policy.state_dict().items()
+                },
+            })
 
         if self.show_progress and self.total_timesteps > 0:
             try:
