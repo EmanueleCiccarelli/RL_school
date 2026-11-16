@@ -1,11 +1,11 @@
 # 🚀 RL_school - Laboratorio di Reinforcement Learning: Lunar Lander & Hill Climb Racing
 
 [![Open In Colab (Lunar Lander)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
-[![Open In Colab (Hill Climb)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
+[![Open In Colab (Hill Climb Racing)](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-Box2D-green.svg)](https://gymnasium.farama.org/environments/box2d/lunar_lander/)
 [![Stable Baselines3](https://img.shields.io/badge/Algorithm-PPO-orange.svg)](https://stable-baselines3.readthedocs.io/)
-[![Unit Tests](https://img.shields.io/badge/tests-28%20passed-brightgreen.svg)](https://github.com/EmanueleCiccarelli/RL_school)
+[![Unit Tests](https://img.shields.io/badge/tests-31%20passed-brightgreen.svg)](https://github.com/EmanueleCiccarelli/RL_school)
 
 Laboratorio didattico avanzato di **Reinforcement Learning** per studenti di scuola secondaria di secondo grado (quinta superiore) e corsi introduttivi universitari. L'obiettivo formativo è padroneggiare i principi dell'apprendimento per rinforzo attraverso il **Reward Shaping** su due scenari di simulazione fisica Box2D:
 1. 🚀 **Lunar Lander (`LunarLander-v3`)**: pilotaggio e atterraggio morbido tra le bandierine della piazzola lunare.
@@ -22,9 +22,9 @@ RL_school/
 │
 ├── pyproject.toml                          # 📦 Metadata packaging PEP 517 / PEP 621 & tool config
 ├── requirements.txt                        # 📋 Dipendenze pip del laboratorio (incluso Pygame)
-├── laboratorio_lunar_lander.ipynb          # 🌐 Notebook didattico Lunar Lander (Colab & Cloud)
-├── laboratorio_hill_climb.ipynb            # 🏎️ Notebook didattico Hill Climb Racing
-├── laboratorio_hill_climb_colab.ipynb      # ☁️ Notebook Hill Climb per Google Colab
+├── laboratorio_lunar_lander.ipynb          # 🚀 Notebook Google Colab: Lunar Lander
+├── laboratorio_hill_climb_colab.ipynb      # 🏎️ Notebook Google Colab: Hill Climb Racing
+├── laboratorio_hill_climb_locale.ipynb     # 💻 Notebook locale offline: Hill Climb Racing
 ├── README.md                               # 📖 Documentazione completa del laboratorio
 ├── .gitignore                              # 🙈 Esclusioni Git per artefatti pesanti e checkpoint
 │
@@ -62,7 +62,7 @@ RL_school/
 │   ├── interactive.py                      # Arcade Canvas HTML5: Guida manuale & Gara Tu vs Agente AI
 │   └── lab.py                              # run_lab() didattico per Hill Climb
 │
-└── tests/                                  # 🧪 Suite di test unitari automatizzati (28/28 passing)
+└── tests/                                  # 🧪 Suite di test unitari automatizzati (31/31 passing)
     ├── test_hillclimb.py                   # Test suite Hill Climb Racing
     ├── test_environment.py                 # Test wrapper reward e guardie NaN
     ├── test_agent.py                       # Test callback scorrimento O(1)
@@ -76,15 +76,45 @@ RL_school/
 
 ## ⚡ Come Avviare il Laboratorio
 
-Il laboratorio è disponibile in **due modalità sincronizzate**:
+Il laboratorio è fruibile in **due modalità sincronizzate**:
 
-### Modalità 1: Google Colab (Consigliata per la classe)
-1. Clicca sul badge in cima al README:  
-   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
-2. Il notebook clona automaticamente la repository GitHub e installa le dipendenze in circa 30 secondi.
-3. Gli studenti possono subito modificare la cella di `custom_reward` ed eseguire l'addestramento sfruttando le risorse cloud gratuite.
+---
 
-### Modalità 2: Ambiente Locale (per docenti o sviluppo offline)
+### 🌐 Modalità 1: Google Colab (Consigliata per la Classe - Zero Installazione)
+
+La repository mette a disposizione **due percorsi didattici completamente separati ed indipendenti su Google Colab**, ciascuno ottimizzato per eseguire addestramento PPO, telemetria in tempo reale, streaming video H.264 headless e mini-giochi interattivi tramite browser in ambiente cloud gratuito:
+
+#### 🚀 Percorso 1: Lunar Lander (`LunarLander-v3`)
+
+* **Obiettivo**: Pilotare il modulo lunare verso un atterraggio morbido e controllato tra le bandierine della piazzola, coordinando spinta del motore principale e dei motori laterali e minimizzando il consumo di carburante.
+* **Avvia subito su Google Colab:**  
+  [![Open Lunar Lander In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_lunar_lander.ipynb)
+* **File notebook nel repository:** [`laboratorio_lunar_lander.ipynb`](file:///c:/Users/delop/Desktop/RL%20MATTEUCCI/laboratorio_lunar_lander.ipynb)
+* **Cosa include:**
+  - Setup automatico (~30 secondi): clone repository, dipendenze Gymnasium Box2D e Stable-Baselines3.
+  - Simulatore fisico con radar di telemetria (quota, velocità di discesa, assetto).
+  - Video streaming H.264 (fino a 3 allunaggi riusciti 🟢 e 3 schianti 🔴) e GIF evolutive dei checkpoint.
+  - 6 Missioni speciali di collaudo estremo (vento laterale, gravità ridotta o gioviana, tempesta lunare).
+  - Mini-gioco interattivo HTML5 Canvas: **Single Player** (guida manuale da tastiera) e **Tu vs Agente AI**.
+
+---
+
+#### 🏎️ Percorso 2: Hill Climb Racing (`HillClimbRacing-v0`)
+
+* **Obiettivo**: Progettare la funzione di reward per un veicolo fuoristrada su colline procedurali infinite generate con Perlin Noise, massimizzando la distanza percorsa e la velocità senza capovolgersi o incastrarsi nei fossi.
+* **Avvia subito su Google Colab:**  
+  [![Open Hill Climb Racing In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EmanueleCiccarelli/RL_school/blob/main/laboratorio_hill_climb_colab.ipynb)
+* **File notebook nel repository:** [`laboratorio_hill_climb_colab.ipynb`](file:///c:/Users/delop/Desktop/RL%20MATTEUCCI/laboratorio_hill_climb_colab.ipynb)
+* **Cosa include:**
+  - Setup automatico (~30 secondi): installazione Box2D, Pygame headless e pacchetto `play2learn_hillclimb`.
+  - Motore fisico Box2D con carrozzeria, ruote a sospensione dinamica e ragdoll driver.
+  - `HillClimbFeaturesExtractor`: architettura neurale invariante alla coordinata orizzontale e scalata per evitare la saturazione delle attivazioni.
+  - 4 Tracciati speciali con profili altimetrici e attriti dedicati: *Campagna*, *Deserto*, *Montagna*, *Luna*.
+  - Mini-gioco interattivo HTML5 Canvas: **Guida manuale** e **Gara Tu vs Agente AI** su collina identica con cronometro e telemetria live.
+
+---
+
+### 💻 Modalità 2: Ambiente Locale (per Docenti o Sviluppo Offline)
 
 1. **Clona la repository sul tuo computer:**
    ```bash
@@ -118,78 +148,80 @@ Il laboratorio è disponibile in **due modalità sincronizzate**:
    > pip install "gymnasium[box2d]"
    > ```
 
-4. **Avvia Jupyter Notebook o VS Code:**
+4. **Avvia Jupyter Lab o VS Code:**
    ```bash
    jupyter lab
    # oppure: jupyter notebook
    ```
 
-5. **Apri il notebook dedicato:**  
-   Naviga ed apri `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`.
+5. **Apri il notebook dedicato al laboratorio desiderato:**  
+   * 🚀 **Per Lunar Lander:** apri `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb` (oppure `laboratorio_lunar_lander.ipynb`).
+   * 🏎️ **Per Hill Climb Racing:** apri `laboratorio_hill_climb_locale.ipynb`.
 
 ---
 
-## 🧭 Struttura del Percorso Didattico (Le 10 Sezioni)
+## 🧭 Struttura del Percorso Didattico (Le 10 Sezioni Sincronizzate)
 
-Il notebook guida gli studenti passo-passo attraverso 10 sezioni strutturate:
+I notebook di **Lunar Lander** e **Hill Climb Racing** condividono la medesima struttura pedagogica in **10 sezioni progressive**, offrendo un'esperienza didattica coerente su entrambi gli ambienti:
 
-1. **Sezione 1: Setup dell'Ambiente e Importazioni**  
-   Verifica delle versioni software, rilevamento automatico hardware (CPU/GPU) e configurazione thread per massimizzare gli FPS.
-2. **Sezione 2: Esplorazione dell'Ambiente Box2D**  
-   Ispezione visiva del vettore di stato ad 8 dimensioni (`x`, `y`, `vx`, `vy`, `angle`, `vangle`, `left_leg`, `right_leg`) e dello spazio delle 4 azioni discrete.
-3. **Sezione 3: L'Obiettivo Didattico (Reward Shaping)**  
-   Modellazione matematica della funzione di ricompensa con prevenzione delle trappole del *Reward Hacking* (trappola kamikaze e hovering infinito).
-4. **Sezione 4: Addestramento dell'Agente PPO**  
-   Esecuzione del training a 300k step con barra di avanzamento interattiva, telemetria in tempo reale (`Reward`, `Fuel`, `Success%`) e generazione opzionale di GIF animate sui milestone di apprendimento (`salva_gif_progresso=True`).
-5. **Sezione 5: Valutazione e Telemetria**  
-   Dashboard 2x2 ad alta risoluzione con curve di apprendimento e visualizzazione mista dei video: fino a 3 allunaggi riusciti (🟢) e fino a 3 schianti (🔴) per comprendere gli errori residui.
-6. **Sezione 6: Dimostrazione Live dell'Allunaggio**  
-   Esecuzione immediata di un episodio di test con rendering grafico o video HTML5.
-7. **Sezione 7: Sfide Avanzate (Missioni Speciali)**  
-   Metti alla prova la robustezza della policy in 6 scenari fisici estremi:
-   - 🌬️ *Vento Laterale Improvviso* (`vento`)
-   - 🪐 *Gravità Lunare Ridotta* (`bassa_gravita`)
-   - 🪨 *Gravità Gioviana Pesante* (`alta_gravita`)
-   - ⚡ *Spinta Motore Principale Depotenziata* (`motore_debole`)
-   - ⛽ *Carburante Critico e Limitato* (`carburante_critico`)
-   - 🌪️ *Tempesta Lunare Totale* (`tempesta_lunare`)
-8. **Sezione 8: Archivio Preferiti e Successi**  
-   Separazione concettuale pulita:
-   - `runs/successi/`: Tutti gli esperimenti con tasso di successo $\ge 80\%$, corredati da scheda tecnica.
-   - `runs/favorites/`: I video e i modelli scelti e salvati esplicitamente dallo studente con un commento personale.
-9. **Sezione 9: Generatore Report da Timestamp**  
-   Inserendo il timestamp di qualsiasi run storica (es. `20261115_214530`), genera istantaneamente la scheda tecnica in versione *Base* o *Avanzata* (con valutazione multi-video) e permette il confronto grafico tra esperimenti.
-10. **Sezione 10: Sfida Interattiva: Single Player & Tu vs Agente**  
-    Mini-gioco interattivo giocabile sia in locale (tastiera/tasti freccia) sia su Google Colab:
-    - **Single Player:** Prova a pilotare manualmente il modulo spaziale per capire quanto sia difficile l'allunaggio umano!
-    - **Tu vs Agente:** Sfida diretta contro il tuo modello addestrato con visualizzazione sinottica delle traiettorie fianco a fianco, confronto del consumo di carburante e calcolo del punteggio finale.
+| Sezione | 🚀 Modulo 1: Lunar Lander (`LunarLander-v3`) | 🏎️ Modulo 2: Hill Climb Racing (`HillClimbRacing-v0`) |
+| :--- | :--- | :--- |
+| **1. Setup & Import** | Hardware check, config thread, import `play2learn_lunarlander` | Setup Box2D/Pygame headless, import `play2learn_hillclimb` |
+| **2. Esplorazione Box2D** | Stato 8D (coordinate, velocità, angolo, sensori zampette) & 4 azioni | Stato 8D (distanza, quota, velocità, assetto, contatti ruote) & 3 azioni |
+| **3. Reward Shaping** | Progettazione ricompensa: allunaggio morbido vs crash/timeout | Progettazione ricompensa: avanzamento colline vs ribaltamento/fossi |
+| **4. Addestramento PPO** | Training PPO (300k step), barra live, GIF evolutiva opzionale | Training PPO con `HillClimbFeaturesExtractor`, barra live e GIF |
+| **5. Valutazione & Video** | Test su 20 seed fissi, dashboard 2x2, video streaming Top 3 🟢/🔴 | Test su 20 semi procedurali, streaming video alta fedeltà H.264 |
+| **6. Demo Live** | Volo live immediato con telemetria e assetto | Corsa live immediata sulle colline con tracciamento quota |
+| **7. Sfide Speciali** | 6 Scenari: vento, gravità variabile, tempesta lunare, motore debole | 4 Tracciati: Campagna, Deserto, Montagna ripida, Luna a bassa gravità |
+| **8. Archivio Preferiti** | Gestione cataloghi `runs/successi/` (≥80%) e preferiti con note | Gestione cataloghi `runs/successi/` (≥80%) e preferiti con note |
+| **9. Report da Timestamp** | Generatore istantaneo schede PDF/HTML/MD e confronto run | Generatore istantaneo schede PDF/HTML/MD con telemetria avanzata |
+| **10. Sfida Interattiva** | **Single Player** (allunaggio manuale) & **Tu vs Agente AI** | **Guida Manuale** & **Gara Tu vs Agente AI** su collina sincronizzata |
 
 ---
 
 ## 🧠 L'Obiettivo Didattico: La Funzione di Reward
 
-Ad ogni step ($0{,}02\text{ secondi}$), l'agente riceve gli 8 sensori fisici di bordo (`obs`), il comando motore (`action`) e i flag di stato terminali:
+Ad ogni step ($0{,}02\text{ secondi}$ di simulazione fisica Box2D), l'agente riceve il vettore di stato normalizzato (`obs`), l'azione eseguita (`action`) e i flag booleani di esito terminale.
 
+### 1. Reward Shaping per Lunar Lander
 ```python
 def custom_reward(obs, action, is_success, is_crashed, is_timeout):
     x, y, vx, vy, angle, vangle, left_leg, right_leg = obs
     reward = 0.0
 
     # =========================================================================
-    # PROGETTA QUI LA TUA FORMULA DI REWARD SHAPING
+    # FORMULA DI REWARD PER LUNAR LANDER
     # =========================================================================
-
-    # Esempi di termini da considerare:
-    # - Posizione orizzontale: avvicinarsi alla piazzola centrale (x = 0.0)
-    # - Velocità di discesa: frenare dolcemente quando vy è negativo
-    # - Assetto angolare: mantenere il modulo verticale (angle = 0.0)
-    # - Efficienza: premiare il contatto a terra e lo spegnimento motori
-
-    # Eventi terminali
+    # - Posizione orizzontale: incentivare l'avvicinamento al centro (x = 0.0)
+    # - Discesa controllata: frenare la velocità verticale negativa quando vicini al suolo
+    # - Assetto angolare: penalizzare inclinazioni eccessive (angle != 0)
+    # - Risparmio propellente: penalizzare l'accensione prolungata dei motori
+    # - Condizioni terminali:
     if is_success:
         reward += 100.0
     if is_crashed:
         reward -= 100.0
+
+    return float(reward)
+```
+
+### 2. Reward Shaping per Hill Climb Racing
+```python
+def custom_reward(obs, action, is_success, is_crashed, is_timeout):
+    x_dist, y_quota, vx, vy, angle, vangle, rear_contact, front_contact = obs
+    reward = 0.0
+
+    # =========================================================================
+    # FORMULA DI REWARD PER HILL CLIMB RACING
+    # =========================================================================
+    # - Avanzamento: premiare la componente di velocità in avanti (vx > 0)
+    # - Stabilità: penalizzare angoli di rollio accentuati per evitare il ribaltamento
+    # - Trazione: incentivare il contatto costante con il terreno (rear_contact / front_contact)
+    # - Condizioni terminali:
+    if is_success:
+        reward += 200.0  # Traguardo dei 1000m superato con successo
+    if is_crashed:
+        reward -= 150.0  # Impatto violento della testa del pilota
 
     return float(reward)
 ```
