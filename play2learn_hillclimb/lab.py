@@ -91,7 +91,7 @@ class LabResult(dict):
         else:
             print("[play2learn] Nessuna animazione GIF registrata per questa run.")
 
-    def salva_preferito(self, nome_personalizzato: str, note: str = "") -> dict[str, Any]:
+    def salva_preferito(self, nome_personalizzato: str = "Mio_Preferito", note: str = "", **kwargs: Any) -> dict[str, Any]:
         """Salva la run nel catalogo dei preferiti personali."""
         run_dir = Path(self.get("dir_path", self.get("run_dir", ".")))
         return salva_nei_preferiti(run_dir=run_dir, nome=nome_personalizzato, note=note)
@@ -101,6 +101,7 @@ class LabResult(dict):
         titolo: str = "Esperimento Hill Climb Racing",
         autore: str = "Studente Play2Learn",
         note: str = "",
+        **kwargs: Any,
     ) -> dict[str, Path]:
         """Rigenera la scheda tecnica dell'esperimento."""
         run_dir = Path(self.get("dir_path", self.get("run_dir", ".")))
@@ -117,11 +118,18 @@ def run_lab(
     reward_fn: Optional[Callable] = None,
     mission: str = "campagna_standard",
     total_timesteps: int = DEFAULT_TIMESTEPS,
+    nome_run: Optional[str] = None,
     num_envs: int = 1,
     learning_rate: float = 3e-4,
     crea_gif_evoluzione: bool = True,
     seed: int = 42,
     device: str = "auto",
+    output_dir: Optional[str | Path] = None,
+    n_envs: Optional[int] = None,
+    crea_gif: Optional[bool] = None,
+    display_in_notebook: bool = True,
+    use_reward_norm: bool = True,
+    **kwargs: Any,
 ) -> LabResult:
     """
     Avvia l'esperimento didattico completo:
@@ -131,14 +139,25 @@ def run_lab(
       4. Registra video MP4 in streaming per le migliori scalate e i fallimenti.
       5. Genera la Scheda Tecnica (PDF, HTML5, Markdown) e il timelapse GIF.
     """
+    if n_envs is not None:
+        num_envs = n_envs
+    if crea_gif is not None:
+        crea_gif_evoluzione = crea_gif
+
+    tag_str = f" - {nome_run}" if nome_run else ""
     print("═════════════════════════════════════════════════════════════════════")
-    print(f" 🏎️  AVVIO ESPERIMENTO DIDATTICO: HILL CLIMB RACING ({mission})")
+    print(f" 🏎️  AVVIO ESPERIMENTO DIDATTICO: HILL CLIMB RACING ({mission}){tag_str}")
     print(f" • Timesteps Totali: {total_timesteps:,}")
     print(f" • Learning Rate:    {learning_rate}")
     print(f" • Seed Casuale:     {seed}")
     print("═════════════════════════════════════════════════════════════════════\n")
 
-    run_dir = create_run_directory(prefix="run_hillclimb")
+    prefix = nome_run or "run_hillclimb"
+    if output_dir is not None:
+        run_dir = Path(output_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_dir = create_run_directory(prefix=prefix)
 
     # 1. Creazione ambiente vettoriale
     vec_env = make_parallel_envs(
@@ -221,6 +240,8 @@ def run_lab(
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mission": {"key": mission, "title": mission_title},
         "mission_name": mission,
+        "nome_run": nome_run,
+        "tag": nome_run,
         "total_timesteps": total_timesteps,
         "learning_rate": learning_rate,
         "seed": seed,
@@ -231,7 +252,8 @@ def run_lab(
         "gif_path": str(gif_path) if gif_path else None,
     }
     save_run_metadata(run_dir, metadata)
-    genera_report_esperimento(run_dir, metadata=metadata)
+    report_title = f"Esperimento Hill Climb Racing - {nome_run}" if nome_run else "Esperimento Hill Climb Racing"
+    genera_report_esperimento(run_dir, metadata=metadata, titolo=report_title)
 
     # 9. Stampa diagnosi finale
     print(diagnose_hill_climb_behavior(eval_metrics))
@@ -249,6 +271,7 @@ def collauda_missione(
     mission: str = "deserto_dune",
     eval_episodes: int = 10,
     seed: int = 42,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Collauda un modello già addestrato su una missione specifica estrema."""
     print(f"\n🚗 Collaudo Modello su Missione Sfida: '{mission}'...")
@@ -263,7 +286,11 @@ def collauda_missione(
     return results
 
 
-def confronta_run(lista_risultati: Sequence[LabResult | dict[str, Any]] | str) -> None:
+def confronta_run(
+    lista_risultati: Sequence[LabResult | dict[str, Any]] | str,
+    output_image_path: Optional[Path | str] = None,
+    **kwargs: Any,
+) -> None:
     """Mette a confronto le metriche e la telemetria di più sessioni di addestramento."""
     if not lista_risultati:
         print("[play2learn] Fornisci almeno un risultato da confrontare.")

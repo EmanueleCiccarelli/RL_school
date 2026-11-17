@@ -458,6 +458,40 @@ class TestHillClimb(unittest.TestCase):
             self.assertIn("Niccolò", paths["html"].read_text(encoding="utf-8"))
             self.assertEqual(len(plt.get_fignums()), 0, "Leak di figure Matplotlib dopo genera_report_esperimento")
 
+    def test_regression_run_lab_signature_and_kwargs(self):
+        """Verifica che run_lab accetti nome_run, output_dir, n_envs, crea_gif e **kwargs senza TypeError."""
+        sig = inspect.signature(play2learn_hillclimb.run_lab)
+        self.assertIn("nome_run", sig.parameters)
+        self.assertIn("output_dir", sig.parameters)
+        self.assertIn("n_envs", sig.parameters)
+        self.assertIn("crea_gif", sig.parameters)
+        self.assertIn("device", sig.parameters)
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch("play2learn_hillclimb.lab.make_parallel_envs") as mock_envs, \
+                 patch("play2learn_hillclimb.lab.create_ppo_agent") as mock_agent, \
+                 patch("play2learn_hillclimb.lab.evaluate_and_record") as mock_eval, \
+                 patch("play2learn_hillclimb.lab.save_run_metadata") as mock_save_meta, \
+                 patch("play2learn_hillclimb.lab.genera_report_esperimento") as mock_report:
+
+                mock_eval.return_value = {"success_rate": 80.0, "mean_distance": 810.0}
+                mock_model = mock_agent.return_value
+                mock_model.save = lambda p: None
+
+                res = play2learn_hillclimb.run_lab(
+                    reward_fn=lambda *a: 0.0,
+                    mission="campagna_standard",
+                    total_timesteps=100,
+                    nome_run="addestramento_base",
+                    n_envs=1,
+                    crea_gif=False,
+                    output_dir=Path(td) / "custom_run",
+                    extra_param_ignoto=123,
+                )
+                self.assertIsNotNone(res)
+                self.assertEqual(res["nome_run"], "addestramento_base")
+                self.assertEqual(res["tag"], "addestramento_base")
+
 
 if __name__ == "__main__":
     unittest.main()

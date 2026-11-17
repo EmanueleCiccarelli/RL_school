@@ -30,6 +30,7 @@ def genera_report_esperimento(
     titolo: str = "Esperimento Hill Climb Racing",
     autore: str = "Studente Play2Learn",
     note: str = "",
+    **kwargs: Any,
 ) -> dict[str, Path]:
     """Genera la suite completa di report (PDF, HTML5, Markdown) per una run completata."""
     run_dir = Path(run_dir)
@@ -174,6 +175,7 @@ def genera_report_da_timestamp(
     titolo: Optional[str] = None,
     note: str = "",
     base_dir: Path = BASE_RUNS_DIR,
+    **kwargs: Any,
 ) -> dict[str, Path]:
     """Rigenera la scheda tecnica di una run passata cercando per timestamp o nome cartella."""
     base_dir = Path(base_dir)
