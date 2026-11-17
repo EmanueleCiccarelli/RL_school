@@ -150,8 +150,8 @@ La repository mette a disposizione **due percorsi didattici completamente separa
    ```
 
 5. **Apri il notebook dedicato al laboratorio desiderato:**  
-   * 🚀 **Per Lunar Lander:** apri `laboratorio_lunar_lander.ipynb`.
-   * 🏎️ **Per Hill Climb Racing:** apri `laboratorio_hill_climb.ipynb`.
+   * 🚀 **Per Lunar Lander:** apri `laboratorio_lunar_lander.ipynb` (oppure `play2learn_lunarlander/laboratorio_lunar_lander_locale.ipynb`).
+   * 🏎️ **Per Hill Climb Racing:** apri `laboratorio_hill_climb.ipynb` (oppure `play2learn_hillclimb/laboratorio_hill_climb_locale.ipynb`).
 
 ---
 

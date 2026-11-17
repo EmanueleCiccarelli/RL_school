@@ -263,21 +263,115 @@ def collauda_missione(
     return results
 
 
-def confronta_run(lista_risultati: Sequence[LabResult | dict[str, Any]]) -> None:
+def confronta_run(lista_risultati: Sequence[LabResult | dict[str, Any]] | str) -> None:
     """Mette a confronto le metriche e la telemetria di più sessioni di addestramento."""
     if not lista_risultati:
         print("[play2learn] Fornisci almeno un risultato da confrontare.")
         return
 
+    raw_items: list[Any] = []
+    if isinstance(lista_risultati, str):
+        raw_items = [x.strip() for x in lista_risultati.replace(";", ",").split(",") if x.strip()]
+    elif isinstance(lista_risultati, (list, tuple)):
+        raw_items = list(lista_risultati)
+    else:
+        raw_items = [lista_risultati]
+
+    resolved_runs: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+
+    for item in raw_items:
+        if isinstance(item, (dict, LabResult)):
+            meta = dict(item)
+            resolved_runs.append(meta)
+        elif isinstance(item, (str, Path)):
+            p = Path(item)
+            if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
+                resolved_runs.append(load_run_metadata(p))
+            else:
+                target_dir = find_run_by_timestamp(BASE_RUNS_DIR, str(item))
+                if target_dir is None:
+                    matches = list(BASE_RUNS_DIR.glob(f"*{item}*"))
+                    if matches:
+                        target_dir = matches[0]
+                if target_dir and target_dir.exists():
+                    resolved_runs.append(load_run_metadata(target_dir))
+                else:
+                    unresolved.append(str(item))
+
+    if unresolved:
+        print(f"⚠️ Attenzione: impossibile trovare le seguenti run dal timestamp inserito: {', '.join(unresolved)}")
+
+    if not resolved_runs:
+        print("[play2learn] Nessun dato valido trovato per il confronto.")
+        return
+
     print("══════════════════════════════════════════════════════════════════════════════════")
-    print(f"{'RUN / MISSIONE':<30} | {'SUCCESSO %':<10} | {'DIST MEDIA':<12} | {'DIST MAX'}")
+    print(f"{'TIMESTAMP':<18} | {'RUN / MISSIONE':<24} | {'SUCCESSO %':<10} | {'DIST MEDIA':<12} | {'DIST MAX'}")
     print("──────────────────────────────────────────────────────────────────────────────────")
-    for idx, r in enumerate(lista_risultati):
-        meta = r if isinstance(r, dict) else dict(r)
-        metrics = meta.get("eval_metrics", {})
-        miss = str(meta.get("mission", f"Run {idx+1}"))[:28]
+    for r in resolved_runs:
+        metrics = r.get("eval_metrics", {})
+        miss_data = r.get("mission", "standard")
+        if isinstance(miss_data, dict):
+            miss = miss_data.get("title", miss_data.get("key", "standard"))[:22]
+        else:
+            miss = str(miss_data)[:22]
+        ts = str(r.get("timestamp", ""))[:17]
         succ = f"{metrics.get('success_rate', metrics.get('eval_success_rate', 0.0)):.1f}%"
         dmean = f"{metrics.get('mean_distance', 0.0):.1f}m"
         dmax = f"{metrics.get('max_distance', 0.0):.1f}m"
-        print(f"{miss:<30} | {succ:<10} | {dmean:<12} | {dmax}")
+        print(f"{ts:<18} | {miss:<24} | {succ:<10} | {dmean:<12} | {dmax}")
     print("══════════════════════════════════════════════════════════════════════════════════")
+
+    # Visualizzazione tabella HTML arricchita su notebook se disponibile IPython
+    try:
+        from IPython.display import HTML, display
+        rows = []
+        for r in resolved_runs:
+            metrics = r.get("eval_metrics", {})
+            succ_val = float(metrics.get("success_rate", metrics.get("eval_success_rate", 0.0)))
+            badge_color = "#2e7d32" if succ_val >= 80.0 else ("#f57c00" if succ_val >= 50.0 else "#c62828")
+            bg_badge = "#e8f5e9" if succ_val >= 80.0 else ("#fff3e0" if succ_val >= 50.0 else "#ffebee")
+            miss_data = r.get("mission", "standard")
+            m_title = miss_data.get("title", miss_data.get("key", "standard")) if isinstance(miss_data, dict) else str(miss_data)
+            ts = str(r.get("timestamp", ""))
+            dmean_val = float(metrics.get("mean_distance", 0.0))
+            dmax_val = float(metrics.get("max_distance", 0.0))
+            air_val = float(metrics.get("airtime_pct", 0.0))
+            rows.append(
+                f"<tr>"
+                f"<td style='padding:8px 12px; font-family:monospace; font-weight:bold; color:#1a237e; background:#f8f9fa;'>{ts}</td>"
+                f"<td style='padding:8px 12px; font-weight:bold;'>{m_title}</td>"
+                f"<td style='padding:8px 12px; text-align:center;'><span style='background:{bg_badge}; color:{badge_color}; padding:3px 8px; border-radius:12px; font-weight:bold;'>{succ_val:.1f}%</span></td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{dmean_val:.1f} m</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{dmax_val:.1f} m</td>"
+                f"<td style='padding:8px 12px; text-align:center;'>{air_val:.1f}%</td>"
+                f"</tr>"
+            )
+        html_str = f"""
+        <div style="font-family:'Segoe UI', sans-serif; margin:16px 0;">
+            <h3 style="color:#0d47a1; margin-bottom:8px;">📊 Confronto Esperimenti Hill Climb Racing</h3>
+            <table style="border-collapse:collapse; width:100%; border:1px solid #ccc; text-align:left; font-size:13.5px;">
+                <thead style="background:#e3f2fd; color:#0d47a1;">
+                    <tr>
+                        <th style="padding:10px 12px;">Timestamp</th>
+                        <th style="padding:10px 12px;">Missione / Scenario</th>
+                        <th style="padding:10px 12px; text-align:center;">% Successo (&ge; 800m)</th>
+                        <th style="padding:10px 12px; text-align:center;">Distanza Media</th>
+                        <th style="padding:10px 12px; text-align:center;">Distanza Max</th>
+                        <th style="padding:10px 12px; text-align:center;">Tempo in Volo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {"".join(rows)}
+                </tbody>
+            </table>
+        </div>
+        """
+        display(HTML(html_str))
+    except Exception:
+        pass
+
+
+comprimi_runs = comprimi_archivio
+mostra_cronologia_run = mostra_cronologia

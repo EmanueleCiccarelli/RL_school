@@ -15,8 +15,10 @@ from play2learn_hillclimb.lab import (
     mostra_preferiti,
     carica_preferito,
     mostra_cronologia,
+    mostra_cronologia_run,
     genera_report_da_timestamp,
     comprimi_archivio,
+    comprimi_runs,
 )
 from play2learn_hillclimb.favorites import salva_nei_preferiti, LoadedFavorite
 from play2learn_hillclimb.environment import (
@@ -38,8 +40,10 @@ __all__ = [
     "mostra_preferiti",
     "carica_preferito",
     "mostra_cronologia",
+    "mostra_cronologia_run",
     "genera_report_da_timestamp",
     "comprimi_archivio",
+    "comprimi_runs",
     "salva_nei_preferiti",
     "LoadedFavorite",
     "HillClimbRewardWrapper",

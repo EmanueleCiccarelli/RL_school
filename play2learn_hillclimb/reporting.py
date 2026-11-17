@@ -167,15 +167,30 @@ def genera_report_esperimento(
     }
 
 
-def genera_report_da_timestamp(timestamp: str, base_dir: Path = BASE_RUNS_DIR) -> dict[str, Path]:
+def genera_report_da_timestamp(
+    timestamp: str = "latest",
+    tipo: str = "Base",
+    autore: str = "Studente",
+    titolo: Optional[str] = None,
+    note: str = "",
+    base_dir: Path = BASE_RUNS_DIR,
+) -> dict[str, Path]:
     """Rigenera la scheda tecnica di una run passata cercando per timestamp o nome cartella."""
     base_dir = Path(base_dir)
-    matches = list(base_dir.glob(f"*{timestamp}*"))
-    if not matches:
-        raise FileNotFoundError(f"Nessuna cartella trovata corrispondente al timestamp: {timestamp}")
+    target_dir = find_run_by_timestamp(base_dir, timestamp)
+    if target_dir is None:
+        matches = list(base_dir.glob(f"*{timestamp}*"))
+        if not matches:
+            raise FileNotFoundError(f"Nessuna cartella trovata corrispondente al timestamp: {timestamp}")
+        target_dir = matches[0]
 
-    target_dir = matches[0]
-    return genera_report_esperimento(target_dir)
+    title_str = titolo if titolo is not None else "Esperimento Hill Climb Racing"
+    return genera_report_esperimento(
+        run_dir=target_dir,
+        titolo=title_str,
+        autore=autore,
+        note=note,
+    )
 
 
 def mostra_cronologia(base_dir: Path = BASE_RUNS_DIR) -> None:
@@ -197,8 +212,15 @@ def mostra_cronologia(base_dir: Path = BASE_RUNS_DIR) -> None:
         meta = load_run_metadata(r)
         metrics = meta.get("eval_metrics", {})
         ts = r.name
-        miss = str(meta.get("mission", "standard"))[:18]
+        miss_data = meta.get("mission", "standard")
+        if isinstance(miss_data, dict):
+            miss = miss_data.get("title", miss_data.get("key", "standard"))[:18]
+        else:
+            miss = str(miss_data)[:18]
         succ = f"{metrics.get('success_rate', 0.0):.1f}%"
         dmax = f"{metrics.get('max_distance', 0.0):.1f}m"
         print(f"{ts:<35} | {miss:<20} | {succ:<10} | {dmax}")
     print("══════════════════════════════════════════════════════════════════════════════════")
+
+
+mostra_cronologia_run = mostra_cronologia
