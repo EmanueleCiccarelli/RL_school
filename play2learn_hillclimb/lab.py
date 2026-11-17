@@ -6,6 +6,14 @@ per gli esperimenti, la visualizzazione e il confronto nei notebook degli studen
 
 from __future__ import annotations
 
+# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+try:
+    import sympy
+    import sympy.logic
+    import sympy.logic.boolalg
+except (ImportError, AttributeError):
+    pass
+
 import copy
 import datetime
 from pathlib import Path

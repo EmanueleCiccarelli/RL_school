@@ -5,6 +5,14 @@ Implementa il Feature Extractor a invarianza di traslazione e l'orchestrazione P
 
 from __future__ import annotations
 
+# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+try:
+    import sympy
+    import sympy.logic
+    import sympy.logic.boolalg
+except (ImportError, AttributeError):
+    pass
+
 import math
 from typing import Any, Callable
 import torch

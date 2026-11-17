@@ -4,6 +4,14 @@ Motore e orchestratore unificato di Reinforcement Learning per ambienti educativ
 (LunarLander, HillClimbRacing, ecc.).
 """
 
+# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+try:
+    import sympy
+    import sympy.logic
+    import sympy.logic.boolalg
+except (ImportError, AttributeError):
+    pass
+
 import os
 
 # Configurazione threading all'avvio per evitare contesa CPU e oversubscription
