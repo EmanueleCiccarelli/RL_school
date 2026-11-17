@@ -21,7 +21,7 @@ except ImportError:
 from play2learn_core.reporting import serialize_eval_metrics
 from play2learn_hillclimb.diagnostics import diagnose_hill_climb_behavior
 from play2learn_hillclimb.visualizer import plot_hill_telemetry
-from play2learn_hillclimb.storage import BASE_RUNS_DIR, load_run_metadata
+from play2learn_hillclimb.storage import BASE_RUNS_DIR, find_run_by_timestamp, load_run_metadata
 
 
 def genera_report_esperimento(
@@ -216,7 +216,7 @@ def genera_report_da_timestamp(
 ) -> dict[str, Path]:
     """Rigenera la scheda tecnica di una run passata cercando per timestamp o nome cartella."""
     base_dir = Path(base_dir)
-    target_dir = find_run_by_timestamp(base_dir, timestamp)
+    target_dir = find_run_by_timestamp(timestamp, base_dir)
     if target_dir is None:
         matches = list(base_dir.glob(f"*{timestamp}*"))
         if not matches:
@@ -239,7 +239,16 @@ def mostra_cronologia(base_dir: Path = BASE_RUNS_DIR) -> None:
         print("[play2learn] Nessun esperimento registrato.")
         return
 
-    runs = sorted(list(base_dir.glob("run_*")), reverse=True)
+    runs = sorted(
+        (
+            d
+            for d in base_dir.iterdir()
+            if d.is_dir()
+            and d.name not in ("favorites", "preferiti", "successi")
+            and (d / "run_metadata.json").exists()
+        ),
+        reverse=True,
+    )
     if not runs:
         print("[play2learn] Nessuna run trovata in runs/.")
         return

@@ -70,9 +70,12 @@ from play2learn_hillclimb.visualizer import (
     plot_comparison,
 )
 from play2learn_hillclimb.storage import (
+    BASE_RUNS_DIR,
     create_run_directory,
-    save_run_metadata,
     comprimi_archivio,
+    find_run_by_timestamp,
+    load_run_metadata,
+    save_run_metadata,
 )
 from play2learn_hillclimb.favorites import (
     salva_nei_preferiti,
@@ -480,7 +483,7 @@ def confronta_run(
             if p.exists() and p.is_dir() and (p / "run_metadata.json").exists():
                 resolved_runs.append(load_run_metadata(p))
             else:
-                target_dir = find_run_by_timestamp(BASE_RUNS_DIR, str(item))
+                target_dir = find_run_by_timestamp(str(item), BASE_RUNS_DIR)
                 if target_dir is None:
                     matches = list(BASE_RUNS_DIR.glob(f"*{item}*"))
                     if matches:
