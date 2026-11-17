@@ -21,12 +21,17 @@ except Exception:
     pass
 
 from play2learn_hillclimb.config import ENV_ID, MISSIONS, TARGET_DISTANCE_SUCCESS
+from play2learn_hillclimb.visualizer import (
+    mostra_mappa_ambiente,
+    plot_hill_telemetry,
+    display_notebook_summary,
+    plot_comparison,
+)
 from play2learn_hillclimb.lab import (
     run_lab,
     LabResult,
     collauda_missione,
     confronta_run,
-    mostra_mappa_ambiente,
     mostra_preferiti,
     carica_preferito,
     mostra_cronologia,
@@ -52,6 +57,7 @@ __all__ = [
     "collauda_missione",
     "confronta_run",
     "mostra_mappa_ambiente",
+    "display_notebook_summary",
     "mostra_preferiti",
     "carica_preferito",
     "mostra_cronologia",

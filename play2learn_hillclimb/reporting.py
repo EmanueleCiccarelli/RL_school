@@ -42,7 +42,7 @@ def genera_report_esperimento(
 
     # 1. Generazione grafico telemetria
     telemetry_img = run_dir / "telemetria_esperimento.png"
-    if history and _MPL_AVAILABLE:
+    if history and _MPL_AVAILABLE and not telemetry_img.exists():
         try:
             plot_hill_telemetry(history, output_path=telemetry_img)
         except Exception as e:
@@ -50,8 +50,10 @@ def genera_report_esperimento(
 
     # 2. Diagnostica testuale
     diag_text = diagnose_hill_climb_behavior(metrics)
+    code_source = metadata.get("reward_source_code", "")
 
     # 3. Report Markdown
+    code_md_block = f"\n## 💻 Codice Sorgente Custom Reward\n```python\n{code_source}\n```\n" if code_source else ""
     md_path = run_dir / "report_esperimento.md"
     md_content = f"""# 🏎️ Scheda Tecnica: {titolo}
 
@@ -73,7 +75,7 @@ def genera_report_esperimento(
 | **Distanza Massima (Record)** | **{metrics.get('max_distance', 0.0):.1f} m** |
 | **Velocità Media di Punta** | {metrics.get('mean_speed', 0.0):.2f} m/s |
 | **Tempo Trascorso in Volo (Airtime)** | {metrics.get('mean_airtime_pct', 0.0):.1f}% |
-
+{code_md_block}
 ---
 
 ## 📋 Diagnostica del Coach
@@ -92,7 +94,23 @@ def genera_report_esperimento(
 """
     md_path.write_text(md_content, encoding="utf-8")
 
-    # 4. Report HTML5 Standalone
+    # 4. Report HTML5 Standalone con telemetria incorporata
+    plot_b64_tag = ""
+    if telemetry_img.exists():
+        try:
+            import base64
+            img_b64 = base64.b64encode(telemetry_img.read_bytes()).decode("ascii")
+            plot_b64_tag = f'<div style="text-align:center; margin:22px 0;"><img src="data:image/png;base64,{img_b64}" style="max-width:100%; border-radius:8px; box-shadow:0 3px 12px rgba(0,0,0,0.12);" alt="Dashboard Telemetrica"/></div>'
+        except Exception:
+            plot_b64_tag = f'<div style="text-align:center; margin:22px 0;"><img src="{telemetry_img.name}" style="max-width:100%;" alt="Dashboard Telemetrica"/></div>'
+
+    code_html_block = ""
+    if code_source:
+        code_html_block = f"""
+  <h3>💻 Codice Sorgente Custom Reward</h3>
+  <pre style="background:#1e1e1e; color:#d4d4d4; padding:14px; border-radius:6px; font-size:13px; overflow-x:auto;"><code>{html.escape(code_source)}</code></pre>
+"""
+
     html_path = run_dir / "report_esperimento.html"
     html_content = f"""<!DOCTYPE html>
 <html lang="it">
@@ -101,32 +119,47 @@ def genera_report_esperimento(
   <title>{html.escape(titolo)}</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 30px; background: #f8f9fa; color: #212529; }}
-    .container {{ max-width: 900px; margin: auto; background: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-    h1 {{ color: #0d6efd; border-bottom: 2px solid #e9ecef; padding-bottom: 12px; }}
+    .container {{ max-width: 960px; margin: auto; background: #ffffff; padding: 32px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }}
+    h1 {{ color: #0d47a1; border-bottom: 2px solid #e9ecef; padding-bottom: 12px; margin-top: 0; }}
+    .meta-box {{ background: #e3f2fd; padding: 12px 18px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; }}
     table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
     th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }}
-    th {{ background: #f1f3f5; }}
-    .badge-success {{ color: #198754; font-weight: bold; }}
-    pre {{ background: #212529; color: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto; }}
+    th {{ background: #f1f3f5; font-weight: bold; }}
+    .badge-success {{ color: #1b5e20; font-weight: bold; font-size: 15px; }}
+    pre {{ background: #212529; color: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 13px; }}
+    .notes-box {{ background: #fffde7; padding: 14px 18px; border-left: 4px solid #fbc02d; border-radius: 4px; margin-top: 16px; font-size: 13.5px; }}
   </style>
 </head>
 <body>
 <div class="container">
-  <h1>🏎️ Scheda Tecnica Esperimento</h1>
-  <p><strong>Titolo:</strong> {html.escape(titolo)} | <strong>Autore:</strong> {html.escape(autore)}</p>
-  <p><strong>Missione:</strong> {html.escape(str(metadata.get('mission', 'campagna_standard')))}</p>
+  <h1>🏎️ Scheda Tecnica Esperimento: Hill Climb Racing</h1>
+  <div class="meta-box">
+    <div><strong>Titolo:</strong> {html.escape(titolo)} | <strong>Autore:</strong> {html.escape(autore)}</div>
+    <div><strong>Missione:</strong> {html.escape(str(metadata.get('mission', 'campagna_standard')))} | <strong>Data:</strong> {html.escape(str(metadata.get('timestamp', '')))}</div>
+  </div>
+
+  <h2>1. Prestazioni e Metriche di Guida</h2>
   <table>
-    <tr><th>Metrica</th><th>Valore</th></tr>
-    <tr><td>Percentuale di Successo (&ge; 800m)</td><td class="badge-success">{metrics.get('success_rate', metrics.get('eval_success_rate', 0.0)):.1f}%</td></tr>
-    <tr><td>Schianti / Ribaltamenti</td><td>{metrics.get('crash_rate', 0.0):.1f}%</td></tr>
-    <tr><td>Blocchi in Salita / Timeout</td><td>{metrics.get('timeout_rate', 0.0):.1f}%</td></tr>
-    <tr><td>Distanza Media Percorsa</td><td>{metrics.get('mean_distance', 0.0):.1f} m</td></tr>
-    <tr><td>Distanza Massima Raggiunta</td><td><strong>{metrics.get('max_distance', 0.0):.1f} m</strong></td></tr>
-    <tr><td>Velocità Media di Punta</td><td>{metrics.get('mean_speed', 0.0):.2f} m/s</td></tr>
-    <tr><td>Tempo in Volo (Airtime)</td><td>{metrics.get('mean_airtime_pct', 0.0):.1f}%</td></tr>
+    <tr><th>Parametro di Guida</th><th>Valore Misurato</th><th>Riferimento Obiettivo</th></tr>
+    <tr><td><strong>Percentuale di Successo (&ge; 800m)</strong></td><td class="badge-success">{metrics.get('success_rate', metrics.get('eval_success_rate', 0.0)):.1f}%</td><td>&ge; 80.0%</td></tr>
+    <tr><td>Schianti / Ribaltamenti</td><td>{metrics.get('crash_rate', 0.0):.1f}%</td><td>Minimizzare</td></tr>
+    <tr><td>Blocchi in Salita / Timeout</td><td>{metrics.get('timeout_rate', 0.0):.1f}%</td><td>Minimizzare</td></tr>
+    <tr><td>Distanza Media Percorsa</td><td>{metrics.get('mean_distance', 0.0):.1f} m</td><td>&ge; 800.0 m</td></tr>
+    <tr><td>Distanza Massima (Record)</td><td><strong>{metrics.get('max_distance', 0.0):.1f} m</strong></td><td>&ge; 800.0 m</td></tr>
+    <tr><td>Velocità Media di Punta</td><td>{metrics.get('mean_speed', 0.0):.2f} m/s</td><td>Dinamica sostenuta</td></tr>
+    <tr><td>Tempo in Volo (Airtime)</td><td>{metrics.get('mean_airtime_pct', 0.0):.1f}%</td><td>Equilibrato</td></tr>
   </table>
-  <h3>📋 Diagnostica del Coach</h3>
+
+  {plot_b64_tag}
+  {code_html_block}
+
+  <h2>2. Diagnostica del Coach</h2>
   <pre>{html.escape(diag_text)}</pre>
+
+  <h2>3. Note di Debug e Considerazioni dello Studente</h2>
+  <div class="notes-box">
+    {html.escape(note) if note else "<em>Nessuna annotazione inserita. Puoi modificare questo report per aggiungere le tue osservazioni.</em>"}
+  </div>
 </div>
 </body>
 </html>
@@ -157,14 +190,18 @@ def genera_report_esperimento(
                 plt.close(fig)
 
     print(f"✅ Report tecnico generato in: {run_dir.name}")
-    print("   • PDF:      scheda_esperimento.pdf")
-    print("   • HTML:     report_esperimento.html")
-    print("   • Markdown: report_esperimento.md")
+    print(f"   • PDF:      {pdf_path.name}")
+    print(f"   • HTML:     {html_path.name}")
+    print(f"   • Markdown: {md_path.name}")
 
     return {
         "md": md_path,
         "html": html_path,
         "pdf": pdf_path,
+        "md_path": md_path,
+        "html_path": html_path,
+        "pdf_path": pdf_path,
+        "telemetry_img": telemetry_img,
     }
 
 

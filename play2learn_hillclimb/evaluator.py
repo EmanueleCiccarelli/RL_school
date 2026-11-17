@@ -217,6 +217,9 @@ def evaluate_and_record(
     mean_speed = float(np.mean(speeds)) if speeds else 0.0
     mean_air = float(np.mean(airtimes)) if airtimes else 0.0
 
+    succ_vids = [v for v in video_paths if "successo" in v.name.lower()]
+    fail_vids = [v for v in video_paths if "fallimento" in v.name.lower() or "crash" in v.name.lower()]
+
     results = {
         "success_rate": succ_rate,
         "crash_rate": crash_rate,
@@ -229,6 +232,9 @@ def evaluate_and_record(
         "total_episodes": total_runs,
         "history": history,
         "video_paths": video_paths,
+        "videos": video_paths,
+        "success_videos": succ_vids,
+        "failure_videos": fail_vids,
         "video_filenames": [p.name for p in video_paths],
     }
     return results
