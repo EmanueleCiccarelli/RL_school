@@ -180,8 +180,10 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             pos_x = float(car.pos_x)
             pos_y = float(car.pos_y)
             ang = _wrap_angle(-cb.angle)
-            r_spd = float(car.wheels[0].joint.speed) if len(car.wheels) > 0 and car.wheels[0].joint else 0.0
-            f_spd = float(car.wheels[1].joint.speed) if len(car.wheels) > 1 and car.wheels[1].joint else 0.0
+            # In Box2D la rotazione oraria (in avanti) ha velocità angolare negativa.
+            # Negando joint.speed, convenzione didattica: > 0 rotazione in avanti, < 0 retromarcia.
+            r_spd = -float(car.wheels[0].joint.speed) if len(car.wheels) > 0 and car.wheels[0].joint else 0.0
+            f_spd = -float(car.wheels[1].joint.speed) if len(car.wheels) > 1 and car.wheels[1].joint else 0.0
             r_g = 1.0 if (len(car.wheels) > 0 and car.wheels[0].on_ground) else 0.0
             f_g = 1.0 if (len(car.wheels) > 1 and car.wheels[1].on_ground) else 0.0
         elif isinstance(raw_obs, dict):
@@ -191,8 +193,8 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             deg = float(raw_obs.get("chassis_angle", [0.0])[0])
             ang = _wrap_angle(-math.radians(deg))
             ws = raw_obs.get("wheels_speed", [0.0, 0.0])
-            r_spd = float(ws[0]) if len(ws) > 0 else 0.0
-            f_spd = float(ws[1]) if len(ws) > 1 else 0.0
+            r_spd = -float(ws[0]) if len(ws) > 0 else 0.0
+            f_spd = -float(ws[1]) if len(ws) > 1 else 0.0
             og = raw_obs.get("on_ground", [0, 0])
             r_g = float(og[0]) if len(og) > 0 else 0.0
             f_g = float(og[1]) if len(og) > 1 else 0.0

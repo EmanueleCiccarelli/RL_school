@@ -458,6 +458,27 @@ class TestHillClimb(unittest.TestCase):
             self.assertIn("Niccolò", paths["html"].read_text(encoding="utf-8"))
             self.assertEqual(len(plt.get_fignums()), 0, "Leak di figure Matplotlib dopo genera_report_esperimento")
 
+    def test_regression_wheel_speed_sign_convention(self):
+        """Verifica che la rotazione in avanti produca velocità positiva (>0) e retromarcia negativa (<0)."""
+        raw = gym.make(ENV_ID, render_mode=None)
+        wrapped = HillClimbRewardWrapper(raw)
+        try:
+            wrapped.reset(seed=42)
+            # 1. Accelerazione in avanti (action = 1) -> velocità angolare positiva
+            obs_fwd, _, _, _, _ = wrapped.step(1)
+            self.assertGreater(obs_fwd[3], 0.0, "rear_wheel_speed deve essere > 0 quando si dà gas in avanti")
+            self.assertGreater(obs_fwd[4], 0.0, "front_wheel_speed deve essere > 0 quando si dà gas in avanti")
+            self.assertEqual(obs_fwd[3], obs_fwd["rear_wheel_speed"])
+            self.assertEqual(obs_fwd[4], obs_fwd["front_wheel_speed"])
+
+            # 2. Retromarcia / freno motore (action = 2) -> velocità angolare negativa
+            wrapped.reset(seed=42)
+            obs_rev, _, _, _, _ = wrapped.step(2)
+            self.assertLess(obs_rev[3], 0.0, "rear_wheel_speed deve essere < 0 in retromarcia")
+            self.assertLess(obs_rev[4], 0.0, "front_wheel_speed deve essere < 0 in retromarcia")
+        finally:
+            wrapped.close()
+
 
 if __name__ == "__main__":
     unittest.main()
