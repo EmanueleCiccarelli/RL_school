@@ -7,6 +7,21 @@ sezione Preferiti e reportistica tecnica dettagliata.
 
 from __future__ import annotations
 
+# Fix preventivo e definitivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+import sys
+try:
+    import sympy
+    import sympy.logic
+    import sympy.logic.boolalg
+    sympy.logic = sympy.logic
+    sympy.logic.boolalg = sympy.logic.boolalg
+    sys.modules["sympy"].logic = sympy.logic
+    sys.modules["sympy.logic"] = sympy.logic
+    sys.modules["sympy.logic.boolalg"] = sympy.logic.boolalg
+    import torch.utils._sympy.numbers
+except Exception:
+    pass
+
 import os
 
 # Imposta variabili d'ambiente di threading PRIMA di caricare numpy, torch o matplotlib

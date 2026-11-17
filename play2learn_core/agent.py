@@ -6,6 +6,20 @@ e configurazione ottimale di VecEnv per Linux, Windows, macOS e Google Colab.
 
 from __future__ import annotations
 
+import sys
+try:
+    import sympy
+    import sympy.logic
+    import sympy.logic.boolalg
+    sympy.logic = sympy.logic
+    sympy.logic.boolalg = sympy.logic.boolalg
+    sys.modules["sympy"].logic = sympy.logic
+    sys.modules["sympy.logic"] = sympy.logic
+    sys.modules["sympy.logic.boolalg"] = sympy.logic.boolalg
+    import torch.utils._sympy.numbers
+except Exception:
+    pass
+
 import collections
 import os
 import sys

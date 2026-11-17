@@ -45,14 +45,14 @@ def diagnose_hill_climb_behavior(eval_metrics: dict[str, Any]) -> str:
         lines.append(
             " ⚠️ TROPPI RIBALTAMENTI (Schianto Testa-Suolo):\n"
             "    L'agente preme troppo il gas e fa impennare la vettura sui dossi o sulle salite ripide.\n"
-            "    💡 SUGGERIMENTO: Aggiungi una penalità quadratica sull'inclinazione quando abs(angle) > 0.4,\n"
-            "       oppure penalizza la velocità angolare eccessiva quando le ruote perdono contatto col suolo."
+            "    💡 SUGGERIMENTO: Aggiungi una penalità sull'inclinazione quando abs(angle) > 0.4,\n"
+            "       e incentiva a rilasciare il gas o frenare quando entrambe le ruote sono staccate da terra."
         )
     elif tout > 45.0:
         lines.append(
             " ⚠️ VETTURA BLOCCATA NELLE VALLI O IN SALITA (Timeout):\n"
             "    Il veicolo non accumula sufficiente velocità per superare le rampe e finisce per slittare sul posto.\n"
-            "    💡 SUGGERIMENTO: Aumenta il premio proporzionale alla velocità in avanti (vx > 0)\n"
+            "    💡 SUGGERIMENTO: Aumenta il premio proporzionale alla trazione in avanti (rear_wheel_speed > 0)\n"
             "       e incentiva la continuità della distanza percorsa rispetto al massimo precedente."
         )
     elif mean_dist < 400.0:

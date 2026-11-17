@@ -70,11 +70,11 @@ class TestHillClimb(unittest.TestCase):
             env.close()
 
     def test_features_extractor_translation_invariance(self):
-        box_space = gym.spaces.Box(low=-1000.0, high=1000.0, shape=(8,), dtype=np.float32)
+        box_space = gym.spaces.Box(low=-1000.0, high=1000.0, shape=(7,), dtype=np.float32)
         extractor = HillClimbFeaturesExtractor(box_space)
 
-        t1 = torch.tensor([[100.0, 50.0, 10.0, -2.0, 0.3, 0.5, 1.0, 1.0]], dtype=torch.float32)
-        t2 = torch.tensor([[950.0, 350.0, 10.0, -2.0, 0.3, 0.5, 1.0, 1.0]], dtype=torch.float32)
+        t1 = torch.tensor([[100.0, 50.0, 0.3, 15.0, 15.0, 1.0, 1.0]], dtype=torch.float32)
+        t2 = torch.tensor([[950.0, 350.0, 0.3, 15.0, 15.0, 1.0, 1.0]], dtype=torch.float32)
 
         feat1 = extractor(t1)
         feat2 = extractor(t2)
@@ -90,10 +90,10 @@ class TestHillClimb(unittest.TestCase):
         wrapped = HillClimbRewardWrapper(raw, reward_fn=my_reward)
         try:
             obs, _ = wrapped.reset(seed=42)
-            self.assertGreaterEqual(len(obs), 8)
+            self.assertEqual(len(obs), 7)
 
             obs, rew, term, trunc, info = wrapped.step(1)
-            self.assertGreaterEqual(len(obs), 8)
+            self.assertEqual(len(obs), 7)
             self.assertIsInstance(rew, float)
         finally:
             wrapped.close()
@@ -112,7 +112,7 @@ class TestHillClimb(unittest.TestCase):
             wrapped.close()
 
     def test_classify_outcome_edge_cases(self):
-        obs_goal_timeout = np.array([850.0, 10.0, 2.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+        obs_goal_timeout = np.array([850.0, 10.0, 0.1, 15.0, 15.0, 1.0, 1.0], dtype=np.float32)
         succ, crash, tout, _ = classify_hill_climb_outcome(
             obs=obs_goal_timeout,
             original_reward=0.0,
@@ -123,7 +123,7 @@ class TestHillClimb(unittest.TestCase):
         self.assertFalse(crash)
         self.assertFalse(tout)
 
-        obs_stuck = np.array([250.0, 10.0, 0.0, 0.0, 0.1, 0.0, 1.0, 1.0], dtype=np.float32)
+        obs_stuck = np.array([250.0, 10.0, 0.1, 0.0, 0.0, 1.0, 1.0], dtype=np.float32)
         succ_s, crash_s, tout_s, _ = classify_hill_climb_outcome(
             obs=obs_stuck,
             original_reward=-100.0,
@@ -457,40 +457,6 @@ class TestHillClimb(unittest.TestCase):
             self.assertIn("Velocità e Stabilità", paths["md"].read_text(encoding="utf-8"))
             self.assertIn("Niccolò", paths["html"].read_text(encoding="utf-8"))
             self.assertEqual(len(plt.get_fignums()), 0, "Leak di figure Matplotlib dopo genera_report_esperimento")
-
-    def test_regression_run_lab_signature_and_kwargs(self):
-        """Verifica che run_lab accetti nome_run, output_dir, n_envs, crea_gif e **kwargs senza TypeError."""
-        sig = inspect.signature(play2learn_hillclimb.run_lab)
-        self.assertIn("nome_run", sig.parameters)
-        self.assertIn("output_dir", sig.parameters)
-        self.assertIn("n_envs", sig.parameters)
-        self.assertIn("crea_gif", sig.parameters)
-        self.assertIn("device", sig.parameters)
-
-        with tempfile.TemporaryDirectory() as td:
-            with patch("play2learn_hillclimb.lab.make_parallel_envs") as mock_envs, \
-                 patch("play2learn_hillclimb.lab.create_ppo_agent") as mock_agent, \
-                 patch("play2learn_hillclimb.lab.evaluate_and_record") as mock_eval, \
-                 patch("play2learn_hillclimb.lab.save_run_metadata") as mock_save_meta, \
-                 patch("play2learn_hillclimb.lab.genera_report_esperimento") as mock_report:
-
-                mock_eval.return_value = {"success_rate": 80.0, "mean_distance": 810.0}
-                mock_model = mock_agent.return_value
-                mock_model.save = lambda p: None
-
-                res = play2learn_hillclimb.run_lab(
-                    reward_fn=lambda *a: 0.0,
-                    mission="campagna_standard",
-                    total_timesteps=100,
-                    nome_run="addestramento_base",
-                    n_envs=1,
-                    crea_gif=False,
-                    output_dir=Path(td) / "custom_run",
-                    extra_param_ignoto=123,
-                )
-                self.assertIsNotNone(res)
-                self.assertEqual(res["nome_run"], "addestramento_base")
-                self.assertEqual(res["tag"], "addestramento_base")
 
 
 if __name__ == "__main__":

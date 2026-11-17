@@ -6,12 +6,19 @@ per gli esperimenti, la visualizzazione e il confronto nei notebook degli studen
 
 from __future__ import annotations
 
-# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+# Fix preventivo e definitivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+import sys
 try:
     import sympy
     import sympy.logic
     import sympy.logic.boolalg
-except (ImportError, AttributeError):
+    sympy.logic = sympy.logic
+    sympy.logic.boolalg = sympy.logic.boolalg
+    sys.modules["sympy"].logic = sympy.logic
+    sys.modules["sympy.logic"] = sympy.logic
+    sys.modules["sympy.logic.boolalg"] = sympy.logic.boolalg
+    import torch.utils._sympy.numbers
+except Exception:
     pass
 
 import copy
@@ -131,7 +138,7 @@ def run_lab(
     learning_rate: float = 3e-4,
     crea_gif_evoluzione: bool = True,
     seed: int = 42,
-    device: str = "auto",
+    device: str = "cpu",
     output_dir: Optional[str | Path] = None,
     n_envs: Optional[int] = None,
     crea_gif: Optional[bool] = None,

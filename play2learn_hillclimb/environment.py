@@ -58,7 +58,12 @@ def classify_hill_climb_outcome(
       - is_flipped: inclinazione del telaio superiore a ~80° (angolo > 1.4 rad).
     """
     dist_x = float(obs[0]) if len(obs) > 0 else 0.0
-    angle_rad = _wrap_angle(float(obs[4])) if len(obs) > 4 else 0.0
+    if len(obs) == 7:
+        angle_rad = _wrap_angle(float(obs[2]))
+    elif len(obs) > 4:
+        angle_rad = _wrap_angle(float(obs[4]))
+    else:
+        angle_rad = 0.0
     is_flipped = bool(abs(angle_rad) > 1.4)
 
     # 1. Traguardo di successo raggiunto (priorità massima anche su timeout)
@@ -87,11 +92,55 @@ def classify_hill_climb_outcome(
     return False, False, False, is_flipped
 
 
+class ObservationArray(np.ndarray):
+    """
+    Array NumPy 1D contenente le sole 7 osservazioni fisiche originali di Hill Climb Racing,
+    con supporto opzionale all'accesso per chiave come dizionario:
+      - [0] pos_x: Distanza orizzontale lungo il tracciato (in metri)
+      - [1] pos_y: Quota altimetrica verticale (in metri)
+      - [2] angle: Angolo di inclinazione del telaio (in radianti, [-pi, +pi])
+      - [3] rear_wheel_speed: Velocità di rotazione ruota posteriore (rad/s)
+      - [4] front_wheel_speed: Velocità di rotazione ruota anteriore (rad/s)
+      - [5] rear_on_ground: Contatto a terra ruota posteriore (1.0 = contatto, 0.0 = aria)
+      - [6] front_on_ground: Contatto a terra ruota anteriore (1.0 = contatto, 0.0 = aria)
+    """
+
+    _KEY_MAP = {
+        "chassis_position": slice(0, 2),
+        "chassis_angle": slice(2, 3),
+        "wheels_speed": slice(3, 5),
+        "on_ground": slice(5, 7),
+        "pos_x": 0,
+        "dist_x": 0,
+        "pos_y": 1,
+        "quota_y": 1,
+        "angle": 2,
+        "rear_wheel_speed": 3,
+        "front_wheel_speed": 4,
+        "rear_on_ground": 5,
+        "front_on_ground": 6,
+        "rear_wheel": 5,
+        "front_wheel": 6,
+    }
+
+    def __getitem__(self, item: Any) -> Any:
+        if isinstance(item, str) and item in self._KEY_MAP:
+            return super().__getitem__(self._KEY_MAP[item])
+        return super().__getitem__(item)
+
+
 class HillClimbRewardWrapper(BaseRewardWrapper):
     """
     Wrapper didattico Play2Learn per Hill Climb Racing.
-    Adatta lo spazio delle osservazioni Dict originale di alexzh3 in un vettore 8D continuo,
-    facilita il calcolo della reward personalizzata dello studente e traccia la telemetria di bordo.
+    Adatta lo spazio delle osservazioni Dict originale di alexzh3 in un vettore 7D continuo,
+    restituendo solo ed esclusivamente le grandezze fisiche dell'ambiente originale:
+      - [0] pos_x: Distanza orizzontale (in metri, spawn=6.67m, traguardo >= 800m)
+      - [1] pos_y: Quota altimetrica verticale (in metri)
+      - [2] angle: Inclinazione del telaio (radianti da -pi a +pi, 0=orizzontale)
+      - [3] rear_wheel_speed: Velocità di rotazione ruota posteriore
+      - [4] front_wheel_speed: Velocità di rotazione ruota anteriore
+      - [5] rear_on_ground: Contatto gomma posteriore col terreno (1.0=aderenza, 0.0=aria)
+      - [6] front_on_ground: Contatto gomma anteriore col terreno (1.0=aderenza, 0.0=aria)
     """
 
     def __init__(
@@ -105,23 +154,23 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
         self.target_distance = float(target_distance)
         self.frame_skip = max(1, int(frame_skip))
 
-        # Spazio di osservazione 8D didattico:
-        # [dist_x, quota_y, vx, vy, angle_rad, ang_vel, rear_wheel_ground, front_wheel_ground]
+        # Spazio di osservazione 7D didattico originale:
+        # [dist_x, quota_y, angle, rear_wheel_speed, front_wheel_speed, rear_on_ground, front_on_ground]
         self.observation_space = spaces.Box(
-            low=np.array([0.0, -100.0, -50.0, -50.0, -math.pi, -20.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([1200.0, 500.0, 50.0, 50.0, math.pi, 20.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([0.0, -200.0, -math.pi, -60.0, -60.0, 0.0, 0.0], dtype=np.float32),
+            high=np.array([1200.0, 800.0, math.pi, 60.0, 60.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
-        self._obs_buf = np.zeros(8, dtype=np.float32)
+        self._obs_buf = np.zeros(7, dtype=np.float32)
         self._max_distance_reached = 0.0
         self._max_speed_reached = 0.0
         self._airtime_steps = 0
         self._flip_count = 0
         self._total_steps = 0
 
-    def _extract_8d_obs(self, raw_obs: Any) -> np.ndarray:
-        """Estrae i valori fisici in un array numpy 8D continuo."""
+    def _extract_obs(self, raw_obs: Any) -> ObservationArray:
+        """Estrae i valori fisici originali in un array numpy 7D."""
         buf = self._obs_buf
         uw = self.env.unwrapped
         car = getattr(getattr(uw, "agent", None), "car", None)
@@ -130,36 +179,39 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             cb = car.chassis_body
             pos_x = float(car.pos_x)
             pos_y = float(car.pos_y)
-            vx = float(cb.linearVelocity.x)
-            vy = float(cb.linearVelocity.y)
             ang = _wrap_angle(-cb.angle)
-            v_ang = float(cb.angularVelocity)
+            r_spd = float(car.wheels[0].joint.speed) if len(car.wheels) > 0 and car.wheels[0].joint else 0.0
+            f_spd = float(car.wheels[1].joint.speed) if len(car.wheels) > 1 and car.wheels[1].joint else 0.0
             r_g = 1.0 if (len(car.wheels) > 0 and car.wheels[0].on_ground) else 0.0
             f_g = 1.0 if (len(car.wheels) > 1 and car.wheels[1].on_ground) else 0.0
         elif isinstance(raw_obs, dict):
             cp = raw_obs.get("chassis_position", [0.0, 0.0])
             pos_x = float(cp[0])
             pos_y = float(cp[1])
-            vx, vy = 0.0, 0.0
             deg = float(raw_obs.get("chassis_angle", [0.0])[0])
             ang = _wrap_angle(-math.radians(deg))
-            v_ang = 0.0
+            ws = raw_obs.get("wheels_speed", [0.0, 0.0])
+            r_spd = float(ws[0]) if len(ws) > 0 else 0.0
+            f_spd = float(ws[1]) if len(ws) > 1 else 0.0
             og = raw_obs.get("on_ground", [0, 0])
             r_g = float(og[0]) if len(og) > 0 else 0.0
             f_g = float(og[1]) if len(og) > 1 else 0.0
         else:
             buf.fill(0.0)
-            return buf.copy()
+            return buf.copy().view(ObservationArray)
 
         buf[0] = pos_x
         buf[1] = pos_y
-        buf[2] = vx
-        buf[3] = vy
-        buf[4] = ang
-        buf[5] = v_ang
-        buf[6] = r_g
-        buf[7] = f_g
-        return buf.copy()
+        buf[2] = ang
+        buf[3] = r_spd
+        buf[4] = f_spd
+        buf[5] = r_g
+        buf[6] = f_g
+        return buf.copy().view(ObservationArray)
+
+    def _extract_8d_obs(self, raw_obs: Any) -> np.ndarray:
+        """Alias retrocompatibile per estrattore di osservazioni."""
+        return self._extract_obs(raw_obs)
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         raw_obs, info = self.env.reset(seed=seed, options=options)
@@ -169,9 +221,9 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
         self._flip_count = 0
         self._total_steps = 0
 
-        obs_8d = self._extract_8d_obs(raw_obs)
-        self._max_distance_reached = float(obs_8d[0])
-        return obs_8d, info
+        obs_7d = self._extract_obs(raw_obs)
+        self._max_distance_reached = float(obs_7d[0])
+        return obs_7d, info
 
     def step(self, action: Any):
         total_orig_reward = 0.0
@@ -186,21 +238,21 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             if term or trunc:
                 break
 
-        obs_8d = self._extract_8d_obs(raw_obs)
+        obs_7d = self._extract_obs(raw_obs)
         self._total_steps += 1
-        dist_x = float(obs_8d[0])
-        speed = math.hypot(float(obs_8d[2]), float(obs_8d[3]))
+        dist_x = float(obs_7d[0])
+        wheel_speed = max(abs(float(obs_7d[3])), abs(float(obs_7d[4])))
         if dist_x > self._max_distance_reached:
             self._max_distance_reached = dist_x
-        if speed > self._max_speed_reached:
-            self._max_speed_reached = speed
-        if obs_8d[6] == 0.0 and obs_8d[7] == 0.0:
+        if wheel_speed > self._max_speed_reached:
+            self._max_speed_reached = wheel_speed
+        if obs_7d[5] == 0.0 and obs_7d[6] == 0.0:
             self._airtime_steps += 1
-        if abs(obs_8d[4]) > 1.4:
+        if abs(obs_7d[2]) > 1.4:
             self._flip_count += 1
 
         succ, crash, tout, flipped = classify_hill_climb_outcome(
-            obs=obs_8d,
+            obs=obs_7d,
             original_reward=total_orig_reward,
             terminated=term,
             truncated=trunc,
@@ -213,7 +265,7 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             term = True
 
         if self.reward_fn is not None:
-            obs_ro = obs_8d.copy()
+            obs_ro = obs_7d.copy().view(ObservationArray)
             obs_ro.setflags(write=False)
             reward = self.call_student_reward(obs_ro, action, succ, crash, tout)
         else:
@@ -239,7 +291,7 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
             }
             info["telemetry"] = telem
 
-        return obs_8d, reward, term, trunc, info
+        return obs_7d, reward, term, trunc, info
 
 
 def _make_single_env(

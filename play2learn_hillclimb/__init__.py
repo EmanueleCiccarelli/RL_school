@@ -5,12 +5,19 @@ Costruito sopra l'engine fisico Gymnasium di alexzh3/hillclimbracing.
 
 from __future__ import annotations
 
-# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+# Fix preventivo e definitivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+import sys
 try:
     import sympy
     import sympy.logic
     import sympy.logic.boolalg
-except (ImportError, AttributeError):
+    sympy.logic = sympy.logic
+    sympy.logic.boolalg = sympy.logic.boolalg
+    sys.modules["sympy"].logic = sympy.logic
+    sys.modules["sympy.logic"] = sympy.logic
+    sys.modules["sympy.logic.boolalg"] = sympy.logic.boolalg
+    import torch.utils._sympy.numbers
+except Exception:
     pass
 
 from play2learn_hillclimb.config import ENV_ID, MISSIONS, TARGET_DISTANCE_SUCCESS

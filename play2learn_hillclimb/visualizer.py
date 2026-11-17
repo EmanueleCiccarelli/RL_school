@@ -37,23 +37,29 @@ def mostra_mappa_ambiente() -> None:
                  ═════════════════════════════ Terreno Collinare (Perlin Noise)
 
  ──────────────────────────────────────────────────────────────────────────────────
- 📡 VETTORE DI OSSERVAZIONE PER LO STUDENTE (obs - 8 Valori Continui):
+ 📡 VETTORE DI OSSERVAZIONE PER LO STUDENTE (obs - 7 Grandezze Fisiche Originali):
  ──────────────────────────────────────────────────────────────────────────────────
-   [0] dist_x      : Distanza orizzontale percorsa in metri (Spawn = 6.67m, Target >= 800m)
-   [1] quota_y     : Quota altimetrica verticale in metri
-   [2] vx          : Velocità orizzontale (vx > 0 avanzamento, vx < 0 retromarcia)
-   [3] vy          : Velocità verticale (vy < 0 salita, vy > 0 discesa in caduta)
-   [4] angle       : Angolo di beccheggio in radianti (-pi a +pi, 0 = orizzontale)
-   [5] ang_vel     : Velocità di rotazione angolare (rad/s)
-   [6] rear_wheel  : Contatto ruota posteriore col suolo (1.0 = appoggiata, 0.0 = in volo)
-   [7] front_wheel : Contatto ruota anteriore col suolo (1.0 = appoggiata, 0.0 = in volo)
+   [0] dist_x           : Distanza orizzontale percorsa (metri, Spawn ≈ 6.67m, Traguardo >= 800m)
+   [1] quota_y          : Quota altimetrica verticale del telaio in metri
+   [2] angle            : Inclinazione del telaio in radianti (-pi a +pi, 0 = orizzontale)
+   [3] rear_wheel_speed : Velocità di rotazione ruota posteriore (rad/s, > 0 spinge avanti)
+   [4] front_wheel_speed: Velocità di rotazione ruota anteriore (rad/s, > 0 spinge avanti)
+   [5] rear_wheel       : Contatto ruota posteriore col suolo (1.0 = aderenza, 0.0 = in volo)
+   [6] front_wheel      : Contatto ruota anteriore col suolo (1.0 = aderenza, 0.0 = in volo)
+
+ ──────────────────────────────────────────────────────────────────────────────────
+ 🏁 STATI SPECIALI DI FINE EPISODIO:
+ ──────────────────────────────────────────────────────────────────────────────────
+   • is_success : Scalata riuscita! Veicolo oltre il traguardo degli 800 metri
+   • is_crashed : Schianto mortale! La testa del pilota ha toccato terra
+   • is_timeout : Tempo massimo scaduto o veicolo bloccato/stuck in salita
 
  ──────────────────────────────────────────────────────────────────────────────────
  🕹️ SPAZIO DELLE AZIONI DISCRETE (action in {0, 1, 2}):
  ──────────────────────────────────────────────────────────────────────────────────
    • 0: Folle / Motore spento (il veicolo prosegue per inerzia)
    • 1: Acceleratore (Gas avanti: coppia motrice su entrambe le ruote)
-   • 2: Freno / Retromarcia (frena e applica coppia inversa per non ribaltarsi)
+   • 2: Freno / Retromarcia (frena e applica coppia inversa per correggere l'assetto)
 ════════════════════════════════════════════════════════════════════════════════════
 """)
 

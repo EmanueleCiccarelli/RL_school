@@ -5,12 +5,19 @@ Implementa il Feature Extractor a invarianza di traslazione e l'orchestrazione P
 
 from __future__ import annotations
 
-# Fix preventivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+# Fix preventivo e definitivo per PyTorch / Sympy in Python 3.13 (Google Colab)
+import sys
 try:
     import sympy
     import sympy.logic
     import sympy.logic.boolalg
-except (ImportError, AttributeError):
+    sympy.logic = sympy.logic
+    sympy.logic.boolalg = sympy.logic.boolalg
+    sys.modules["sympy"].logic = sympy.logic
+    sys.modules["sympy.logic"] = sympy.logic
+    sys.modules["sympy.logic.boolalg"] = sympy.logic.boolalg
+    import torch.utils._sympy.numbers
+except Exception:
     pass
 
 import math
@@ -39,13 +46,10 @@ from play2learn_hillclimb.config import DEFAULT_PPO_PARAMS
 class HillClimbFeaturesExtractor(BaseFeaturesExtractor):
     """
     Estrattore di feature specializzato per Hill Climb Racing.
-    Elimina le coordinate spaziali assolute non stazionarie (x in [0, 1000] e y in [0, 700])
-    trasformando lo stato 8D in un vettore a 7 dimensioni invariante per traslazione
-    e opportunamente scalato per le attivazioni delle reti neurali:
-      - vx / 15.0 (velocità orizzontale normalizzata)
-      - vy / 15.0 (velocità verticale normalizzata)
-      - sin(angle) e cos(angle) (orientamento trigonometrico continuo)
-      - ang_vel / 10.0 (velocità angolare normalizzata)
+    Estrae feature invarianti per traslazione orizzontale pos_x dalle grandezze originali:
+      - sin(angle) e cos(angle) (orientamento continuo)
+      - rear_wheel_speed / 40.0 (velocità ruota posteriore normalizzata)
+      - front_wheel_speed / 40.0 (velocità ruota anteriore normalizzata)
       - rear_wheel_ground (contatto ruota posteriore in {0, 1})
       - front_wheel_ground (contatto ruota anteriore in {0, 1})
     """
@@ -53,23 +57,30 @@ class HillClimbFeaturesExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 64):
         super().__init__(observation_space, features_dim)
         self.net = nn.Sequential(
-            nn.Linear(7, features_dim),
+            nn.Linear(6, features_dim),
             nn.Tanh(),
         )
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
-        # observations shape: (batch_size, 8)
-        # [x, y, vx, vy, angle, ang_vel, rear_g, front_g]
-        vx = observations[:, 2:3] / 15.0
-        vy = observations[:, 3:4] / 15.0
-        angle = observations[:, 4:5]
-        sin_a = torch.sin(angle)
-        cos_a = torch.cos(angle)
-        ang_vel = observations[:, 5:6] / 10.0
-        contacts = observations[:, 6:8]
-
-        feat_7d = torch.cat([vx, vy, sin_a, cos_a, ang_vel, contacts], dim=1)
-        return self.net(feat_7d)
+        if observations.shape[1] == 7:
+            # 7D originale: [pos_x, pos_y, angle, r_spd, f_spd, rear_g, front_g]
+            angle = observations[:, 2:3]
+            sin_a = torch.sin(angle)
+            cos_a = torch.cos(angle)
+            r_spd = torch.clamp(observations[:, 3:4] / 40.0, -2.0, 2.0)
+            f_spd = torch.clamp(observations[:, 4:5] / 40.0, -2.0, 2.0)
+            contacts = observations[:, 5:7]
+            feat = torch.cat([sin_a, cos_a, r_spd, f_spd, contacts], dim=1)
+        else:
+            # Fallback 8D: [pos_x, pos_y, vx, vy, angle, ang_vel, rear_g, front_g]
+            angle = observations[:, 4:5]
+            sin_a = torch.sin(angle)
+            cos_a = torch.cos(angle)
+            vx = torch.clamp(observations[:, 2:3] / 15.0, -2.0, 2.0)
+            ang_vel = torch.clamp(observations[:, 5:6] / 10.0, -2.0, 2.0)
+            contacts = observations[:, 6:8]
+            feat = torch.cat([sin_a, cos_a, vx, ang_vel, contacts], dim=1)
+        return self.net(feat)
 
 
 class HillClimbRewardTrackerCallback(BaseRewardTrackerCallback):
@@ -114,7 +125,7 @@ def create_ppo_agent(
     learning_rate: float = DEFAULT_PPO_PARAMS["learning_rate"],
     total_timesteps: int = 300_000,
     seed: int = 42,
-    device: str = "auto",
+    device: str = "cpu",
 ) -> PPO:
     """Crea e configura l'agente PPO con policy invariante per traslazione."""
     lr_schedule = create_linear_schedule(learning_rate, min_value=1e-5)
