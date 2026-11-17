@@ -43,7 +43,7 @@ def pulisci_notebook(nb_path: Path) -> int:
                     cell["execution_count"] = None
                     cleared_count += 1
 
-        nb_path.write_text(json.dumps(nb, indent=1, ensure_ascii=False), encoding="utf-8")
+        nb_path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         size_kb = nb_path.stat().st_size / 1024
         print(f"✅ Notebook ripulito: {nb_path.name} ({size_kb:.1f} KB, azzerate {cleared_count} celle di output)")
         return cleared_count
