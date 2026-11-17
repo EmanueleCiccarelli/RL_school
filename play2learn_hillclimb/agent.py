@@ -93,6 +93,7 @@ class HillClimbRewardTrackerCallback(BaseRewardTrackerCallback):
             milestone_callback=milestone_callback,
             milestone_freq=milestone_freq,
             verbose=verbose,
+            metric_name="distance",
         )
 
     def _extract_metric_from_info(self, info: dict[str, Any]) -> float:

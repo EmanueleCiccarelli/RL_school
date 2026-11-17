@@ -36,7 +36,7 @@ class Car:
         vectors.append(b2Vec2(self.chassis_width / 4 + 5, 0 - self.chassis_height / 2))
         vectors.append(b2Vec2(self.chassis_width / 2, 0 - self.chassis_height / 2 + 5))
         vectors.append(b2Vec2(self.chassis_width / 2, self.chassis_height / 2))
-        vectors.append(b2Vec2(self.chassis_width / 2, self.chassis_height / 2))
+        vectors.append(b2Vec2(-self.chassis_width / 2, self.chassis_height / 2))
         # Scale vertices
         for vector in vectors:
             vector.x /= hill_racing.SCALE
@@ -115,8 +115,14 @@ class Car:
                          self.wheel_size / 4, self.wheel_size, self.chassis_body, self.world)
         )
         # Create the person/character
-        self.person = person.Person(x=x, y=y, person_width=hill_racing.PERSON_WIDTH,
-                                    person_height=hill_racing.PERSON_HEIGHT, world=self.world)
+        self.person = person.Person(
+            x=x,
+            y=y,
+            person_width=hill_racing.PERSON_WIDTH,
+            person_height=hill_racing.PERSON_HEIGHT,
+            world=self.world,
+            agent=self.agent,
+        )
 
         # Create revolute joint to connect the torso body to the chassis car body
         rev_joint_def = b2RevoluteJointDef()
@@ -151,12 +157,8 @@ class Car:
         # Draw wheels on screen
         for wheel in self.wheels:
             wheel.draw_wheel(surface_screen)
-        # Scale the car sprite
-        hill_racing.car_sprite = pygame.transform.scale(
-            hill_racing.car_sprite, (self.chassis_width + 23, self.chassis_height * 2 + 10)
-        )
-        # Rotate the car and draw the car to screen
-        rotated_image = pygame.transform.rotate(hill_racing.car_sprite, angle_degree)
+        sprite = hill_racing.get_scaled_sprites()["car"]
+        rotated_image = pygame.transform.rotate(sprite, angle_degree)
         surface_screen.blit(
             source=rotated_image,
             dest=((-self.chassis_width / 2 - 7) + pos_x - hill_racing.panX,

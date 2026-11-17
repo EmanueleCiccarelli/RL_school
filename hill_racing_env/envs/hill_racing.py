@@ -1,18 +1,29 @@
 from gymnasium.error import DependencyNotInstalled
 
 try:
-    from Box2D import *
+    from Box2D import (
+        b2BodyDef,
+        b2Contact,
+        b2ContactListener,
+        b2FixtureDef,
+        b2World,
+        b2_dynamicBody,
+    )
 except ImportError:
     raise DependencyNotInstalled("box2d is not installed, try 'pip install box2d box2d-kengz'")
-import pygame
+
+import math
+import os
+from pathlib import Path
+from typing import Any, Optional
+
 import gymnasium as gym
 from gymnasium import spaces
-from typing import Optional
-from pathlib import Path
 import numpy as np
-import math
-from . import ground
+import pygame
+
 from . import agent
+from . import ground
 
 _ASSET_DIR = Path(__file__).parent / "pictures"
 
@@ -50,102 +61,128 @@ MAX_SCORE = 1000  # Max score achievable (-/+ 10)
 GROUND_DISTANCE = int(MAX_SCORE * SCALE + SPAWNING_X)  # How long the ground terrain should in pixel size
 DIFFICULTY = -150  # Difficulty of terrain, max 30, min -230 (almost flat terrain), -150 is normal difficulty
 
-# Load in pictures/sprites
-wheel_sprite = pygame.image.load(_ASSET_DIR / "wheel.png")
-head_sprite = pygame.image.load(_ASSET_DIR / "headLarge2.png")
-car_sprite = pygame.image.load(_ASSET_DIR / "car.png")
-torso_sprite = pygame.image.load(_ASSET_DIR / "torsoLarge.png")
+# Lazy loaded and cached sprites
+wheel_sprite = None
+head_sprite = None
+car_sprite = None
+torso_sprite = None
+_SCALED_SPRITES: Optional[dict[str, pygame.Surface]] = None
 
 
-# Contact listener for head and ground (Bad code)
+def _load_sprites():
+    global wheel_sprite, head_sprite, car_sprite, torso_sprite
+    if wheel_sprite is None:
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        pygame.init()
+        wheel_sprite = pygame.image.load(_ASSET_DIR / "wheel.png")
+        head_sprite = pygame.image.load(_ASSET_DIR / "headLarge2.png")
+        car_sprite = pygame.image.load(_ASSET_DIR / "car.png")
+        torso_sprite = pygame.image.load(_ASSET_DIR / "torsoLarge.png")
+
+
+def get_scaled_sprites() -> dict[str, pygame.Surface]:
+    global _SCALED_SPRITES
+    if _SCALED_SPRITES is None:
+        _load_sprites()
+        _SCALED_SPRITES = {
+            "wheel": pygame.transform.scale(wheel_sprite, (WHEEL_SIZE, WHEEL_SIZE)),
+            "head": pygame.transform.scale(head_sprite, (WHEEL_SIZE, WHEEL_SIZE)),
+            "car": pygame.transform.scale(car_sprite, (125 + 23, 40 * 2 + 10)),
+            "torso": pygame.transform.scale(torso_sprite, (PERSON_WIDTH, PERSON_HEIGHT)),
+        }
+    return _SCALED_SPRITES
+
+
+# Contact listener for head and ground
 class ContactListener(b2ContactListener):
     def __init__(self):
-        b2ContactListener.__init__(self)
+        super().__init__()
 
     def BeginContact(self, contact: b2Contact) -> None:
-        # Fixture variables
-        head_fixture = None
-        ground_fixture = None
+        ud_a = contact.fixtureA.body.userData
+        ud_b = contact.fixtureB.body.userData
+        if ud_a is None or ud_b is None:
+            return
+        id_a = getattr(ud_a, "id", None)
+        id_b = getattr(ud_b, "id", None)
 
-        # If we contact the head with the ground or vice versa we destroy the car's joints.
-        if contact.fixtureA.body.userData.id == "head" and contact.fixtureB.body.userData.id == "ground":
-            head_fixture = contact.fixtureA
-            ground_fixture = contact.fixtureB
-        elif contact.fixtureB.body.userData.id == "head" and contact.fixtureA.body.userData.id == "ground":
-            head_fixture = contact.fixtureB
-            ground_fixture = contact.fixtureA
+        # Impatto testa-terreno (esclude invisible_wall che ha id="wall")
+        if (id_a == "head" and id_b == "ground") or (id_b == "head" and id_a == "ground"):
+            head_obj = ud_a if id_a == "head" else ud_b
+            ag = getattr(head_obj, "agent", None)
+            if ag is not None:
+                ag.dead = True
+                if ag.car is not None:
+                    ag.car.dead = True
 
-        if head_fixture and ground_fixture and head_fixture.body.joints:
-            torso = head_fixture.body.joints[0].other  # Get the torso body object using the joint
-            car = torso.joints[3].other.userData  # Get the car body using the torso
-            car.agent.dead = True
-
-        # Check if we contact the wheel with the ground or vice versa.
-        if contact.fixtureA.body.userData.id == "wheel" and contact.fixtureB.body.userData.id == "ground":
-            contact.fixtureA.body.userData.on_ground = True
-        if contact.fixtureB.body.userData.id == "wheel" and contact.fixtureA.body.userData.id == "ground":
-            contact.fixtureB.body.userData.on_ground = True
+        # Contatto ruota-terreno con contatore anti-flickering
+        if id_a == "wheel" and id_b == "ground":
+            ud_a.ground_contacts += 1
+        elif id_b == "wheel" and id_a == "ground":
+            ud_b.ground_contacts += 1
 
     def EndContact(self, contact: b2Contact) -> None:
-        # End of contact, we need to set the on_ground variable on false
-        if contact.fixtureA.body.userData.id == "wheel" and contact.fixtureB.body.userData.id == "ground":
-            contact.fixtureA.body.userData.on_ground = False
-        if contact.fixtureB.body.userData.id == "wheel" and contact.fixtureA.body.userData.id == "ground":
-            contact.fixtureB.body.userData.on_ground = False
+        ud_a = contact.fixtureA.body.userData
+        ud_b = contact.fixtureB.body.userData
+        if ud_a is None or ud_b is None:
+            return
+        id_a = getattr(ud_a, "id", None)
+        id_b = getattr(ud_b, "id", None)
+
+        if id_a == "wheel" and id_b == "ground":
+            ud_a.ground_contacts = max(0, ud_a.ground_contacts - 1)
+        elif id_b == "wheel" and id_a == "ground":
+            ud_b.ground_contacts = max(0, ud_b.ground_contacts - 1)
 
 
 class HillRacingEnv(gym.Env):
     metadata = {
         "render_modes": ["human", "rgb_array"],
-        "render_fps": FPS
+        "render_fps": FPS,
     }
 
     def __init__(
-            self,
-            render_mode: Optional[str] = None,
-            action_space: str = "discrete_3",
-            reward_function: str = "distance",
-            reward_type: str = "aggressive",
-            max_steps: int = metadata["render_fps"] * 20,
-            original_noise: bool = False,
-            difficulty: float = DIFFICULTY,
+        self,
+        render_mode: Optional[str] = None,
+        action_space: str = "discrete_3",
+        reward_function: str = "distance",
+        reward_type: str = "aggressive",
+        max_steps: int = FPS * 20,
+        original_noise: bool = False,
+        difficulty: float = DIFFICULTY,
     ):
         self.world = b2World(gravity=(0, GRAVITY), doSleep=True)
-        self.ground: Optional[ground.Ground] = None  # List of ground that needs to be generated
-        self.agent: Optional[agent.Agent] = None  # The agent class contains the car, wheels and person
-        self.difficulty = difficulty  # Difficulty of the env, scales from -250 to 80 (easiest to hardest)
-        self.action_space_type = action_space  # What type of action space do we choose? (Discrete or continuous?)
-        self.reward_function = reward_function  # Type of reward, distance-based vs action based vs wheel speed
-        self.step_stuck_counter = None  # Counter to memorize the amount of steps done for when the agent is stuck
-        self.step_counter = None  # Actual step counter
-        self.max_steps = max_steps  # Amount of maximum timesteps done without significant
-        self.previous_stuck_pos = None  # Position of the agent last time the agent was stuck
-        self.total_airtime_counter = None  # Counts the total amount of airtime
-        self.position_list = []  # List of all positions in a list
+        self.ground: Optional[ground.Ground] = None
+        self.agent: Optional[agent.Agent] = None
+        self.difficulty = difficulty
+        self.action_space_type = action_space
+        self.reward_function = reward_function
+        self.step_stuck_counter = 0
+        self.step_counter = 0
+        self.max_steps = max_steps
+        self.previous_stuck_pos = None
+        self.total_airtime_counter = 0
+        self.position_list = []
         self.reward_type = reward_type
         self.original_noise = original_noise
-        # progress, will be 20 seconds
+        self._next_progress_x = (SPAWNING_X / SCALE) + 20.0
 
-        # Define action spaces
-        match self.action_space_type:  # For experiments
+        match self.action_space_type:
             case "discrete_3":
-                self.action_space = spaces.Discrete(n=3,
-                                                    start=0)  # 3 do-able actions: gas, reverse, 3rd action is idling
-            case "continuous":  # Continuous motor wheel speeds
+                self.action_space = spaces.Discrete(n=3, start=0)
+            case "continuous":
                 self.action_space = gym.spaces.Box(low=-13, high=13, shape=(1,), dtype=np.float32)
-        # Define the observation space
+
         self.observation_space = spaces.Dict(
             {
-                # x coordinate from 0 to 1000 and y from 0 to 700.
-                "chassis_position": spaces.Box(low=np.array([0, 0]), high=np.array([1000, 700]), shape=(2,),
-                                               dtype=np.float32),
-                # Angle in degrees, can be -360 to 360.
+                "chassis_position": spaces.Box(
+                    low=np.array([0, 0]), high=np.array([1000, 700]), shape=(2,), dtype=np.float32
+                ),
                 "chassis_angle": spaces.Box(low=0, high=360, shape=(1,), dtype=np.float32),
-                # Wheels speed, back and front wheel have same speed limits, add 0.1 to avoid precision errors
-                "wheels_speed": spaces.Box(low=-13 * math.pi - 0.1, high=13 * math.pi + 0.1, shape=(2,),
-                                           dtype=np.float32),
-                # When one of the wheels is makes contact with the ground, 0 means no contact and 1 means contact
-                "on_ground": spaces.MultiBinary(n=2)
+                "wheels_speed": spaces.Box(
+                    low=-13 * math.pi - 0.1, high=13 * math.pi + 0.1, shape=(2,), dtype=np.float32
+                ),
+                "on_ground": spaces.MultiBinary(n=2),
             }
         )
 
@@ -155,167 +192,121 @@ class HillRacingEnv(gym.Env):
         self.clock = None
 
     def _destroy_world(self):
-        if not self.ground:
-            return
-        self.world.contactListener = None
-        # Destroy ground bodies
-        self.world.DestroyBody(self.ground.grassBody)
-        self.world.DestroyBody(self.ground.dirtBody)
-        self.ground = None
-        if not self.agent:
-            return
-        # Function that destroys the whole agent, which means, car, person and wheels
-        self.agent.destroy_agent()
-        self.agent = None
+        if self.ground is not None:
+            self.world.contactListener = None
+            if self.ground.grassBody is not None:
+                self.world.DestroyBody(self.ground.grassBody)
+                self.ground.grassBody = None
+            if self.ground.dirtBody is not None:
+                self.world.DestroyBody(self.ground.dirtBody)
+                self.ground.dirtBody = None
+            if getattr(self.ground, "wallBody", None) is not None:
+                self.world.DestroyBody(self.ground.wallBody)
+                self.ground.wallBody = None
+            self.ground = None
+
+        if self.agent is not None:
+            self.agent.destroy_agent()
+            self.agent = None
 
     def _generate_ground(self, seed: Optional[int] = None):
-        # Variables
-        global DIFFICULTY
-        old_diff = DIFFICULTY
-        try:
-            DIFFICULTY = self.difficulty
-            ground_template = ground.Ground(original_noise=self.original_noise)  # Template to store the ground vectors
-            ground_template.randomize_ground(seed=seed)  # Randomizes the ground using the difficulty and perlin noise
+        ground_template = ground.Ground(
+            original_noise=self.original_noise,
+            difficulty=self.difficulty,
+        )
+        ground_template.randomize_ground(seed=seed)
 
-            # Generate until we find ground that is not too steep
-            tries = 0
-            while ground_template.groundTooSteep() and tries < 5:
-                tries += 1
-                retry_seed = None if seed is None else seed + tries
-                ground_template = ground.Ground(original_noise=self.original_noise)
-                ground_template.randomize_ground(seed=retry_seed)
+        tries = 0
+        while ground_template.groundTooSteep() and tries < 5:
+            tries += 1
+            retry_seed = None if seed is None else seed + tries
+            ground_template = ground.Ground(
+                original_noise=self.original_noise,
+                difficulty=self.difficulty,
+            )
+            ground_template.randomize_ground(seed=retry_seed)
 
-            # Add the ground to the world
-            self.ground = ground.Ground(self.world)
-            self.ground.cloneFrom(ground_template)  # Copy the ground_template to self.ground
-            self.ground.setBodies(self.world)  # Add the bodies to the world
-        finally:
-            DIFFICULTY = old_diff
+        self.ground = ground.Ground(
+            self.world,
+            original_noise=self.original_noise,
+            difficulty=self.difficulty,
+        )
+        self.ground.cloneFrom(ground_template)
+        self.ground.setBodies(self.world)
 
     def _generate_agent(self):
         self.agent = agent.Agent(real_world=self.world)
         self.agent.add_to_world()
 
-    # Function that executes an action based on the given action_space_type
     def _execute_action(self, action):
-        match self.action_space_type:  # Check which action space type we have
+        match self.action_space_type:
             case "discrete_3":
-                match action:
-                    case 0:  # Idle
+                match int(action):
+                    case 0:
                         self.agent.car.motor_off()
-                    case 1:  # Gas
+                    case 1:
                         self.agent.car.motor_on(forward=True)
-                    case 2:  # Reverse
+                    case 2:
                         self.agent.car.motor_on(forward=False)
-            case "continuous":  # Continuous motor wheel speeds
+            case "continuous":
                 self.agent.car.set_motor_wheel_speed(action[0])
 
-    # Function that calculates the reward for a given timestep based on the reward_type
     def _get_reward(self, action):
-        reverse_reward = 0
-        idle_reward = 0
-        if self.reward_type == "aggressive":
-            idle_reward = -0.5
-            reverse_reward = -1
-        elif self.reward_type == "soft":
-            idle_reward = -0.1
-            reverse_reward = -0.2
+        reverse_reward = -1.0 if self.reward_type == "aggressive" else -0.2
+        idle_reward = -0.5 if self.reward_type == "aggressive" else -0.1
+
         match self.reward_function:
             case "distance":
-                # Reward is equal to -1 + current_distance - max_distance vs soft -0.2
                 if self.agent.car.pos_x < self.agent.car.prev_max_distance:
-                    reward = reverse_reward + (
-                            self.agent.car.pos_x - self.agent.car.prev_max_distance)
-                # Reward -0.5 if agent is at or around same position as last step vs soft-0.1
+                    return reverse_reward + (self.agent.car.pos_x - self.agent.car.prev_max_distance)
                 elif self.agent.car.pos_x - self.agent.car.prev_max_distance < 0.001:
-                    reward = idle_reward
-                # Reward is equal to 1 + current_position - max_distance
-                elif self.agent.car.pos_x > self.agent.car.prev_max_distance:
-                    reward = 1 + (self.agent.car.pos_x - self.agent.car.prev_max_distance)
+                    return idle_reward
+                else:
+                    return 1.0 + (self.agent.car.pos_x - self.agent.car.prev_max_distance)
             case "action":
-                if action == 0:  # Idle
-                    reward = idle_reward
-                elif action == 1:  # Gas
-                    reward = 1
-                elif action == 2:  # Reverse
-                    reward = reverse_reward
-            case "wheel_speed":
-                wheel_speeds = [wheel.joint.speed for wheel in self.agent.car.wheels]
-                # When wheel speeds are at a nearly idle state
-                if all(-1 <= speed <= 1 for speed in wheel_speeds):
-                    reward = idle_reward
-                # When we have wheel speeds that bring the car forward (negative wheel speed = forward)
-                elif all(speed < 0 for speed in wheel_speeds):
-                    reward = 1
-                # When we have wheel speeds that bring the car backwards
-                elif all(speed > 0 for speed in wheel_speeds):
-                    reward = reverse_reward
-                else:
-                    reward = 0
-            case "airtime_wheel_speed":
-                wheel_speeds = [wheel.joint.speed for wheel in self.agent.car.wheels]
-                # When wheel speeds are at a nearly idle state
-                if all(-1 <= speed <= 1 for speed in wheel_speeds):
-                    reward = idle_reward
-                # When we have wheel speeds that bring the car forward (negative wheel speed = forward)
-                elif all(speed < 0 for speed in wheel_speeds):
-                    reward = 1
-                # When we have wheel speeds that bring the car backwards
-                elif all(speed > 0 for speed in wheel_speeds):
-                    reward = reverse_reward
-                else:
-                    reward = 0
-                # When airtime counter is bigger than 1
-                if self.agent.airtime_counter > 0:
-                    reward = reward + self.agent.airtime_counter
-                else:
-                    reward = reward - 0.5
-            case "airtime_distance":
-                # Reward is equal to -1 + current_distance - max_distance vs soft -0.2
-                if self.agent.car.pos_x < self.agent.car.prev_max_distance:
-                    reward = reverse_reward + (
-                            self.agent.car.pos_x - self.agent.car.prev_max_distance)
-                # Reward -0.5 if agent is at or around same position as last step vs soft-0.1
-                elif self.agent.car.pos_x - self.agent.car.prev_max_distance < 0.001:
-                    reward = idle_reward
-                # Reward is equal to 1 + current_position - max_distance
-                elif self.agent.car.pos_x > self.agent.car.prev_max_distance:
-                    reward = 1 + (self.agent.car.pos_x - self.agent.car.prev_max_distance)
-
-                # When airtime counter is bigger than 1
-                if self.agent.airtime_counter > 0:
-                    reward = reward + self.agent.airtime_counter
-                else:
-                    reward = reward - 0.5
-
-        return reward
+                if action == 0:
+                    return idle_reward
+                elif action == 1:
+                    return 1.0
+                elif action == 2:
+                    return reverse_reward
+                return 0.0
+            case _:
+                return 0.0
 
     def _get_obs(self):
         return {
             "chassis_position": np.array(
-                [self.agent.car.pos_x, self.agent.car.pos_y], dtype=np.float32),
-            "chassis_angle": np.array([(math.degrees(-self.agent.car.chassis_body.angle) % 360)], dtype=np.float32),
-            "wheels_speed": np.array([self.agent.car.wheels[0].joint.speed, self.agent.car.wheels[1].joint.speed],
-                                     dtype=np.float32),
-            "on_ground": np.array([int(self.agent.car.wheels[0].on_ground), int(self.agent.car.wheels[1].on_ground)])
+                [self.agent.car.pos_x, self.agent.car.pos_y], dtype=np.float32
+            ),
+            "chassis_angle": np.array(
+                [(math.degrees(-self.agent.car.chassis_body.angle) % 360)], dtype=np.float32
+            ),
+            "wheels_speed": np.array(
+                [self.agent.car.wheels[0].joint.speed, self.agent.car.wheels[1].joint.speed],
+                dtype=np.float32,
+            ),
+            "on_ground": np.array(
+                [int(self.agent.car.wheels[0].on_ground), int(self.agent.car.wheels[1].on_ground)],
+                dtype=np.int8,
+            ),
         }
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        info = {}
-        # Destroy world
+        info: dict[str, Any] = {}
         self._destroy_world()
-        # Generate new world
         self.world.contactListener = ContactListener()
         self._generate_ground(seed=seed)
         self._generate_agent()
-        self.step_stuck_counter = 0  # Set step counter to 0
+        self.step_stuck_counter = 0
         self.step_counter = 0
-        self.position_list.clear()  # Empty list
+        self._next_progress_x = (SPAWNING_X / SCALE) + 20.0
+        self.previous_stuck_pos = None
         self.total_airtime_counter = 0
-        # Get the initial observations
+        self.position_list.clear()
+
         observations = self._get_obs()
-        # Render mode
         if self.render_mode == "human":
             self.render()
 
@@ -324,49 +315,40 @@ class HillRacingEnv(gym.Env):
     def step(self, action: int | np.float32):
         terminated = False
         truncated = False
-        reward = 0  # initial reward of -1, if the agent does completely nothing
+        reward = 0.0
 
-        # Execute action
         self._execute_action(action)
-        # Step forward in the world
-        self.world.Step(timeStep=1.0 / self.metadata["render_fps"], velocityIterations=6 * 30,
-                        positionIterations=2 * 30)
-        # Increase step counter
+        # Solver Box2D calibrato a 8/3 per massima efficienza e stabilità
+        self.world.Step(
+            timeStep=1.0 / self.metadata["render_fps"],
+            velocityIterations=8,
+            positionIterations=3,
+        )
         self.step_stuck_counter += 1
         self.step_counter += 1
-        # Increase airtime counter
         if self.agent.total_airtime > 0:
             self.total_airtime_counter += self.agent.total_airtime
-        # Update position
-        self.position_list.append((int(self.agent.car.pos_x), self.step_counter))
-        # Update agent status
+
         self.agent.update()
 
-        # Check if agent is stuck
-        if (math.floor(self.agent.car.pos_x) % 20 == 0 and self.previous_stuck_pos !=
-                math.floor(self.agent.car.pos_x)):  # when we made more
-            # than 20 metres distance reset count, and we are not at the same position we were stuck in
+        # Monotonic stuck progress detection
+        if self.agent.car.max_distance >= self._next_progress_x:
             self.step_stuck_counter = 0
-            self.previous_stuck_pos = math.floor(self.agent.car.pos_x)
-        else:  # When no significant distance has been made for a long time, the agent must be stuck
-            if self.step_stuck_counter > self.max_steps:
-                truncated = True
-                reward = -100
+            self._next_progress_x = self.agent.car.max_distance + 20.0
+        elif self.step_stuck_counter > self.max_steps:
+            truncated = True
+            reward = -100.0
 
-        # If agent is dead
         if self.agent.dead:
             terminated = True
-            reward = -100
-        elif self.agent.score >= MAX_SCORE:  # If max score is achieved
+            reward = -100.0
+        elif self.agent.score >= MAX_SCORE:
             terminated = True
 
-        # Reward shaping if agent is still alive or not stuck
         if not truncated and not terminated:
             reward = self._get_reward(action)
 
-        # Get the current step observation and info for debugging
         observation = self._get_obs()
-
         info = {
             "car_position": (self.agent.car.pos_x, self.agent.car.pos_y),
             "prev_max_distance": self.agent.car.prev_max_distance,
@@ -376,53 +358,39 @@ class HillRacingEnv(gym.Env):
             "airtime_counter": self.agent.airtime_counter,
             "total_airtime": self.total_airtime_counter,
             "on_ground": (self.agent.car.wheels[0].on_ground, self.agent.car.wheels[1].on_ground),
-            "position_list": self.position_list
         }
-        # print(reward, info, observation, action)  # For debugging purposes
         return observation, reward, terminated, truncated, info
 
     def render(self):
         if self.render_mode is None:
-            assert self.spec is not None
-            gym.logger.warn(
-                "You are calling render method without specifying any render mode. "
-                "You can specify the render_mode at initialization, "
-                f'e.g. gym.make("{self.spec.id}", render_mode="rgb_array")'
-            )
-            return
+            return None
 
         if self.screen is None:
+            _load_sprites()
             if self.render_mode == "human":
-                pygame.init()
-                pygame.display.init()
-                self.screen = pygame.display.set_mode(
-                    (SCREEN_WIDTH, SCREEN_HEIGHT)
-                )
+                self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
                 pygame.display.set_caption("Hill climb Racing RL")
             elif self.render_mode == "rgb_array":
-                import os
-                os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-                pygame.init()
                 self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
 
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
-        # Fill screen with sky colour
         self.screen.fill((135, 206, 235))
-        # Draw the ground to screen
         self.ground.draw_ground(self.screen)
-        # Draw the agent
         self.agent.draw_agent(self.screen)
 
         if self.render_mode == "human":
             pygame.display.flip()
             if self.clock is not None:
                 self.clock.tick(self.metadata["render_fps"])
+            return None
         elif self.render_mode == "rgb_array":
-            return np.transpose(np.array(pygame.surfarray.pixels3d(self.screen)), (1, 0, 2))
+            raw_bytes = pygame.image.tobytes(self.screen, "RGB")
+            return np.frombuffer(raw_bytes, dtype=np.uint8).reshape((SCREEN_HEIGHT, SCREEN_WIDTH, 3)).copy()
 
     def close(self):
         if self.screen is not None:
-            pygame.display.quit()
-            pygame.quit()
+            if self.render_mode == "human":
+                pygame.display.quit()
+            self.screen = None

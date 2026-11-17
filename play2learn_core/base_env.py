@@ -75,15 +75,42 @@ class BaseRewardWrapper(gym.Wrapper):
         self._caller = build_reward_caller(reward_fn) if reward_fn is not None else None
         self.current_step = 0
 
-    def validate_reward_value(self, reward_val: float) -> float:
-        """Verifica che il valore di reward sia finito e numericamente valido."""
+    def validate_reward_value(self, reward_val: Any) -> float:
+        """Converte e valida la reward dello studente con messaggi didattici chiari."""
+        if reward_val is None:
+            raise ValueError(
+                "La tua funzione 'custom_reward' ha restituito None. "
+                "Assicurati di terminare con 'return float(reward)'."
+            )
+
+        # Supporto sicuro per tensori PyTorch e array NumPy scalari
+        if hasattr(reward_val, "detach") and hasattr(reward_val, "numel"):
+            if reward_val.numel() != 1:
+                raise ValueError(
+                    f"Hai restituito un tensore PyTorch di forma {tuple(reward_val.shape)}: "
+                    "la reward deve essere un singolo numero scalare."
+                )
+            reward_val = reward_val.detach().cpu().item()
+        elif hasattr(reward_val, "shape") and hasattr(reward_val, "item"):
+            if getattr(reward_val, "size", 0) != 1:
+                raise ValueError(
+                    f"Hai restituito un array NumPy di forma {reward_val.shape}: "
+                    "la reward deve essere un singolo numero scalare."
+                )
+            reward_val = reward_val.item()
+
         try:
             val = float(reward_val)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"La funzione di reward ha restituito un tipo non numerico: {reward_val}") from exc
+            raise ValueError(
+                f"La funzione di reward ha restituito un tipo non numerico ({type(reward_val).__name__}): {reward_val}"
+            ) from exc
 
         if not math.isfinite(val):
-            raise ValueError(f"Valore non finito restituito: {val} (NaN o Inf).")
+            raise ValueError(
+                f"Valore non finito restituito: {val} (NaN o Inf). "
+                "Verifica eventuali divisioni per zero o logaritmi di numeri negativi."
+            )
         return val
 
     def call_student_reward(

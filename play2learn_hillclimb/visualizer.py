@@ -120,4 +120,5 @@ def plot_hill_telemetry(
         return output_path
     else:
         plt.show()
+        plt.close(fig)
         return None

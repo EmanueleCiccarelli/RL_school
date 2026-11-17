@@ -49,18 +49,11 @@ def load_run_metadata(run_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def comprimi_archivio(source_dir: Path = BASE_RUNS_DIR, output_zip: Optional[Path] = None) -> Path:
+def comprimi_archivio(
+    source_dir: Path = BASE_RUNS_DIR,
+    output_zip: Optional[Path] = None,
+    scarica_su_colab: bool = True,
+) -> Optional[Path]:
     """Comprime la cartella delle run in formato ZIP per il download immediato su Google Colab."""
-    source_dir = Path(source_dir)
-    if output_zip is None:
-        output_zip = Path("archivio_esperimenti_hillclimb.zip")
-    else:
-        output_zip = Path(output_zip)
-
-    comprimi_runs(source_dir=source_dir, output_zip=output_zip)
-    try:
-        from google.colab import files  # type: ignore
-        files.download(str(output_zip))
-    except Exception:
-        pass
-    return output_zip
+    nome_zip = str(output_zip) if output_zip is not None else "archivio_esperimenti_hillclimb.zip"
+    return comprimi_runs(runs_dir=source_dir, nome_zip=nome_zip, scarica_su_colab=scarica_su_colab)

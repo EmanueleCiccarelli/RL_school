@@ -45,13 +45,14 @@ def classify_hill_climb_outcome(
     terminated: bool,
     truncated: bool,
     unwrapped: Any = None,
+    target_distance: float = TARGET_DISTANCE_SUCCESS,
 ) -> tuple[bool, bool, bool, bool]:
     """
     Unica fonte di verità per la classificazione dell'esito della corsa collinare.
     Restituisce: (is_success, is_crashed, is_timeout, is_flipped).
 
     Regole:
-      - is_success: la vettura raggiunge o supera TARGET_DISTANCE_SUCCESS (800m).
+      - is_success: la vettura raggiunge o supera target_distance (default 800m).
       - is_crashed: la testa del pilota tocca terra (agente morto).
       - is_timeout: scadenza del tempo massimo o blocco in salita senza morte né successo.
       - is_flipped: inclinazione del telaio superiore a ~80° (angolo > 1.4 rad).
@@ -61,7 +62,7 @@ def classify_hill_climb_outcome(
     is_flipped = bool(abs(angle_rad) > 1.4)
 
     # 1. Traguardo di successo raggiunto (priorità massima anche su timeout)
-    if dist_x >= TARGET_DISTANCE_SUCCESS:
+    if dist_x >= target_distance:
         return True, False, False, is_flipped
 
     # 2. Controllo morte fisica del pilota
@@ -74,7 +75,6 @@ def classify_hill_climb_outcome(
             if car is not None and getattr(car, "dead", False):
                 is_dead = True
     if not is_dead and original_reward <= -90.0 and terminated:
-        # Nell'engine originale alexzh3, morte = terminated con reward = -100
         is_dead = True
 
     if is_dead:
@@ -99,9 +99,11 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
         env: gym.Env,
         reward_fn: Optional[Callable] = None,
         target_distance: float = TARGET_DISTANCE_SUCCESS,
+        frame_skip: int = 1,
     ):
         super().__init__(env, reward_fn=reward_fn)
         self.target_distance = float(target_distance)
+        self.frame_skip = max(1, int(frame_skip))
 
         # Spazio di osservazione 8D didattico:
         # [dist_x, quota_y, vx, vy, angle_rad, ang_vel, rear_wheel_ground, front_wheel_ground]
@@ -172,12 +174,22 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
         return obs_8d, info
 
     def step(self, action: Any):
-        raw_obs, orig_reward, term, trunc, info = self.env.step(action)
-        obs_8d = self._extract_8d_obs(raw_obs)
+        total_orig_reward = 0.0
+        term = False
+        trunc = False
+        info: dict[str, Any] = {}
+        raw_obs = None
 
+        for _ in range(self.frame_skip):
+            raw_obs, orig_r, term, trunc, info = self.env.step(action)
+            total_orig_reward += float(orig_r)
+            if term or trunc:
+                break
+
+        obs_8d = self._extract_8d_obs(raw_obs)
         self._total_steps += 1
         dist_x = float(obs_8d[0])
-        speed = math.sqrt(float(obs_8d[2]) ** 2 + float(obs_8d[3]) ** 2)
+        speed = math.hypot(float(obs_8d[2]), float(obs_8d[3]))
         if dist_x > self._max_distance_reached:
             self._max_distance_reached = dist_x
         if speed > self._max_speed_reached:
@@ -189,17 +201,27 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
 
         succ, crash, tout, flipped = classify_hill_climb_outcome(
             obs=obs_8d,
-            original_reward=float(orig_reward),
+            original_reward=total_orig_reward,
             terminated=term,
             truncated=trunc,
             unwrapped=self.env.unwrapped,
+            target_distance=self.target_distance,
         )
 
+        # Termina immediatamente al traguardo per evitare reward hacking
+        if succ:
+            term = True
+
         if self.reward_fn is not None:
-            raw_rew = self.call_student_reward(obs_8d, action, succ, crash, tout)
-            reward = self.validate_reward_value(raw_rew)
+            obs_ro = obs_8d.copy()
+            obs_ro.setflags(write=False)
+            reward = self.call_student_reward(obs_ro, action, succ, crash, tout)
         else:
-            reward = float(orig_reward)
+            reward = total_orig_reward
+
+        info["is_success"] = succ
+        info["is_timeout"] = tout
+        info["score"] = self._max_distance_reached
 
         if term or trunc:
             airtime_pct = (self._airtime_steps / max(1, self._total_steps)) * 100.0
@@ -216,8 +238,6 @@ class HillClimbRewardWrapper(BaseRewardWrapper):
                 "is_flipped": flipped,
             }
             info["telemetry"] = telem
-            info["is_success"] = succ
-            info["score"] = self._max_distance_reached
 
         return obs_8d, reward, term, trunc, info
 
@@ -227,6 +247,7 @@ def _make_single_env(
     reward_fn: Optional[Callable] = None,
     render_mode: Optional[str] = None,
     target_distance: float = TARGET_DISTANCE_SUCCESS,
+    frame_skip: int = 1,
     seed: Optional[int] = None,
 ) -> gym.Env:
     """Crea una singola istanza configurata di HillRacingEnv con Monitor e Wrapper."""
@@ -242,7 +263,12 @@ def _make_single_env(
         difficulty=difficulty,
         original_noise=original_noise,
     )
-    wrapped = HillClimbRewardWrapper(raw_env, reward_fn=reward_fn, target_distance=target_distance)
+    wrapped = HillClimbRewardWrapper(
+        raw_env,
+        reward_fn=reward_fn,
+        target_distance=target_distance,
+        frame_skip=frame_skip,
+    )
     monitored = Monitor(wrapped)
     return monitored
 
@@ -252,6 +278,7 @@ def make_parallel_envs(
     mission: str = "campagna_standard",
     reward_fn: Optional[Callable] = None,
     target_distance: float = TARGET_DISTANCE_SUCCESS,
+    frame_skip: int = 1,
     seed: int = 42,
 ) -> VecEnv:
     """Crea un ambiente vettoriale parallelizzato per Stable-Baselines3 PPO."""
@@ -262,6 +289,7 @@ def make_parallel_envs(
                 reward_fn=reward_fn,
                 render_mode=None,
                 target_distance=target_distance,
+                frame_skip=frame_skip,
                 seed=seed + rank if seed is not None else None,
             )
         return _init

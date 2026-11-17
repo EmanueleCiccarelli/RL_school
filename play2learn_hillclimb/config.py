@@ -4,6 +4,8 @@ Configurazione e parametri di default per Play2Learn Hill Climb Racing.
 
 from __future__ import annotations
 
+from typing import Any
+
 ENV_ID = "hill_racing_env/HillRacing-v0"
 
 TARGET_DISTANCE_SUCCESS = 800.0  # Metri minimi per considerare la scalata un successo

@@ -135,6 +135,7 @@ def genera_report_esperimento(
     # 5. Scheda Tecnica PDF
     pdf_path = run_dir / "scheda_esperimento.pdf"
     if _MPL_AVAILABLE:
+        fig = None
         try:
             fig, ax = plt.subplots(figsize=(8.5, 11))
             ax.axis("off")
@@ -143,14 +144,16 @@ def genera_report_esperimento(
             pdf_text += f"Distanza Media: {metrics.get('mean_distance', 0.0):.1f}m (Max: {metrics.get('max_distance', 0.0):.1f}m)\n"
             pdf_text += f"Schianti: {metrics.get('crash_rate', 0.0):.1f}%\n\n"
             import re
-            clean_diag = re.sub(r"[^\x00-\x7F]+", " ", diag_text)
+            clean_diag = re.sub(r"[^\x00-\xFF]+", "", diag_text)
             pdf_text += clean_diag
             ax.text(0.05, 0.95, pdf_text, fontsize=10, verticalalignment="top", fontfamily="monospace")
             with PdfPages(str(pdf_path)) as pdf:
                 pdf.savefig(fig)
-            plt.close(fig)
         except Exception as e:
             print(f"[play2learn] Avviso generazione PDF: {e}")
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
     print(f"✅ Report tecnico generato in: {run_dir.name}")
     print("   • PDF:      scheda_esperimento.pdf")

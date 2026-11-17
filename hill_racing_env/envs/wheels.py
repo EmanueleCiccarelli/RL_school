@@ -1,5 +1,14 @@
 import math
-from Box2D import *
+from Box2D import (
+    b2BodyDef,
+    b2CircleShape,
+    b2DistanceJointDef,
+    b2FixtureDef,
+    b2PrismaticJointDef,
+    b2RevoluteJointDef,
+    b2Vec2,
+    b2_dynamicBody,
+)
 import pygame
 from . import hill_racing
 
@@ -11,10 +20,12 @@ class Wheel:
         self.radius = r
         self.body = None
         self.world = world
-        self.on_ground = False
-        # Create wheel
+        self.ground_contacts = 0  # Contatore robusto contro flickering tra edge adiacenti
+
         self.create_wheel()
-        # Wheel rim body definition
+
+        # Mozzo ruota (rim_body): nessuna collisione con terreno/erba (maskBits=0)
+        # Densità aumentata (0.3) per mantenere un rapporto di massa sano con il telaio
         body_def = b2BodyDef(
             type=b2_dynamicBody,
             position=(
@@ -23,26 +34,25 @@ class Wheel:
             ),
             angle=0,
         )
-        # Wheel rim fixture
         fix_def = b2FixtureDef(
-            density=0.05,
-            friction=0.99,
-            restitution=0.2,
-            shape=b2CircleShape(radius=(self.radius / hill_racing.SCALE)),
-            groupIndex=-1,
+            density=0.3,
+            friction=0.0,
+            restitution=0.0,
+            shape=b2CircleShape(radius=(self.radius * 0.5 / hill_racing.SCALE)),
+            categoryBits=0x0000,
+            maskBits=0x0000,
         )
         self.rim_body = self.world.CreateBody(body_def)
         self.rim_body.CreateFixture(fix_def)
-        self.rim_body.userData = self
+        self.rim_body.userData = None  # Non deve attivare il ContactListener
 
         if chassis_body is not None:
-            # Create wheel (revolute) joint for inner rim and car chassis body
             rev_joint_def = b2RevoluteJointDef()
             rev_joint_def.Initialize(
                 bodyA=self.body, bodyB=self.rim_body, anchor=self.body.position
             )
             self.joint = self.world.CreateJoint(rev_joint_def)
-            # Create wheel (prismatic) joint to car chassis
+
             pris_joint_def = b2PrismaticJointDef()
             pris_joint_def.Initialize(
                 bodyA=self.rim_body,
@@ -50,8 +60,12 @@ class Wheel:
                 anchor=self.body.position,
                 axis=b2Vec2(0, -1),
             )
+            pris_joint_def.enableLimit = True
+            pris_joint_def.lowerTranslation = -0.35
+            pris_joint_def.upperTranslation = 0.35
             self.pris_joint = self.world.CreateJoint(pris_joint_def)
-            # Create distance joint between wheel and car
+
+            # Sospensione stabile entro il limite di Nyquist a 60 FPS (f_nyquist = 30 Hz)
             dist_joint_def = b2DistanceJointDef()
             anchor_wheel = b2Vec2(x / hill_racing.SCALE, y / hill_racing.SCALE)
             anchor_car = b2Vec2(x / hill_racing.SCALE, (y - r * 3) / hill_racing.SCALE)
@@ -61,11 +75,15 @@ class Wheel:
                 anchorA=anchor_wheel,
                 anchorB=anchor_car,
             )
-            dist_joint_def.frequencyHz = 70
-            dist_joint_def.dampingRatio = 25
+            dist_joint_def.frequencyHz = 8.5
+            dist_joint_def.dampingRatio = 0.75
             self.dist_joint = self.world.CreateJoint(dist_joint_def)
 
         self.body.angularDamping = 1.8
+
+    @property
+    def on_ground(self) -> bool:
+        return self.ground_contacts > 0
 
     def create_wheel(self):
         wheel_body = b2BodyDef(
@@ -77,7 +95,7 @@ class Wheel:
             angle=0,
         )
         wheel_fixture = b2FixtureDef(
-            density=1,
+            density=1.0,
             friction=1.5,
             restitution=0.1,
             shape=b2CircleShape(radius=self.radius / hill_racing.SCALE),
@@ -89,18 +107,10 @@ class Wheel:
         self.body.userData = self
 
     def draw_wheel(self, surface_screen):
-        # Scale back position of wheel body
-        pos_x = self.body.position.x * hill_racing.SCALE
-        pos_y = self.body.position.y * hill_racing.SCALE
+        pos_x = self.body.position.x * hill_racing.SCALE - hill_racing.panX
+        pos_y = self.body.position.y * hill_racing.SCALE - hill_racing.panY
         degrees_angle = math.degrees(-self.body.angle) % 360
-        # Scale wheel
-        hill_racing.wheel_sprite = pygame.transform.scale(
-            hill_racing.wheel_sprite, (hill_racing.HEAD_SIZE, hill_racing.HEAD_SIZE)
-        )
-        # Rotate the wheel by body angle
-        rotated_wheel_sprite = pygame.transform.rotate(hill_racing.wheel_sprite, degrees_angle)
-        # Update the wheel on screen position
-        surface_screen.blit(
-            source=rotated_wheel_sprite,
-            dest=(-self.radius + pos_x - hill_racing.panX, -self.radius + pos_y - hill_racing.panY),
-        )
+        sprite = hill_racing.get_scaled_sprites()["wheel"]
+        rotated = pygame.transform.rotate(sprite, degrees_angle)
+        rect = rotated.get_rect(center=(pos_x, pos_y))
+        surface_screen.blit(rotated, rect)

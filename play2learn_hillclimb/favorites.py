@@ -1,9 +1,6 @@
-"""
-Modulo Gestione Preferiti per Play2Learn Hill Climb Racing.
-"""
-
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,8 +19,6 @@ _mgr = BaseFavoritesManager(FAVORITES_DIR)
 
 
 class LoadedFavorite:
-    """Oggetto ibrido restituito da carica_preferito: supporta tupla, attributi e dizionario."""
-
     def __init__(self, model: Any, metadata: dict[str, Any], dir_path: Path, entry: dict[str, Any]):
         self.model = model
         self.metadata = metadata
@@ -40,7 +35,9 @@ class LoadedFavorite:
             return self.metadata
         if item in self.metadata:
             return self.metadata[item]
-        return self.entry.get(item)
+        if item in self.entry:
+            return self.entry[item]
+        raise KeyError(item)
 
     def get(self, item: str, default: Any = None) -> Any:
         try:
@@ -55,23 +52,39 @@ def salva_nei_preferiti(
     note: str = "",
     tag: str = "didattico",
 ) -> dict[str, Any]:
-    """Salva una run completata nella cartella dei preferiti."""
     return _mgr.salva_preferito(Path(run_dir), nome=nome, note=note, tag=tag)
 
 
+salva_preferito = salva_nei_preferiti  # Alias consistente con Lunar Lander
+
+
 def mostra_preferiti() -> None:
-    """Visualizza l'elenco formattato dei modelli salvati nei preferiti."""
-    _mgr.mostra_preferiti()
+    entries = _mgr.read_index()
+    if not entries:
+        print("[play2learn] Nessun esperimento salvato nei preferiti.")
+        return
+    print("=" * 82)
+    print(f"{'ID':<4} | {'NOME':<26} | {'MISSIONE':<20} | {'SUCC %':<8} | {'DIST MAX'}")
+    print("-" * 82)
+    for e in entries:
+        print(
+            f"{str(e.get('id', '')):<4} | "
+            f"{str(e.get('nome', ''))[:25]:<26} | "
+            f"{str(e.get('mission', ''))[:19]:<20} | "
+            f"{float(e.get('success_rate', 0.0)):>6.1f}%  | "
+            f"{float(e.get('max_distance', 0.0)):>6.1f}m"
+        )
+    print("=" * 82)
 
 
 def carica_preferito(identificatore: int | str) -> Optional[LoadedFavorite]:
-    """Carica il modello e i metadati di un preferito tramite ID numerico o nome/timestamp."""
-    entry = _mgr.trova_per_id_o_nome(identificatore)
-    if not entry:
-        print(f"[play2learn] Nessun preferito trovato con identificatore: {identificatore}")
+    try:
+        loaded = _mgr.carica_preferito(identificatore)
+    except ValueError as exc:
+        print(str(exc))
         return None
 
-    dir_path = FAVORITES_DIR / entry["dir_name"]
+    dir_path: Path = loaded["dir_path"]
     model_path = dir_path / "best_model.zip"
     if not model_path.exists():
         model_path = dir_path / "final_model.zip"
@@ -79,17 +92,13 @@ def carica_preferito(identificatore: int | str) -> Optional[LoadedFavorite]:
     model = None
     if model_path.exists() and _SB3_AVAILABLE:
         try:
-            model = PPO.load(str(model_path))
-        except Exception as e:
-            print(f"[play2learn] Avviso caricamento modello: {e}")
+            model = PPO.load(str(model_path), device="cpu")
+        except Exception as exc:
+            print(f"[play2learn] Avviso caricamento modello: {exc}")
 
-    meta = {}
-    meta_file = dir_path / "run_metadata.json"
-    if meta_file.exists():
-        import json
-        try:
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    return LoadedFavorite(model=model, metadata=meta, dir_path=dir_path, entry=entry)
+    return LoadedFavorite(
+        model=model,
+        metadata=loaded["metadata"],
+        dir_path=dir_path,
+        entry=loaded["entry"],
+    )

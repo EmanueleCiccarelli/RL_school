@@ -158,22 +158,13 @@ def run_lab(
         device=device,
     )
 
-    # 3. Tracciamento pietre miliari per il timelapse GIF (clonando i pesi)
-    milestones: list[tuple[int, Any]] = []
+    # 3. Tracciamento pietre miliari per il timelapse GIF (usando gli snapshot in RAM del callback)
     checkpoint_interval = max(10_000, total_timesteps // 5)
-
-    def _milestone_cb(step_now: int, current_model: Any) -> None:
-        if crea_gif_evoluzione and current_model is not None:
-            try:
-                cloned = copy.deepcopy(current_model.policy)
-                milestones.append((step_now, cloned))
-            except Exception:
-                pass
-
     cb = HillClimbRewardTrackerCallback(
         total_timesteps=total_timesteps,
         window_size=20,
-        milestone_callback=_milestone_cb if crea_gif_evoluzione else None,
+        save_checkpoints=True,
+        checkpoint_dir=run_dir,
         milestone_freq=checkpoint_interval,
     )
 
@@ -187,13 +178,13 @@ def run_lab(
     finally:
         vec_env.close()
 
-    # 5. Salvataggio checkpoint modello finale
+    # 5. Salvataggio checkpoint modello finale e best
     final_model_path = run_dir / "final_model.zip"
     model.save(str(final_model_path))
 
-    # Salva anche il modello migliore
     best_model_path = run_dir / "best_model.zip"
-    model.save(str(best_model_path))
+    if not best_model_path.exists():
+        model.save(str(best_model_path))
 
     # 6. Valutazione e Registrazione Video
     print("\n🔍 Valutazione finale su 20 scenari di collaudo...")
@@ -202,16 +193,19 @@ def run_lab(
         mission=mission,
         reward_fn=reward_fn,
         output_dir=run_dir,
-        max_steps=1200,
+        max_steps=1600,
+        frame_skip=3,
     )
 
     # 7. Generazione GIF Evoluzione
     gif_path = None
-    if crea_gif_evoluzione and milestones:
+    snapshots = getattr(cb, "milestone_snapshots", [])
+    if crea_gif_evoluzione and snapshots:
         gif_out = run_dir / "evoluzione_apprendimento.gif"
         try:
             gif_path = crea_gif_evoluzione_apprendimento(
-                milestones=milestones,
+                milestones=snapshots,
+                model=model,
                 output_path=gif_out,
                 mission=mission,
                 seed=seed,
@@ -222,9 +216,11 @@ def run_lab(
             print(f"[play2learn] Avviso generazione GIF: {e}")
 
     # 8. Salvataggio Metadati e Report Tecnico
+    mission_title = MISSIONS.get(mission, {}).get("nome", mission)
     metadata = {
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "mission": mission,
+        "mission": {"key": mission, "title": mission_title},
+        "mission_name": mission,
         "total_timesteps": total_timesteps,
         "learning_rate": learning_rate,
         "seed": seed,
@@ -260,7 +256,8 @@ def collauda_missione(
         model=model,
         mission=mission,
         eval_seeds=[seed + i * 17 for i in range(eval_episodes)],
-        max_steps=1200,
+        max_steps=1600,
+        frame_skip=3,
     )
     print(diagnose_hill_climb_behavior(results))
     return results
