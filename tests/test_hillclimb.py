@@ -2,7 +2,8 @@
 Test Suite e Regression Tests per Play2Learn Hill Climb Racing.
 Copre:
   - Test originali di configurazione, ambiente, feature extractor, wrapper e preferiti
-  - Regressioni fisica Box2D (masse, sospensioni Nyquist, rim_body, leak wallBody, anti-flickering)
+   - Regressioni fisica Box2D (trazione engine originale: sospensione rigida, rim_body attrito,
+     masse ragdoll, poligono telaio, leak wallBody, anti-flickering)
   - Regressioni determinismo Perlin e integrità coordinate post-rendering
   - Regressioni API studente, budget temporale 800m, terminazione su successo, preferiti, ZIP e reportistica
 """
@@ -170,45 +171,73 @@ class TestHillClimb(unittest.TestCase):
     # REGRESSION TESTS — FISICA BOX2D & RENDERING (B-02, B-07..B-12, B-15)
     # =========================================================================
 
-    def test_regression_b07_b08_physics_masses_suspensions_and_hitboxes(self):
-        """Verifica rapporti di massa sani, sospensioni sotto Nyquist, maskBits rim_body e poligoni validi."""
+    def test_regression_reference_traction_physics_restored(self):
+        """Regressione trazione: i parametri fisici devono essere quelli dell'engine originale.
+
+        I "fix" di review B-07/B-08 (rim_body con maskBits=0 e raggio dimezzato,
+        sospensione molle 8.5 Hz/0.75, pentagono telaio, solver 8/3) rendevano
+        le ruote prive di trazione e producevano wheelie letali anche a regime.
+        Questo test codifica i valori di riferimento alexzh3/hillclimbracing.
+        """
         env = gym.make(ENV_ID, render_mode=None)
         try:
             env.reset(seed=42)
             car = env.unwrapped.agent.car
 
-            # 1. rim_body non deve collidere con il terreno/erba (B-07)
+            # 1. rim_body = secondo disco di attrito in contatto col suolo
+            #    (default Box2D + groupIndex=-1 come nell'engine originale)
             for wheel in car.wheels:
                 rim_fix = wheel.rim_body.fixtures[0]
                 self.assertEqual(
                     rim_fix.filterData.maskBits,
-                    0,
-                    "rim_body collide ancora con l'erba comportandosi come un freno bloccato",
+                    0xFFFF,
+                    "rim_body deve collidere col terreno come superficie di trazione",
                 )
-                # 2. Frequenza sospensione entro la zona di stabilità di Nyquist a 60 FPS (f <= 15 Hz)
-                freq = getattr(wheel.dist_joint, "frequencyHz", getattr(wheel.dist_joint, "frequency", 8.5))
-                self.assertLessEqual(freq, 15.0)
-                self.assertLessEqual(wheel.dist_joint.dampingRatio, 2.0)
+                self.assertEqual(rim_fix.filterData.categoryBits, 0x0001)
+                self.assertEqual(rim_fix.filterData.groupIndex, -1)
+                self.assertAlmostEqual(rim_fix.density, 0.05)
+                self.assertAlmostEqual(rim_fix.friction, 0.99)
+                self.assertAlmostEqual(rim_fix.restitution, 0.2)
+                self.assertAlmostEqual(rim_fix.shape.radius, wheel.radius / hill_racing.SCALE)
 
-            # 3. Rapporto di massa telaio / testa entro soglia stabile per solver Gauss-Seidel (B-08)
-            chassis_mass = car.chassis_body.mass
-            head_mass = car.person.head.body.mass
-            torso_mass = car.person.torso.body.mass
-            self.assertGreater(head_mass, 0.0)
-            self.assertLess(
-                chassis_mass / head_mass,
-                150.0,
-                f"Rapporto massa telaio/testa patologico: {chassis_mass / head_mass:.1f}:1",
-            )
-            self.assertLess(chassis_mass / torso_mass, 150.0)
+                # 2a. Pneumatico con attrito originale
+                tire_fix = wheel.body.fixtures[0]
+                self.assertAlmostEqual(tire_fix.friction, 1.5)
 
-            # 4. Nessun vertice duplicato nel poligono principale del telaio (B-08)
+                # 2b. Sospensione rigida e smorzata dell'originale: tiene la ruota
+                #     incollata al terreno sotto la spinta del motore
+                self.assertAlmostEqual(wheel.dist_joint.frequency, 70.0)
+                self.assertAlmostEqual(wheel.dist_joint.dampingRatio, 25.0)
+
+            # nessun limite prismatico artificiale sulla corsa della sospensione
+            for wheel in car.wheels:
+                self.assertFalse(wheel.pris_joint.limitEnabled)
+
+            # 3. Pilota "ragdoll" leggerissimo come nell'originale
+            head_fix = car.person.head.body.fixtures[0]
+            torso_fix = car.person.torso.body.fixtures[0]
+            self.assertAlmostEqual(head_fix.density, 0.001)
+            self.assertAlmostEqual(torso_fix.density, 0.002)
+
+            # 4a. Masse positive e strutturalmente coerenti
+            for wheel in car.wheels:
+                self.assertGreater(wheel.rim_body.mass, 0.0)
+                self.assertGreater(wheel.body.mass, wheel.rim_body.mass)
+
+            # 4b. Poligono telaio dell'originale (quadrilatero con vertice duplicato:
+            #     massa e centro di massa della reference; il pentagono raddoppiava
+            #     la massa alta del telaio favorendo il ribaltamento)
             chassis_verts = [(round(v.x, 4), round(v.y, 4)) for v in car.shapes[0]]
             self.assertEqual(
-                len(chassis_verts),
-                len(set(chassis_verts)),
-                f"Vertici duplicati rilevati nel telaio: {chassis_verts}",
+                chassis_verts[-1],
+                chassis_verts[-2],
+                f"Il telaio deve mantenere il vertice duplicato dell'originale: {chassis_verts}",
             )
+
+            # 5. Solver ai valori originali (180 velocity / 60 position iterations)
+            step_src = inspect.getsource(hill_racing.HillRacingEnv.step)
+            self.assertIn("velocityIterations=6 * 30", step_src)
+            self.assertIn("positionIterations=2 * 30", step_src)
         finally:
             env.close()
 

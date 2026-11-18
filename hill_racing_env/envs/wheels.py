@@ -24,8 +24,9 @@ class Wheel:
 
         self.create_wheel()
 
-        # Mozzo ruota (rim_body): nessuna collisione con terreno/erba (maskBits=0)
-        # Densità aumentata (0.3) per mantenere un rapporto di massa sano con il telaio
+        # Mozzo ruota (rim_body): fixture identica alla fisica originale di riferimento.
+        # Il mozzo entra in contatto col terreno come seconda superficie di attrito
+        # (friction=0.99) ed e' parte integrante della trazione originale dell'engine.
         body_def = b2BodyDef(
             type=b2_dynamicBody,
             position=(
@@ -35,16 +36,15 @@ class Wheel:
             angle=0,
         )
         fix_def = b2FixtureDef(
-            density=0.3,
-            friction=0.0,
-            restitution=0.0,
-            shape=b2CircleShape(radius=(self.radius * 0.5 / hill_racing.SCALE)),
-            categoryBits=0x0000,
-            maskBits=0x0000,
+            density=0.05,
+            friction=0.99,
+            restitution=0.2,
+            shape=b2CircleShape(radius=(self.radius / hill_racing.SCALE)),
+            groupIndex=-1,
         )
         self.rim_body = self.world.CreateBody(body_def)
         self.rim_body.CreateFixture(fix_def)
-        self.rim_body.userData = None  # Non deve attivare il ContactListener
+        self.rim_body.userData = self
 
         if chassis_body is not None:
             rev_joint_def = b2RevoluteJointDef()
@@ -60,12 +60,10 @@ class Wheel:
                 anchor=self.body.position,
                 axis=b2Vec2(0, -1),
             )
-            pris_joint_def.enableLimit = True
-            pris_joint_def.lowerTranslation = -0.35
-            pris_joint_def.upperTranslation = 0.35
             self.pris_joint = self.world.CreateJoint(pris_joint_def)
 
-            # Sospensione stabile entro il limite di Nyquist a 60 FPS (f_nyquist = 30 Hz)
+            # Sospensione rigida e ben smorzata come nell'engine originale:
+            # e' questa che tiene le ruote incollate al terreno sotto spinta motore.
             dist_joint_def = b2DistanceJointDef()
             anchor_wheel = b2Vec2(x / hill_racing.SCALE, y / hill_racing.SCALE)
             anchor_car = b2Vec2(x / hill_racing.SCALE, (y - r * 3) / hill_racing.SCALE)
@@ -75,8 +73,8 @@ class Wheel:
                 anchorA=anchor_wheel,
                 anchorB=anchor_car,
             )
-            dist_joint_def.frequencyHz = 8.5
-            dist_joint_def.dampingRatio = 0.75
+            dist_joint_def.frequencyHz = 70
+            dist_joint_def.dampingRatio = 25
             self.dist_joint = self.world.CreateJoint(dist_joint_def)
 
         self.body.angularDamping = 1.8

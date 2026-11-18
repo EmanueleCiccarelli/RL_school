@@ -36,7 +36,11 @@ class Car:
         vectors.append(b2Vec2(self.chassis_width / 4 + 5, 0 - self.chassis_height / 2))
         vectors.append(b2Vec2(self.chassis_width / 2, 0 - self.chassis_height / 2 + 5))
         vectors.append(b2Vec2(self.chassis_width / 2, self.chassis_height / 2))
-        vectors.append(b2Vec2(-self.chassis_width / 2, self.chassis_height / 2))
+        # Vertice duplicato come nell'engine originale: il Box2D della reference
+        # costruisce un quadrilatero con massa minore e centro di massa piu' basso
+        # (il pentagono "corretto" raddoppiava la massa del telaio in alto, favorendo
+        # il wheelie e il ribaltamento in accelerazione).
+        vectors.append(b2Vec2(self.chassis_width / 2, self.chassis_height / 2))
         # Scale vertices
         for vector in vectors:
             vector.x /= hill_racing.SCALE

@@ -318,11 +318,13 @@ class HillRacingEnv(gym.Env):
         reward = 0.0
 
         self._execute_action(action)
-        # Solver Box2D calibrato a 8/3 per massima efficienza e stabilità
+        # Solver Box2D ai valori dell'engine originale (180 iterazioni velocita',
+        # 60 posizionali): garantiscono constraint corretti con la sospensione
+        # rigida (70 Hz) e una trazione fisicamente coerente.
         self.world.Step(
             timeStep=1.0 / self.metadata["render_fps"],
-            velocityIterations=8,
-            positionIterations=3,
+            velocityIterations=6 * 30,
+            positionIterations=2 * 30,
         )
         self.step_stuck_counter += 1
         self.step_counter += 1

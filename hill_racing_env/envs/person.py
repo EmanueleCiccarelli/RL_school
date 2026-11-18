@@ -64,7 +64,7 @@ class Head:
         fix_def = b2FixtureDef(
             categoryBits=hill_racing.PERSON_CATEGORY,
             maskBits=hill_racing.PERSON_MASK,
-            density=0.08,
+            density=0.001,
             friction=0.01,
             restitution=0.01,
             shape=b2CircleShape(radius=self.radius / hill_racing.SCALE),
@@ -105,13 +105,12 @@ class Torso:
         fix_def = b2FixtureDef(
             categoryBits=hill_racing.PERSON_CATEGORY,
             maskBits=hill_racing.PERSON_MASK,
-            density=0.12,
+            density=0.002,
             friction=0.01,
             restitution=0.01,
             shape=b2PolygonShape(),
         )
-        # Note: SetAsBox takes half-width and half-height!
-        fix_def.shape.SetAsBox(self.width / 2 / hill_racing.SCALE, self.height / 2 / hill_racing.SCALE)
+        fix_def.shape.SetAsBox(self.width / 2 / hill_racing.SCALE, self.height / hill_racing.SCALE)
 
         self.body = self.world.CreateBody(body_def)
         self.body.userData = self
